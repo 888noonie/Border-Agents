@@ -1,0 +1,16 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Allows the BorderDock overlay window to position itself and control pointer-event pass-through.",
+  "windows": ["border-dock"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-set-decorations",
+    "core:window:allow-set-ignore-cursor-events",
+    "core:window:allow-set-position",
+    "core:window:allow-set-shadow",
+    "core:window:allow-set-size",
+    "core:window:allow-set-skip-taskbar"
+  ]
+}

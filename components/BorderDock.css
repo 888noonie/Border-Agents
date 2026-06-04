@@ -1,0 +1,367 @@
+.border-dock {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: transparent;
+  pointer-events: none;
+}
+
+.dock-stage {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 98% 48%, rgb(255 77 77 / 0.08), transparent 22rem),
+    radial-gradient(circle at 50% 0%, rgb(139 92 246 / 0.08), transparent 18rem);
+  pointer-events: none;
+}
+
+.agent-hotspot {
+  --agent-size: 3.45rem;
+  --agent-color: #ff4d4d;
+  --agent-x: 0px;
+  --agent-y: 0px;
+  position: absolute;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  pointer-events: auto;
+  transition:
+    left 180ms ease,
+    top 180ms ease,
+    right 180ms ease,
+    bottom 180ms ease,
+    transform 180ms ease,
+    opacity 160ms ease;
+}
+
+.agent-hotspot--tucked {
+  --agent-size: 3.45rem;
+}
+
+.agent-hotspot--tucked.agent-hotspot--right {
+  top: 48%;
+  right: -0.72rem;
+  transform: translateY(-50%);
+}
+
+.agent-hotspot--tucked.agent-hotspot--top {
+  top: -1.45rem;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.agent-hotspot--tucked.agent-hotspot--bottom {
+  bottom: -1.55rem;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.agent-hotspot--tucked.agent-hotspot--left {
+  top: 50%;
+  left: -0.72rem;
+  transform: translateY(-50%);
+}
+
+.agent-hotspot--free {
+  --agent-size: 7.4rem;
+  top: var(--agent-y);
+  right: auto;
+  bottom: auto;
+  left: var(--agent-x);
+  transform: none;
+}
+
+.agent-hotspot--faint {
+  opacity: 0.22;
+  filter: saturate(0.76);
+}
+
+.agent-hotspot--active {
+  opacity: 1;
+}
+
+.agent-hotspot--faint.agent-hotspot--active,
+.agent-hotspot--faint.agent-hotspot--dragging {
+  opacity: 0.76;
+}
+
+.agent-hotspot--dragging {
+  z-index: 5;
+  transition: none;
+}
+
+.agent-button {
+  width: var(--agent-size);
+  height: var(--agent-size);
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+  pointer-events: auto;
+  touch-action: none;
+  filter: drop-shadow(0 1.35rem 1.8rem rgb(39 32 26 / 0.2));
+  animation: agent-bob 3.4s ease-in-out infinite;
+}
+
+.agent-hotspot--tucked .agent-button {
+  filter: drop-shadow(0 0.8rem 1.2rem rgb(39 32 26 / 0.18));
+}
+
+.agent-hotspot--free .agent-button {
+  border-radius: 1.65rem;
+  cursor: grab;
+  filter: drop-shadow(0 1rem 1.35rem rgb(39 32 26 / 0.24));
+}
+
+.agent-hotspot--dragging .agent-button {
+  cursor: grabbing;
+  animation: none;
+}
+
+.agent-button:focus-visible {
+  outline: 0.25rem solid color-mix(in srgb, var(--agent-color), white 24%);
+  outline-offset: 0.25rem;
+}
+
+.agent-svg {
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.agent-svg--crab {
+  width: 5rem;
+  height: 5rem;
+}
+
+.agent-svg--body,
+.agent-svg--crab-body {
+  width: 100%;
+  height: 100%;
+}
+
+.speech-bubble {
+  position: absolute;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 21rem;
+  max-width: min(36rem, 52vw);
+  padding: 0.78rem 0.95rem;
+  border: 1px solid rgb(208 220 235);
+  border-radius: 1.25rem;
+  background: rgb(255 255 255 / 0.96);
+  box-shadow: 0 1rem 2rem rgb(27 42 65 / 0.14);
+  color: #26364b;
+  font-size: 0.92rem;
+  line-height: 1.25;
+  white-space: nowrap;
+  pointer-events: auto;
+}
+
+.speech-bubble strong {
+  color: color-mix(in srgb, var(--agent-color), #172033 34%);
+}
+
+.speech-bubble__owner {
+  border-radius: 999px;
+  padding: 0.12rem 0.42rem;
+  background: color-mix(in srgb, var(--agent-color), white 84%);
+  color: color-mix(in srgb, var(--agent-color), #172033 32%);
+  font-size: 0.78rem;
+  font-weight: 720;
+}
+
+.speech-bubble--right {
+  right: 3.25rem;
+  top: 0.6rem;
+}
+
+.speech-bubble--left {
+  top: 0.6rem;
+  left: 3.25rem;
+}
+
+.speech-bubble--right::after {
+  position: absolute;
+  right: -0.55rem;
+  top: 50%;
+  width: 1rem;
+  height: 1rem;
+  border-top: 1px solid rgb(208 220 235);
+  border-right: 1px solid rgb(208 220 235);
+  background: inherit;
+  content: "";
+  transform: translateY(-50%) rotate(45deg);
+}
+
+.speech-bubble--left::after {
+  position: absolute;
+  top: 50%;
+  left: -0.55rem;
+  width: 1rem;
+  height: 1rem;
+  border-bottom: 1px solid rgb(208 220 235);
+  border-left: 1px solid rgb(208 220 235);
+  background: inherit;
+  content: "";
+  transform: translateY(-50%) rotate(45deg);
+}
+
+.speech-bubble--top {
+  top: 3.35rem;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.speech-bubble--bottom {
+  bottom: 3.35rem;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.crab-shell,
+.crab-claw {
+  fill: var(--agent-color);
+}
+
+.crab-shell {
+  filter: drop-shadow(0 0.35rem 0.55rem rgb(128 23 31 / 0.16));
+}
+
+.crab-belly {
+  fill: #ff8c7e;
+  opacity: 0.9;
+}
+
+.crab-claw--top {
+  transform-origin: 70px 60px;
+  animation: claw-wave 2.7s ease-in-out infinite;
+}
+
+.crab-claw--bottom {
+  transform-origin: 70px 160px;
+}
+
+.crab-leg,
+.owl-wing {
+  fill: none;
+  stroke: color-mix(in srgb, var(--agent-color), #4a111a 30%);
+  stroke-width: 12;
+  stroke-linecap: round;
+}
+
+.eye {
+  fill: #fff8ef;
+}
+
+.pupil {
+  fill: #162033;
+}
+
+.shine {
+  fill: white;
+}
+
+.smile,
+.smile-shine,
+.fox-smile {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.smile {
+  stroke: #64202b;
+  stroke-width: 8;
+}
+
+.smile-shine {
+  stroke: rgb(255 238 231 / 0.9);
+  stroke-width: 4;
+}
+
+.owl-face,
+.owl-ear {
+  fill: var(--agent-color);
+}
+
+.owl-body {
+  fill: color-mix(in srgb, var(--agent-color), white 28%);
+}
+
+.owl-eye {
+  fill: #fff8de;
+}
+
+.owl-pupil,
+.fox-eye {
+  fill: #29233d;
+}
+
+.owl-beak {
+  fill: #e8a846;
+}
+
+.fox-face,
+.fox-ear {
+  fill: var(--agent-color);
+}
+
+.fox-body {
+  fill: color-mix(in srgb, var(--agent-color), white 18%);
+}
+
+.fox-tail {
+  fill: color-mix(in srgb, var(--agent-color), #9d311e 24%);
+}
+
+.fox-muzzle {
+  fill: #fff0df;
+}
+
+@keyframes agent-bob {
+  0%,
+  100% {
+    transform: translateY(0) rotate(-1deg);
+  }
+
+  50% {
+    transform: translateY(-0.55rem) rotate(1deg);
+  }
+}
+
+@keyframes claw-wave {
+  0%,
+  100% {
+    transform: rotate(-2deg);
+  }
+
+  50% {
+    transform: rotate(9deg);
+  }
+}
+
+@media (max-width: 720px) {
+  .agent-hotspot {
+    --agent-size: 3.1rem;
+  }
+
+  .agent-hotspot--free {
+    --agent-size: 6.4rem;
+  }
+
+  .agent-hotspot--tucked .agent-svg--crab {
+    width: 4.5rem;
+    height: 4.5rem;
+  }
+
+  .speech-bubble {
+    min-width: 17rem;
+    max-width: 72vw;
+    font-size: 0.9rem;
+    white-space: normal;
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "BB start",
+      "type": "shell",
+      "command": "npm run dev",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "BB stop",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "-lc",
+        "pids=$(ss -ltnp 2>/dev/null | awk '/:1420 / {print $NF}' | sed -n 's/.*pid=\\([0-9][0-9]*\\).*/\\1/p' | sort -u); if [ -n \"$pids\" ]; then kill $pids && echo \"Stopped Border Buddies dev server on port 1420.\"; else echo \"No Border Buddies dev server found on port 1420.\"; fi"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "BB clean cache",
+      "type": "shell",
+      "command": "bash",
+      "args": [
+        "-lc",
+        "rm -rf dist node_modules/.vite .vite target src-tauri/target && echo \"Cleaned Border Buddies build and dev caches.\""
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": []
+    }
+  ]
+}

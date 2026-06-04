@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="Border Buddies">
+  <defs>
+    <linearGradient id="bg" x1="80" y1="36" x2="430" y2="470" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#fff8f3"/>
+      <stop offset="1" stop-color="#eef7ff"/>
+    </linearGradient>
+    <linearGradient id="shell" x1="155" y1="132" x2="370" y2="382" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ff887d"/>
+      <stop offset="0.52" stop-color="#ff4d4d"/>
+      <stop offset="1" stop-color="#d92d3d"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="20" stdDeviation="22" flood-color="#5b1d25" flood-opacity="0.22"/>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="118" fill="url(#bg)"/>
+  <circle cx="104" cy="118" r="42" fill="#8b5cf6" opacity="0.18"/>
+  <circle cx="426" cy="388" r="58" fill="#ef6a3a" opacity="0.14"/>
+  <g filter="url(#shadow)">
+    <path d="M154 203c-58-33-79-88-45-124 30-32 80-13 82 30 25-31 78-25 95 13 24 56-52 108-132 81Z" fill="#ff4d4d"/>
+    <path d="M363 222c57-35 76-91 41-126-31-31-80-10-80 33-26-30-78-22-93 17-22 56 55 106 132 76Z" fill="#ff4d4d"/>
+    <ellipse cx="256" cy="282" rx="146" ry="136" fill="url(#shell)"/>
+    <ellipse cx="214" cy="230" rx="42" ry="54" fill="#fff8ef"/>
+    <ellipse cx="304" cy="224" rx="44" ry="56" fill="#fff8ef"/>
+    <circle cx="228" cy="237" r="20" fill="#182033"/>
+    <circle cx="320" cy="231" r="21" fill="#182033"/>
+    <circle cx="237" cy="226" r="7" fill="#fff"/>
+    <circle cx="329" cy="219" r="7" fill="#fff"/>
+    <path d="M199 321c52 56 126 58 185 4" fill="none" stroke="#64202b" stroke-width="18" stroke-linecap="round"/>
+    <path d="M238 345c28 17 58 18 92 5" fill="none" stroke="#fff0ec" stroke-width="8" stroke-linecap="round"/>
+  </g>
+</svg>

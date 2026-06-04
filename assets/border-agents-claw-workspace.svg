@@ -1,0 +1,224 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="3840" height="2160" viewBox="0 0 3840 2160" role="img" aria-labelledby="title desc">
+  <title id="title">Border Agents workspace with Claw</title>
+  <desc id="desc">A clean productivity workspace screenshot showing Border Agents with Claw, a red crab agent, peeking from the right screen border.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fbfcff"/>
+      <stop offset="0.48" stop-color="#f7fbf8"/>
+      <stop offset="1" stop-color="#fff8f3"/>
+    </linearGradient>
+    <linearGradient id="topbar" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#f4f7fb"/>
+    </linearGradient>
+    <linearGradient id="editor" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#f7f9fb"/>
+    </linearGradient>
+    <linearGradient id="sidePanel" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f4f8ff"/>
+      <stop offset="1" stop-color="#fdf8f4"/>
+    </linearGradient>
+    <linearGradient id="crabShell" x1="0" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#ff7b72"/>
+      <stop offset="0.55" stop-color="#ff4d4d"/>
+      <stop offset="1" stop-color="#d92632"/>
+    </linearGradient>
+    <linearGradient id="crabClaw" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ff8c7e"/>
+      <stop offset="0.62" stop-color="#ff4d4d"/>
+      <stop offset="1" stop-color="#c71f30"/>
+    </linearGradient>
+    <linearGradient id="owl" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#b89cff"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+    <linearGradient id="fox" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffb56f"/>
+      <stop offset="1" stop-color="#ef6a3a"/>
+    </linearGradient>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="24" stdDeviation="32" flood-color="#22304a" flood-opacity="0.16"/>
+    </filter>
+    <filter id="tightShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="12" stdDeviation="15" flood-color="#422222" flood-opacity="0.18"/>
+    </filter>
+    <filter id="agentGlow" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="18" stdDeviation="20" flood-color="#ff4d4d" flood-opacity="0.2"/>
+      <feDropShadow dx="0" dy="4" stdDeviation="4" flood-color="#7f111e" flood-opacity="0.18"/>
+    </filter>
+    <pattern id="grid" width="96" height="96" patternUnits="userSpaceOnUse">
+      <path d="M96 0H0V96" fill="none" stroke="#dce4ee" stroke-width="1.2" opacity="0.55"/>
+      <circle cx="0" cy="0" r="2.2" fill="#d4dde8" opacity="0.5"/>
+    </pattern>
+    <clipPath id="screenClip">
+      <rect x="0" y="0" width="3840" height="2160"/>
+    </clipPath>
+  </defs>
+
+  <rect width="3840" height="2160" fill="url(#bg)"/>
+  <rect width="3840" height="2160" fill="url(#grid)" opacity="0.54"/>
+
+  <g opacity="0.33" filter="url(#softShadow)">
+    <circle cx="610" cy="1740" r="310" fill="#dff4ea"/>
+    <circle cx="3080" cy="400" r="260" fill="#f8e5d8"/>
+  </g>
+
+  <g id="top-agent" opacity="0.16">
+    <ellipse cx="1940" cy="-12" rx="196" ry="145" fill="url(#owl)"/>
+    <path d="M1795 22l-80-95 140 35M2085 22l80-95-140 35" fill="#7650d1"/>
+    <circle cx="1874" cy="28" r="42" fill="#fff8da"/>
+    <circle cx="2006" cy="28" r="42" fill="#fff8da"/>
+    <circle cx="1874" cy="28" r="16" fill="#2f2350"/>
+    <circle cx="2006" cy="28" r="16" fill="#2f2350"/>
+    <path d="M1940 60l-34 52h68z" fill="#e8a846"/>
+  </g>
+
+  <g id="bottom-agent" opacity="0.13" filter="url(#tightShadow)">
+    <path d="M1710 2158c30-140 126-222 260-222s230 82 260 222z" fill="url(#fox)"/>
+    <path d="M1788 1996l-110-120 164 58M2152 1996l110-120-164 58" fill="#d85229"/>
+    <ellipse cx="1970" cy="2070" rx="210" ry="155" fill="#f9874b"/>
+    <path d="M1888 2114c44 44 120 44 164 0 0 64-164 64-164 0z" fill="#fff0df"/>
+    <circle cx="1898" cy="2045" r="22" fill="#34241f"/>
+    <circle cx="2042" cy="2045" r="22" fill="#34241f"/>
+  </g>
+
+  <g id="workspace" filter="url(#softShadow)">
+    <rect x="480" y="250" width="2690" height="1660" rx="36" fill="url(#editor)" stroke="#d9e2ec" stroke-width="2"/>
+    <rect x="480" y="250" width="2690" height="112" rx="36" fill="url(#topbar)"/>
+    <path d="M480 326h2690" stroke="#dce3ec" stroke-width="2"/>
+    <circle cx="552" cy="306" r="16" fill="#ff756f"/>
+    <circle cx="604" cy="306" r="16" fill="#f4c44e"/>
+    <circle cx="656" cy="306" r="16" fill="#56c987"/>
+    <text x="735" y="323" font-family="Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="44" font-weight="760" fill="#172033">Border Agents</text>
+    <rect x="1138" y="278" width="350" height="54" rx="27" fill="#eef4fb"/>
+    <text x="1178" y="315" font-family="Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="25" font-weight="640" fill="#5f7188">same vector result</text>
+    <rect x="2615" y="278" width="452" height="54" rx="27" fill="#fff3e9" stroke="#f2d6c1"/>
+    <circle cx="2654" cy="305" r="12" fill="#1fb981"/>
+    <text x="2682" y="316" font-family="Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="26" font-weight="660" fill="#5c4b42">Safe Context Frame ready</text>
+
+    <rect x="540" y="398" width="470" height="1450" rx="24" fill="#f6f8fb" stroke="#e1e7ef"/>
+    <text x="590" y="474" font-family="Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="31" font-weight="760" fill="#33445b">Purpose Policy</text>
+    <g font-family="Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="25" font-weight="640">
+      <rect x="590" y="535" width="330" height="62" rx="18" fill="#e8f7ef"/>
+      <text x="620" y="575" fill="#14724c">summarize_history</text>
+      <rect x="590" y="625" width="362" height="62" rx="18" fill="#fff5e7"/>
+      <text x="620" y="665" fill="#855d18">answer_current_policy</text>
+      <rect x="590" y="715" width="270" height="62" rx="18" fill="#eff2ff"/>
+      <text x="620" y="755" fill="#3e55a8">agent_action</text>
+      <rect x="590" y="805" width="285" height="62" rx="18" fill="#f5edf9"/>
+      <text x="620" y="845" fill="#70458e">external_share</text>
+    </g>
+    <path d="M590 935h360" stroke="#d8e0ea" stroke-width="2"/>
+    <text x="590" y="1005" font-family="Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="28" font-weight="760" fill="#33445b">Frame Ledger</text>
+    <g font-family="Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="22" font-weight="620">
+      <circle cx="615" cy="1070" r="9" fill="#1fb981"/>
+      <text x="640" y="1078" fill="#607087">trusted: 3 packets</text>
+      <circle cx="615" cy="1125" r="9" fill="#e6a52c"/>
+      <text x="640" y="1133" fill="#607087">limited: 2 packets</text>
+      <circle cx="615" cy="1180" r="9" fill="#7d8aa0"/>
+      <text x="640" y="1188" fill="#607087">reference only: 1</text>
+      <circle cx="615" cy="1235" r="9" fill="#e35252"/>
+      <text x="640" y="1243" fill="#607087">blocked preserved</text>
+    </g>
+
+    <rect x="1050" y="398" width="1300" height="1450" rx="24" fill="#ffffff" stroke="#e0e7ef"/>
+    <rect x="1050" y="398" width="1300" height="86" rx="24" fill="#fbfcfe"/>
+    <path d="M1050 484h1300" stroke="#e1e8f0" stroke-width="2"/>
+    <text x="1110" y="452" font-family="Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="27" font-weight="760" fill="#43516a">prompt-renderer.ts</text>
+    <g font-family="JetBrains Mono, SFMono-Regular, Consolas, monospace" font-size="29" fill="#536177">
+      <text x="1115" y="560">01  const frame = grader.grade(results, purpose);</text>
+      <text x="1115" y="630">02  const receipt = frame.receipt;</text>
+      <text x="1115" y="700">03  renderer.annotated(frame);</text>
+      <text x="1115" y="770">04</text>
+      <text x="1115" y="840">05  trusted.map(packet =&gt; packet.content)</text>
+      <text x="1115" y="910">06  limited.map(packet =&gt; constraints(packet))</text>
+      <text x="1115" y="980">07  ledger.preserve(blocked)</text>
+      <text x="1115" y="1050">08</text>
+      <text x="1115" y="1120">09  // Same vector results, different purpose.</text>
+      <text x="1115" y="1190">10  // Authorization stays inspectable.</text>
+    </g>
+    <rect x="1115" y="1282" width="1150" height="425" rx="26" fill="#f7faf8" stroke="#dbe8dd"/>
+    <text x="1160" y="1352" font-family="Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="30" font-weight="770" fill="#2d4a3c">Mock vector result demo</text>
+    <g font-family="Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="24" font-weight="660">
+      <rect x="1160" y="1405" width="235" height="54" rx="15" fill="#e7f8ef"/>
+      <text x="1190" y="1441" fill="#156a49">trusted</text>
+      <rect x="1420" y="1405" width="220" height="54" rx="15" fill="#fff4de"/>
+      <text x="1450" y="1441" fill="#895c12">limited</text>
+      <rect x="1665" y="1405" width="295" height="54" rx="15" fill="#eef2f7"/>
+      <text x="1695" y="1441" fill="#586a80">reference only</text>
+      <rect x="1985" y="1405" width="190" height="54" rx="15" fill="#fdeaea"/>
+      <text x="2015" y="1441" fill="#b03737">blocked</text>
+    </g>
+    <path d="M1160 1525h940" stroke="#dce8df" stroke-width="3" stroke-linecap="round"/>
+    <path d="M1160 1590h760" stroke="#e3ebf3" stroke-width="3" stroke-linecap="round"/>
+    <path d="M1160 1655h1020" stroke="#e3ebf3" stroke-width="3" stroke-linecap="round"/>
+
+    <rect x="2390" y="398" width="720" height="1450" rx="24" fill="url(#sidePanel)" stroke="#e1e8ef"/>
+    <text x="2455" y="475" font-family="Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="32" font-weight="780" fill="#33445b">Memory Grader</text>
+    <text x="2455" y="528" font-family="Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="22" font-weight="620" fill="#748195">current purpose: agent_action</text>
+    <g>
+      <rect x="2455" y="600" width="580" height="128" rx="24" fill="#ffffff" stroke="#dfe7ef"/>
+      <circle cx="2518" cy="664" r="18" fill="#1fb981"/>
+      <text x="2555" y="655" font-family="Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="25" font-weight="760" fill="#263748">Trusted packets</text>
+      <text x="2555" y="697" font-family="Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="20" font-weight="600" fill="#748195">may influence prompt context</text>
+      <rect x="2455" y="762" width="580" height="128" rx="24" fill="#ffffff" stroke="#dfe7ef"/>
+      <circle cx="2518" cy="826" r="18" fill="#e2a52d"/>
+      <text x="2555" y="817" font-family="Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="25" font-weight="760" fill="#263748">Limited packets</text>
+      <text x="2555" y="859" font-family="Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="20" font-weight="600" fill="#748195">render with constraints</text>
+      <rect x="2455" y="924" width="580" height="128" rx="24" fill="#ffffff" stroke="#dfe7ef"/>
+      <circle cx="2518" cy="988" r="18" fill="#e45353"/>
+      <text x="2555" y="979" font-family="Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="25" font-weight="760" fill="#263748">Blocked preserved</text>
+      <text x="2555" y="1021" font-family="Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="20" font-weight="600" fill="#748195">kept in receipt ledger</text>
+    </g>
+    <rect x="2455" y="1155" width="580" height="520" rx="28" fill="#172033"/>
+    <text x="2505" y="1230" font-family="Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="26" font-weight="780" fill="#eff6ff">GradeReceipt</text>
+    <g font-family="JetBrains Mono, SFMono-Regular, Consolas, monospace" font-size="22" fill="#b9c8d8">
+      <text x="2505" y="1295">{</text>
+      <text x="2545" y="1345">purpose: "agent_action",</text>
+      <text x="2545" y="1395">trusted: 3,</text>
+      <text x="2545" y="1445">limited: 2,</text>
+      <text x="2545" y="1495">blocked: 1,</text>
+      <text x="2545" y="1545">override: false</text>
+      <text x="2505" y="1595">}</text>
+    </g>
+  </g>
+
+  <g id="claw" clip-path="url(#screenClip)" filter="url(#agentGlow)">
+    <path d="M3390 900c-118-64-196-140-232-232-17-45 36-81 73-49 61 53 136 93 228 119z" fill="url(#crabClaw)"/>
+    <path d="M3218 593c-20-83 28-162 106-171 50-6 92 36 72 82-20 46-20 95 14 148 25 39-8 91-54 83-61-10-116-56-138-142z" fill="url(#crabClaw)"/>
+    <path d="M3240 578c41 6 84 30 128 72" fill="none" stroke="#b8192a" stroke-width="18" stroke-linecap="round" opacity="0.45"/>
+    <path d="M3382 1270c-125 48-221 111-287 190-31 37 10 87 55 66 74-34 158-54 253-59z" fill="url(#crabClaw)"/>
+    <path d="M3078 1464c-52 67-42 159 25 199 43 26 98 3 94-47-4-50 12-96 62-136 37-29 24-90-22-100-60-13-123 16-159 84z" fill="url(#crabClaw)"/>
+    <path d="M3123 1474c39-15 89-15 148 0" fill="none" stroke="#b8192a" stroke-width="18" stroke-linecap="round" opacity="0.45"/>
+
+    <path d="M3638 765c-92 0-172 40-230 108-66 77-96 184-82 299 25 207 202 339 420 313 166-20 284-137 311-293 18-105-8-212-70-293-78-102-200-134-349-134z" fill="url(#crabShell)"/>
+    <path d="M3370 1055c80-116 215-184 395-184 110 0 199 30 267 89-54-126-180-202-370-202-180 0-292 78-292 297z" fill="#ff9a8c" opacity="0.36"/>
+    <path d="M3365 1215c70 190 258 282 471 225" fill="none" stroke="#ad1729" stroke-width="16" stroke-linecap="round" opacity="0.2"/>
+
+    <ellipse cx="3498" cy="930" rx="70" ry="96" fill="#fff9ef"/>
+    <ellipse cx="3662" cy="910" rx="76" ry="102" fill="#fff9ef"/>
+    <circle cx="3512" cy="948" r="34" fill="#172033"/>
+    <circle cx="3678" cy="932" r="36" fill="#172033"/>
+    <circle cx="3526" cy="932" r="11" fill="#ffffff"/>
+    <circle cx="3692" cy="915" r="12" fill="#ffffff"/>
+    <path d="M3410 826c49-38 108-48 174-28" fill="none" stroke="#a8192a" stroke-width="16" stroke-linecap="round" opacity="0.35"/>
+    <path d="M3595 792c69-37 137-34 204 8" fill="none" stroke="#a8192a" stroke-width="16" stroke-linecap="round" opacity="0.35"/>
+
+    <path d="M3465 1192c69 74 176 77 274 8" fill="none" stroke="#5d1824" stroke-width="19" stroke-linecap="round"/>
+    <path d="M3530 1215c30 28 69 39 114 34" fill="none" stroke="#fff0ec" stroke-width="8" stroke-linecap="round" opacity="0.8"/>
+
+    <g opacity="0.42">
+      <path d="M3370 706c-48-38-78-92-90-160" fill="none" stroke="#ff756f" stroke-width="10" stroke-linecap="round"/>
+      <path d="M3372 1450c-58 14-116 46-174 96" fill="none" stroke="#ff756f" stroke-width="10" stroke-linecap="round"/>
+      <path d="M3324 1090c-42-16-78-44-108-83" fill="none" stroke="#ffb6ac" stroke-width="9" stroke-linecap="round"/>
+    </g>
+  </g>
+
+  <rect x="3798" y="0" width="42" height="2160" fill="#ffffff" opacity="0.65"/>
+
+  <g id="speech-bubble" filter="url(#tightShadow)">
+    <path d="M2378 692c0-52 42-94 94-94h1040c52 0 94 42 94 94v64c0 52-42 94-94 94h-668l-144 116 51-116h-279c-52 0-94-42-94-94z" fill="#ffffff" stroke="#d9e4ef" stroke-width="3"/>
+    <text x="2448" y="762" font-family="Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif" font-size="48" font-weight="760" fill="#243246">Memory graded! Trusted pieces ready? 🦀</text>
+  </g>
+</svg>

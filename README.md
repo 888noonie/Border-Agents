@@ -1,4 +1,4 @@
-# Border Agents
+# Border Buddies
 
 **Your friendly miniature AI companions living at the edge of your screen.**
 
@@ -8,9 +8,11 @@ Imagine a team of unique, customizable little characters — heads peeking playf
 
 ---
 
-**Make AI trust boundaries visible, clickable, and *delightful*.**
+**Make your AI tools feel visible, personal, and *delightful*.**
 
-Border Agents is an edge-native interface and governance layer for AI work. The playful miniature agents are the **primary experience**. Deep deterministic governance (memory grading, Safe Context Frames, purpose policies, receipts, artifact hashing) powers them to be truly trustworthy companions rather than just cute mascots.
+Border Buddies is the warm, personality-first experience: cute miniature companions that visually represent your LLM chats, agents, subscriptions, projects, and workflows. One buddy might represent Codex, another Claude, another Grok, and others can belong to custom agents or specific projects.
+
+Border Agents remains the edge-native governance layer underneath. Deep deterministic governance (memory grading, Safe Context Frames, purpose policies, receipts, artifact hashing) powers the buddies to be truly trustworthy companions rather than just cute mascots.
 
 The UX — friendly, reactive, and human — is what makes reliability and safety *feel good* and addictive to use.
 
@@ -20,9 +22,9 @@ The UX — friendly, reactive, and human — is what makes reliability and safet
 
 AI work should not silently cross from possibility into use. Border Agents makes every crossing visible, inspectable, and governed — through delightful characters.
 
-## Core Patrol — Your Default Team
+## Core Buddies — Your Default Team
 
-Each agent is a miniature, expressive character with its own personality.
+Each buddy is a miniature, expressive character with its own personality.
 
 | Agent      | Border Guarded       | Role |
 |------------|----------------------|------|
@@ -42,4 +44,3 @@ Each agent is a miniature, expressive character with its own personality.
 - Full customization: appearance, voice lines, triggers
 
 Governance ensures they are reliable. Playfulness ensures you'll love having them around.
-

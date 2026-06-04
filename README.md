@@ -1,79 +1,53 @@
 # Border Agents
 
+**Tiny AI companions that live on the edge of your screen and make AI work feel visible, safe, and delightful.**
 
-**Make AI trust boundaries visible, clickable, and governable.**
+Border Agents is a personality-forward interface for AI work. A small patrol of customizable agents peeks from the borders of your workspace. They stay out of the way until something useful happens, then slide in with speech bubbles, quick actions, celebrations, warnings, receipts, and next steps.
 
-Border Agents is an edge-native interface and governance layer for AI work.
+The promise is simple:
 
-It gives users a visible team of role-based agents that appear at the border of the workspace when AI output is about to cross a trust boundary: memory becoming context, context becoming a claim, a plan becoming an action, code becoming a repository change, or an artifact becoming something saved, shared, or published.
+> **Your AI team lives at the edge of the screen and steps in only when useful.**
 
-AI is no longer just answering questions. It retrieves memory, writes code, calls tools, drafts artifacts, edits files, and acts across systems.
-
-But most AI interfaces still hide the important crossings inside prompts, logs, vector stores, and tool calls.
-
-Border Agents makes those crossings visible.
+The interface is playful. The trust layer underneath is serious.
 
 ---
 
-## The principle
+## The experience
 
-> **A system can possess knowledge without being authorized to act upon it.**
+Your screen border becomes a living dock.
 
-Border Agents is built around a simple idea:
-
-AI work should not silently move from possibility into use.
-
-A memory can be relevant without being allowed.
-A claim can be plausible without being verified.
-A tool call can be useful without being authorized.
-A code change can compile while still violating policy.
-An artifact can be polished without being ready to share.
-
-Border Agents turns those hidden transitions into visible, inspectable workflows.
-
----
-
-## What it does
-
-Border Agents provides:
-
-* A visible **Core Patrol** of role-based agents.
-* A governance surface for memory, claims, actions, code, and artifacts.
-* Purpose-aware context grading before prompt assembly.
-* One-click actions for verification, approval, redaction, quarantine, export, and sharing.
-* Inspectable receipts for every important trust decision.
-* A future-safe model for creating custom agents by contract, not by unchecked autonomy.
-
-The goal is not to replace your model, vector database, agent framework, or developer tools.
-
-The goal is to make the trust boundaries between them visible and governable.
-
----
-
-## Why Border Agents?
-
-Every production AI workflow has borders:
+Agent heads peek in from the top, bottom, left, and right edges. They subtly bob, blink, glance, wave, or glow when idle. When their role becomes relevant, they show a small speech bubble:
 
 ```text
-memory → prompt context
-context → claim
-claim → user belief
-plan → tool call
-tool call → external system
-code diff → repository
-draft → artifact
-artifact → public share
+Nexus: “I found 7 related memories. Want trusted-only?”
+Veritas: “One claim needs evidence. Peek?”
+Forge: “This action writes to a protected file. Approval needed.”
+Nova: “Artifact packaged and hashed. Ready to share?”
 ```
 
-Today, those borders are usually implicit.
+Tap or drag an agent into the center to expand it into a focused panel. Dismiss it, pin it, move it to another edge, or customize how it looks and speaks.
 
-Border Agents makes them explicit.
+Border Agents should feel like a friendly desktop creature system for serious AI work: charming enough to keep open every day, useful enough to earn its place on screen.
 
-When something needs verification, review, approval, packaging, or escalation, the relevant agent appears at the edge of the screen.
+---
 
-The interface is playful.
+## Why this matters
 
-The governance is serious.
+AI work is becoming active.
+
+It retrieves memory, writes code, calls tools, drafts artifacts, edits files, and shares outputs across systems. But most AI interfaces still hide the important moments inside prompts, logs, vector stores, and tool calls.
+
+Border Agents turns those hidden moments into visible, friendly interactions.
+
+```text
+Something is retrieved → Nexus peeks in
+Something is unverified → Veritas peeks in
+Something wants to run → Forge peeks in
+Something is ready to share → Nova peeks in
+Something needs a decision → Conductor peeks in
+```
+
+The user does not need to read a governance log first. The right little agent appears and offers the next safe action.
 
 ---
 
@@ -81,58 +55,73 @@ The governance is serious.
 
 Border Agents ships with a default team called the **Core Patrol**.
 
-Each agent guards a specific class of AI trust boundary.
-
-| Agent         | Border guarded         | Role                                                                             |
-| ------------- | ---------------------- | -------------------------------------------------------------------------------- |
-| **Nexus**     | Memory → Context       | Shows retrieved memory, grades, stale items, blocked items, and related sources. |
-| **Veritas**   | Context → Claim        | Verifies assertions, flags unsupported claims, and attaches evidence receipts.   |
-| **Forge**     | Intent → Action / Code | Reviews tool calls, file writes, code changes, and execution requests.           |
-| **Strategos** | Idea → Plan            | Checks scope, sequencing, risks, and next steps.                                 |
-| **Nova**      | Draft → Artifact       | Polishes, formats, packages, and prepares work for presentation or sharing.      |
-| **Aether**    | Mess → Structure       | Turns raw ideas into architecture, specs, maps, and coherent systems.            |
-| **Conductor** | Unresolved → Decision  | Handles approval, arbitration, handoff, and final release decisions.             |
-
-The Core Patrol provides a useful default experience.
-
-Advanced users can later create custom agents with explicit manifests, triggers, permissions, and receipt requirements.
+| Agent | Personality direction | Border guarded | What they surface |
+|---|---|---|---|
+| **Nexus** | curious connector | Memory → Context | Retrieved memories, grades, stale sources, related files |
+| **Veritas** | precise truth-checker | Context → Claim | Unsupported claims, evidence, confidence downgrades |
+| **Forge** | practical builder | Intent → Action / Code | Tool calls, file writes, code diffs, protected actions |
+| **Strategos** | calm planner | Idea → Plan | Scope, sequencing, risk, next step |
+| **Nova** | expressive polisher | Draft → Artifact | Formatting, presentation, packaging, share readiness |
+| **Aether** | structural synthesizer | Mess → Structure | Architecture, specs, diagrams, coherent systems |
+| **Conductor** | final coordinator | Unresolved → Decision | Approval, arbitration, handoff, release decisions |
 
 > **Core Patrol by default. Custom agents by contract.**
 
+Users eventually create their own Border Agents with custom appearance, voice, triggers, allowed actions, and receipt behavior.
+
 ---
 
-## The Core Patrol is not decorative
+## The agents are the product
 
-Border Agents are not mascots.
+Border Agents are not decorative mascots pasted onto a serious tool.
 
-They are role-based governance surfaces.
+They are the primary interface.
 
-A Border Agent appears when its domain has something useful to contribute.
+The governance engine exists to make the agents trustworthy. The agents exist to make governance feel natural, fast, and pleasant.
 
-Examples:
+Each agent should be:
+
+- miniature and expressive
+- customizable by the user
+- visible only when useful
+- easy to drag, pin, dismiss, or expand
+- able to explain why it appeared
+- backed by real deterministic checks
+- capable of producing receipts when a trust decision matters
+
+The UX goal is not “compliance dashboard.”
+
+The UX goal is:
+
+> **Friendly companions that turn invisible AI work into obvious, safe, one-click moments.**
+
+---
+
+## First product loop
+
+The first successful demo should not be a backend library.
+
+It should be a living border experience:
+
+1. User asks a question or creates an artifact.
+2. Nexus peeks in with retrieved context.
+3. Veritas peeks in if a claim needs evidence.
+4. Nova peeks in when the artifact is ready to package.
+5. User clicks obvious actions: **Use trusted only**, **Show evidence**, **Verify**, **Hash**, **Save**, **Download**, **Share**.
+
+The user should feel progression:
 
 ```text
-Nexus:
-“I found 8 related memories. 3 are trusted, 2 are limited, 2 are reference-only, and 1 is quarantined.”
-
-Veritas:
-“This answer contains 4 factual claims. 1 lacks evidence.”
-
-Forge:
-“This tool action writes to a protected path and requires approval.”
-
-Nova:
-“This draft is ready to package as a shareable artifact.”
-
-Conductor:
-“This workflow has reached a decision point. Approve, revise, or export?”
+Idea → Draft → Verified → Packaged → Hashed → Saved → Shared
 ```
 
-The user can tap or drag an agent into the workspace to inspect the issue and take action.
+This visible progression is the retention loop.
 
 ---
 
-## Founding laws
+## What powers the agents
+
+Under the playful surface is a deterministic trust layer.
 
 Border Agents follows six governance laws:
 
@@ -143,35 +132,21 @@ Border Agents follows six governance laws:
 5. **Prompt context must be purpose-aware.**
 6. **Every grade must produce a receipt.**
 
-These laws apply across memory, claims, actions, code, and artifacts.
-
-They are the foundation for making AI work inspectable instead of invisible.
+These laws let the agents speak with substance instead of vibes.
 
 ---
 
-## Purpose-aware memory grading
+## Memory grading: the first engine
 
-The first production module focuses on retrieval authority.
+The first governance engine grades retrieved memory before it becomes prompt context, claim, tool input, or action basis.
 
-Vector databases are good at answering:
+Vector databases answer:
 
 > What is semantically close?
 
-They are not designed to answer:
+Border Agents also asks:
 
-> Is this current?
-> Is this verified?
-> Is this private?
-> Can it be quoted?
-> Can it be used for an action?
-> Can it be shared externally?
-> Why was it allowed into the prompt?
-
-Border Agents introduces a deterministic grading layer for retrieved memory.
-
-Vector search retrieves freely.
-
-The grader preserves every result and assigns each one a permitted use.
+> What is this memory allowed to become?
 
 ```text
 Query
@@ -179,20 +154,14 @@ Query
 → Top-k chunks
 → Memory grader
 → Safe Context Frame
-→ Prompt / Agent action
+→ Agent bubble / prompt / action
 ```
 
 No retrieval is lost.
 
 It is graded.
 
----
-
-## Safe Context Frame
-
-A **Safe Context Frame** is the structured ledger produced after retrieval grading.
-
-It preserves the full retrieval result while separating what each chunk is allowed to become.
+A **Safe Context Frame** preserves every retrieved result:
 
 ```json
 {
@@ -204,16 +173,17 @@ It preserves the full retrieval result while separating what each chunk is allow
 }
 ```
 
-This avoids one of the most frustrating debugging failures in AI systems:
+This is what lets Nexus say:
 
-> Did retrieval fail, or did governance silently remove the context?
+```text
+“I found 8 memories. 3 trusted, 2 limited, 2 reference-only, 1 quarantined.”
+```
 
-With Border Agents, the answer is inspectable.
+And lets Veritas say:
 
-The vector result is preserved.
-The authorization grade is visible.
-The reason is logged.
-The next action is obvious.
+```text
+“Only 3 are assertable for this answer.”
+```
 
 ---
 
@@ -221,51 +191,33 @@ The next action is obvious.
 
 In Border Agents, purpose is an authorization contract.
 
-The same memory can receive different grades depending on what the AI is trying to do.
-
-Examples:
+The same memory can be graded differently depending on use:
 
 ```text
-purpose = "summarize_history"
-→ stale or limited material may be included with caveats
-
-purpose = "answer_current_policy"
-→ expired material is downgraded or blocked
-
-purpose = "agent_action"
-→ only action-authorized context may influence execution
-
-purpose = "external_share"
-→ private or sensitive material is blocked unless approved
+summarize_history       → older context may be shown with caveats
+answer_current_policy   → expired policy is downgraded or blocked
+agent_action            → only action-authorized memory may influence execution
+external_share          → private content is blocked unless approved
 ```
 
-A purpose is resolved through deterministic policy.
-
-It is not an arbitrary string.
-It is not a prompt hint.
-It is not a vibe.
-
-It is a contract that controls what retrieved memory may become.
+The user sees this as simple behavior from the agents. The system stores it as receipts.
 
 ---
 
 ## One-click actions
 
-Border Agents turns governance into useful action, not passive warning.
+Border Agents should make the next safe action obvious.
 
-Examples:
+| Situation | Agent action buttons |
+|---|---|
+| Source is expired | Verify source, Open canonical doc, Use as historical only |
+| Claim lacks evidence | Show evidence, Downgrade claim, Remove claim |
+| Sensitive content found | Redact, Request approval, Keep internal-only |
+| Action lacks permission | Request approval, View reason, Find authorized source |
+| Artifact is ready | Package, Hash, Save, Download, Share |
+| Memory conflicts | Compare sources, Prefer canonical, Quarantine |
 
-| Condition                 | Suggested actions                                                |
-| ------------------------- | ---------------------------------------------------------------- |
-| Expired source            | Verify source, open canonical document, use as historical only   |
-| Low authority             | Find canonical source, request review, keep as limited context   |
-| Sensitive content         | Redact, request disclosure approval, use internal-only summary   |
-| Missing action permission | Request approval, find action-authorized source, view derivation |
-| Contradicted memory       | Compare sources, resolve conflict, quarantine                    |
-| Unsupported claim         | Add evidence, downgrade claim, remove claim                      |
-| Ready artifact            | Hash, save, download, share, promote                             |
-
-The interface is designed to make the next safe step obvious.
+The product should feel less like a warning system and more like a set of helpful companions nudging work forward safely.
 
 ---
 
@@ -273,293 +225,82 @@ The interface is designed to make the next safe step obvious.
 
 Border Agents treats AI outputs as creations, not disposable chat messages.
 
-A creation can move through a visible lifecycle:
+A creation can become an artifact with:
 
-```text
-Idea
-→ Draft
-→ Verified
-→ Graded
-→ Packaged
-→ Hashed
-→ Saved
-→ Shared
-→ Promoted
-```
+- content hash
+- version history
+- source receipts
+- claim receipts
+- memory grades
+- author identity
+- timestamps
+- export metadata
 
-Artifacts can include:
-
-* content hash
-* version history
-* source receipts
-* claim receipts
-* memory grades
-* author identity
-* timestamps
-* export metadata
-
-Cryptographic hashes provide integrity, provenance, and authorship evidence.
-
-They prove that a specific artifact existed in a specific form and has not been altered.
-
----
-
-## Custom Border Agents
-
-Border Agents will support custom agents after the Core Patrol is stable.
-
-A custom agent must define:
-
-* the border it guards
-* the events that summon it
-* the actions it may take
-* the tools it may access
-* the policy scope it operates within
-* the receipts it must produce
-
-Example:
-
-```json
-{
-  "id": "legal_review",
-  "name": "Legal Review",
-  "border": "artifact_to_external_share",
-  "edge": "right",
-  "triggers": [
-    "external_share_requested",
-    "contract_language_detected"
-  ],
-  "allowed_actions": [
-    "flag_risk",
-    "request_review",
-    "redact",
-    "attach_receipt"
-  ],
-  "forbidden_actions": [
-    "send_external",
-    "approve_final"
-  ],
-  "requires_policy": true,
-  "receipt_required": true
-}
-```
-
-Custom agents may add inspection, guidance, formatting, or escalation.
-
-They may not bypass governance.
-
----
-
-## Architecture
-
-```text
-Border Agents
-│
-├── Core Patrol
-│   ├── Nexus
-│   ├── Veritas
-│   ├── Forge
-│   ├── Strategos
-│   ├── Nova
-│   ├── Aether
-│   └── Conductor
-│
-├── Governance primitives
-│   ├── MemoryPacket
-│   ├── PurposePolicy
-│   ├── MemoryGrader
-│   ├── SafeContextFrame
-│   ├── PromptRenderer
-│   └── GradeReceipt
-│
-├── Artifact system
-│   ├── ArtifactCard
-│   ├── ArtifactHash
-│   ├── VersionHistory
-│   ├── ExportBundle
-│   └── ShareReceipt
-│
-└── Interface layer
-    ├── BorderDock
-    ├── AgentHead
-    ├── AgentPanel
-    ├── TrustBadge
-    ├── ActionButton
-    └── ReceiptViewer
-```
+Cryptographic hashes provide integrity, provenance, and authorship evidence. They prove that a specific artifact existed in a specific form and has not been altered.
 
 ---
 
 ## Technical stance
 
-Border Agents is deterministic where trust matters.
+The UX can be charming because the trust layer is strict.
 
-* No LLM decides its own authorization.
-* Authority comes from provenance, policy, labels, timestamps, and explicit permission rules.
-* Optional classifiers may suggest metadata, but deterministic policy owns enforcement.
-* Every decision produces a receipt.
-* Every override is logged.
-* Every artifact can be hashed and exported.
-* Every custom agent operates within a declared permission contract.
-
----
-
-## Example flow
-
-A user asks:
-
-> What is the current deployment policy?
-
-The system retrieves five relevant chunks from a vector store.
-
-Nexus appears:
-
-```text
-5 memories retrieved.
-1 trusted.
-1 limited.
-2 reference-only.
-1 blocked.
-```
-
-Veritas appears:
-
-```text
-Only 1 source is authorized for current-policy assertion.
-The limited source is expired.
-The blocked source contains internal-only credentials.
-```
-
-The user can choose:
-
-```text
-Use trusted context only
-Verify expired source
-Open source
-Export receipt
-Ask policy owner
-```
-
-The answer is generated only from context authorized for that purpose.
-
-The full retrieval ledger is preserved.
+- No LLM decides its own authorization.
+- Authority comes from provenance, policy, labels, timestamps, and explicit permission rules.
+- Optional classifiers may suggest metadata, but deterministic policy owns enforcement.
+- Every decision produces a receipt.
+- Every override is logged.
+- Every artifact can be hashed and exported.
+- Every custom agent operates within a declared permission contract.
 
 ---
 
-## Roadmap
+## v0.1 build target
 
-### v0.1 — Core memory grading demo
+The first version should prove the UX and the trust primitive together.
 
-* MemoryPacket schema
-* PurposePolicy schema
-* MemoryGrader
-* SafeContextFrame
-* PromptRenderer
-* Nexus + Veritas prototype panels
-* Same-vector-different-purpose demo
+### Build first
 
-### v0.2 — Artifact lifecycle
+- A border dock with 2-3 animated miniature agents.
+- Nexus and Veritas bubbles.
+- Mock retrieved memories.
+- Memory grading into a Safe Context Frame.
+- Simple artifact card progression.
+- One-click actions: Use trusted only, Show evidence, Verify, Hash, Save.
 
-* Artifact cards
-* Hashing and export bundles
-* Save / download / share flow
-* Receipt viewer
-* Nova packaging panel
+### Do not build yet
 
-### v0.3 — Action and code borders
+- full marketplace
+- real vector integrations
+- multi-user enterprise controls
+- plugin ecosystem
+- payments
+- complex custom-agent runtime
 
-* Forge panel
-* Tool action review
-* File write review
-* Code diff inspection
-* Approval receipts
+The first demo should make someone say:
 
-### v0.4 — Core Patrol workspace
-
-* Full Core Patrol UI
-* BorderDock
-* Agent customization
-* Agent visibility controls
-* Local project workspace
-
-### v1.0 — Custom Border Agents
-
-* Custom agent manifests
-* Signed agent packages
-* Import/export
-* Permission-scoped tools
-* Team policy templates
+> “I understand what my AI found, what it trusted, what it blocked, and what I can do next — and I actually like using it.”
 
 ---
 
-## Who this is for
+## Repository map
 
-### Developers
-
-Use Border Agents to understand what your AI retrieved, what it was allowed to use, what was blocked, and why.
-
-### AI builders
-
-Add purpose-aware governance to RAG, agent workflows, artifact generation, and tool use without replacing your existing stack.
-
-### Teams
-
-Make AI work inspectable, auditable, and easier to approve.
-
-### Creators
-
-Turn AI conversations into verified, packaged, cryptohashed artifacts you can save, download, and share.
-
-### Security and compliance leaders
-
-See what crossed a trust boundary, what was blocked, who approved an override, and what evidence supported each decision.
-
----
-
-## What Border Agents is not
-
-Border Agents is not:
-
-* a model provider
-* a vector database
-* a replacement for your agent framework
-* a generic chatbot skin
-* a mascot layer
-* an output-only guardrail
-* a marketplace of unchecked agents
-
-Border Agents is a visible governance surface for AI work.
-
-It helps decide what may cross from retrieval into context, from context into claim, from plan into action, and from creation into artifact.
-
----
-
-## Status
-
-Early design and prototype planning.
-
-The first build target is the memory grading and Safe Context Frame workflow, surfaced through Nexus and Veritas.
-
-The first demo will show:
-
-```text
-same vector results
-+ different purposes
-= different authorized context frames
-```
-
-That is the core product proof.
+- [`AGENTS.md`](AGENTS.md) — instructions for AI coding assistants
+- [`docs/UX.md`](docs/UX.md) — UX-first product specification
+- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — governance architecture
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — staged build plan
+- [`docs/CORE_PATROL.md`](docs/CORE_PATROL.md) — default agents
+- [`docs/SPEC_MEMORY_GRADING.md`](docs/SPEC_MEMORY_GRADING.md) — first governance primitive
 
 ---
 
 ## Core line
 
-> **Border Agents make AI trust boundaries visible, clickable, and governable.**
+> **Border Agents make AI work visible at the edge of your screen.**
 
-## Shorter line
+## Product line
 
-> **AI work crosses borders. Border Agents decide what may pass.**
+> **Friendly miniature agents that surface what your AI found, what it trusted, what it blocked, and what you can do next.**
 
-## Deepest line
+## Governance line
 
 > **A system can possess knowledge without being authorized to act upon it.**

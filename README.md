@@ -73,9 +73,9 @@ Users eventually create their own Border Agents with custom appearance, voice, t
 
 ## The agents are the product
 
-Border Agents are not decorative mascots pasted onto a serious tool.
+Border Agents are delightful characters first — and every delightful moment is backed by real capability.
 
-They are the primary interface.
+They are companions with jobs: small, expressive presences that make AI work easier to understand, trust, and continue.
 
 The governance engine exists to make the agents trustworthy. The agents exist to make governance feel natural, fast, and pleasant.
 

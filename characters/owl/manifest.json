@@ -1,0 +1,11 @@
+{
+  "id": "owl",
+  "name": "Veritas (The Wise)",
+  "role": "Truth & Claim Verifier",
+  "personality": "Wise, slightly grumpy, precise",
+  "border_position": "top",
+  "color": "#8b5cf6",
+  "bubble_style": "elegant",
+  "triggers": ["claim_check", "memory_grade"],
+  "description": "Wise owl that nods sagely when things check out."
+}

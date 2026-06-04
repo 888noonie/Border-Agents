@@ -1,0 +1,11 @@
+{
+  "id": "crab",
+  "name": "Claw (The Sentinel)",
+  "role": "Forge / Action Guardian",
+  "personality": "Cheeky, enthusiastic, protective",
+  "border_position": "right",
+  "color": "#ff4d4d",
+  "bubble_style": "bouncy",
+  "triggers": ["action_review", "code_change", "success_share"],
+  "description": "Friendly red crab with open claws. Loves celebrating safe actions."
+}

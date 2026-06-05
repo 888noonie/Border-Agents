@@ -23,12 +23,22 @@ import {
   BUDDY_MEMORY_LABELS,
   BUDDY_PROFILES,
   BUDDY_PROVIDER_LABELS,
+  buddyHasGateway,
   type BuddyMemoryMode,
   type BuddyProvider,
   type BuddySettings,
   createDefaultBuddySettings,
   normalizeBuddySettings,
 } from "../src/buddyProfiles";
+import type { GatewayConnectionState } from "../src/gatewayProtocol";
+import {
+  DEFAULT_GATEWAY_SETTINGS,
+  GATEWAY_SETTINGS_STORAGE_KEY,
+  loadStoredGatewaySettings,
+  normalizeGatewaySettings,
+  type GatewaySettings,
+} from "../src/gatewaySettings";
+import { connectionLabelForState, useBuddyGateway } from "../src/useBuddyGateway";
 import {
   createHealReport,
   DOCK_RECOVER_SHORTCUT,
@@ -418,6 +428,12 @@ export function BorderDock() {
   const [dockSettings, setDockSettings] = useState<DockSettings>(() =>
     loadStoredDockSettings(DEFAULT_DOCK_SETTINGS),
   );
+  const [gatewaySettings, setGatewaySettings] = useState<GatewaySettings>(() =>
+    loadStoredGatewaySettings(DEFAULT_GATEWAY_SETTINGS),
+  );
+  const [buddyMessages, setBuddyMessages] = useState<Record<string, string>>(() =>
+    Object.fromEntries(buddies.map((buddy) => [buddy.id, buddy.message ?? ""])),
+  );
   const placementsRef = useRef<AgentPlacements>(placements);
   const dragStartedAtRef = useRef<number | null>(null);
   const overlayDragActiveRef = useRef(false);
@@ -463,6 +479,25 @@ export function BorderDock() {
     }
   }, [browserPreview, unifiedDock]);
   const effectiveRenderMode = unifiedDock ? dockRenderMode : FULL_RENDER_MODE;
+  const gatewayEnabled = useMemo(() => {
+    try {
+      return getCurrentWebviewWindow().label === "border-dock" || getCurrentWindow().label === "border-dock";
+    } catch {
+      return false;
+    }
+  }, []);
+  const gateway = useBuddyGateway({
+    settings: gatewaySettings,
+    source: "border-dock",
+    enabled: gatewayEnabled,
+    onBubble: (buddyId, text) => {
+      setBuddyMessages((current) => ({
+        ...current,
+        [buddyId]: text,
+      }));
+      setActiveAgentId(buddyId);
+    },
+  });
   const windowBuddyPlacement = windowBuddy
     ? placements[windowBuddy.id] ?? defaultPlacements[windowBuddy.id]
     : null;
@@ -583,6 +618,29 @@ export function BorderDock() {
   useEffect(() => {
     localStorage.setItem(DOCK_SETTINGS_STORAGE_KEY, JSON.stringify(dockSettings));
   }, [dockSettings]);
+
+  useEffect(() => {
+    localStorage.setItem(GATEWAY_SETTINGS_STORAGE_KEY, JSON.stringify(gatewaySettings));
+  }, [gatewaySettings]);
+
+  useEffect(() => {
+    setBuddySettings((current) => {
+      const hermesSettings = current.hermes;
+      const nextLabel = connectionLabelForState(gateway.state);
+
+      if (!hermesSettings || hermesSettings.connectionLabel === nextLabel) {
+        return current;
+      }
+
+      return {
+        ...current,
+        hermes: {
+          ...hermesSettings,
+          connectionLabel: nextLabel,
+        },
+      };
+    });
+  }, [gateway.state]);
 
   useEffect(() => {
     if (dockCollapsed) {
@@ -1181,37 +1239,55 @@ export function BorderDock() {
           />
         ) : null}
         {!dockCollapsed
-          ? visibleBuddies.map((buddy) => (
-              <BuddyHotspot
-                buddy={buddy}
-                active={buddy.id === activeAgentId}
-                collapsed={dockCollapsed}
-                dragging={buddy.id === draggingAgentId}
-                key={buddy.id}
-                onDragEnd={finishBuddyDrag}
-                onDragMove={moveBuddy}
-                onDragStart={(event) => startBuddyDrag(buddy, event)}
-                onActivate={() => setActiveAgentId(buddy.id)}
-                onDeactivate={() => {
-                  if (activeAgentId === buddy.id) {
-                    setActiveAgentId("");
+          ? visibleBuddies.map((buddy) => {
+              const profile = BUDDY_PROFILES[buddy.id];
+              const hasGateway = profile ? buddyHasGateway(profile) : false;
+
+              return (
+                <BuddyHotspot
+                  buddy={{
+                    ...buddy,
+                    message: buddyMessages[buddy.id] ?? buddy.message,
+                  }}
+                  active={buddy.id === activeAgentId}
+                  collapsed={dockCollapsed}
+                  dragging={buddy.id === draggingAgentId}
+                  gatewayAutoConnect={gatewaySettings.autoConnect}
+                  gatewayBusy={hasGateway ? gateway.busy : false}
+                  gatewayDetail={hasGateway ? gateway.detail : null}
+                  gatewayState={hasGateway ? gateway.state : "idle"}
+                  gatewayUrl={gatewaySettings.url}
+                  hasGateway={hasGateway}
+                  key={buddy.id}
+                  onDragEnd={finishBuddyDrag}
+                  onDragMove={moveBuddy}
+                  onDragStart={(event) => startBuddyDrag(buddy, event)}
+                  onActivate={() => setActiveAgentId(buddy.id)}
+                  onDeactivate={() => {
+                    if (activeAgentId === buddy.id) {
+                      setActiveAgentId("");
+                    }
+                  }}
+                  onGatewayConnect={gateway.connect}
+                  onGatewayDisconnect={gateway.disconnect}
+                  onGatewaySettingsChange={setGatewaySettings}
+                  onManualTuck={() => tuckBuddy(buddy.id)}
+                  onClearHitboxes={() => clearBuddyHitboxes(buddy.id)}
+                  onReportHitboxes={(boxes) => reportHitboxes(buddy.id, boxes)}
+                  onSendChat={(text) => gateway.sendChat(buddy.id, text)}
+                  perBuddyWindow={perBuddyWindow}
+                  placement={placements[buddy.id] ?? defaultPlacements[buddy.id]}
+                  renderMode={effectiveRenderMode}
+                  settings={buddySettings[buddy.id] ?? defaultBuddySettings[buddy.id]}
+                  onSettingsChange={(settings) =>
+                    setBuddySettings((current) => ({
+                      ...current,
+                      [buddy.id]: normalizeBuddySettings(BUDDY_PROFILES[buddy.id], settings),
+                    }))
                   }
-                }}
-                onManualTuck={() => tuckBuddy(buddy.id)}
-                onClearHitboxes={() => clearBuddyHitboxes(buddy.id)}
-                onReportHitboxes={(boxes) => reportHitboxes(buddy.id, boxes)}
-                perBuddyWindow={perBuddyWindow}
-                placement={placements[buddy.id] ?? defaultPlacements[buddy.id]}
-                renderMode={effectiveRenderMode}
-                settings={buddySettings[buddy.id] ?? defaultBuddySettings[buddy.id]}
-                onSettingsChange={(settings) =>
-                  setBuddySettings((current) => ({
-                    ...current,
-                    [buddy.id]: normalizeBuddySettings(BUDDY_PROFILES[buddy.id], settings),
-                  }))
-                }
-              />
-            ))
+                />
+              );
+            })
           : null}
       </div>
     </main>
@@ -1353,13 +1429,23 @@ function BuddyHotspot({
   buddy,
   collapsed,
   dragging,
+  gatewayAutoConnect,
+  gatewayBusy,
+  gatewayDetail,
+  gatewayState,
+  gatewayUrl,
+  hasGateway,
   onClearHitboxes,
   onDragEnd,
   onDragMove,
   onDragStart,
   onActivate,
   onDeactivate,
+  onGatewayConnect,
+  onGatewayDisconnect,
+  onGatewaySettingsChange,
   onReportHitboxes,
+  onSendChat,
   perBuddyWindow,
   placement,
   onManualTuck,
@@ -1371,13 +1457,23 @@ function BuddyHotspot({
   buddy: DockBuddy;
   collapsed: boolean;
   dragging: boolean;
+  gatewayAutoConnect: boolean;
+  gatewayBusy: boolean;
+  gatewayDetail: string | null;
+  gatewayState: GatewayConnectionState;
+  gatewayUrl: string;
+  hasGateway: boolean;
   onClearHitboxes: () => void;
   onDragEnd: () => void;
   onDragMove: (event: ReactPointerEvent<HTMLElement>) => void;
   onDragStart: (event: ReactPointerEvent<HTMLElement>) => void;
   onActivate: () => void;
   onDeactivate: () => void;
+  onGatewayConnect: () => void;
+  onGatewayDisconnect: () => void;
+  onGatewaySettingsChange: (settings: GatewaySettings) => void;
   onReportHitboxes: (boxes: Hitbox[]) => void;
+  onSendChat: (text: string) => void;
   perBuddyWindow: boolean;
   placement: AgentPlacement;
   onManualTuck: () => void;
@@ -1406,7 +1502,10 @@ function BuddyHotspot({
 
   const showHead = renderMode !== "bubble";
   const showBubble =
-    renderMode !== "head" && active && buddy.message && placement.state === "tucked";
+    renderMode !== "head" &&
+    active &&
+    placement.state === "tucked" &&
+    (Boolean(buddy.message) || hasGateway);
   const isBubbleVisible = showBubble;
   const freeX = placement.state === "free" ? placement.x : null;
   const freeY = placement.state === "free" ? placement.y : null;
@@ -1509,6 +1608,16 @@ function BuddyHotspot({
         <SpeechBubble
           buddy={buddy}
           edge={edge}
+          gatewayAutoConnect={gatewayAutoConnect}
+          gatewayBusy={gatewayBusy}
+          gatewayDetail={gatewayDetail}
+          gatewayState={gatewayState}
+          gatewayUrl={gatewayUrl}
+          hasGateway={hasGateway}
+          onGatewayConnect={onGatewayConnect}
+          onGatewayDisconnect={onGatewayDisconnect}
+          onGatewaySettingsChange={onGatewaySettingsChange}
+          onSendChat={onSendChat}
           onSettingsChange={onSettingsChange}
           onSettingsToggle={() => setSettingsOpen((open) => !open)}
           ref={bubbleRef}
@@ -1542,20 +1651,60 @@ const SpeechBubble = forwardRef<
   {
     buddy: DockBuddy;
     edge: Edge;
+    gatewayAutoConnect: boolean;
+    gatewayBusy: boolean;
+    gatewayDetail: string | null;
+    gatewayState: GatewayConnectionState;
+    gatewayUrl: string;
+    hasGateway: boolean;
+    onGatewayConnect: () => void;
+    onGatewayDisconnect: () => void;
+    onGatewaySettingsChange: (settings: GatewaySettings) => void;
+    onSendChat: (text: string) => void;
     settings: BuddySettings;
     settingsOpen: boolean;
     onSettingsToggle: () => void;
     onSettingsChange: (settings: BuddySettings) => void;
   }
 >(
-  ({ buddy, edge, settings, settingsOpen, onSettingsToggle, onSettingsChange }, ref) => {
+  (
+    {
+      buddy,
+      edge,
+      gatewayAutoConnect,
+      gatewayBusy,
+      gatewayDetail,
+      gatewayState,
+      gatewayUrl,
+      hasGateway,
+      onGatewayConnect,
+      onGatewayDisconnect,
+      onGatewaySettingsChange,
+      onSendChat,
+      settings,
+      settingsOpen,
+      onSettingsToggle,
+      onSettingsChange,
+    },
+    ref,
+  ) => {
     const [draft, setDraft] = useState("");
     const profile = BUDDY_PROFILES[buddy.id];
     const providerLabel = BUDDY_PROVIDER_LABELS[settings.provider];
     const memoryLabel = BUDDY_MEMORY_LABELS[settings.memoryMode];
-    const statusText = settings.allowAction
-      ? "Action requests still require policy receipts."
-      : "Action authority is off.";
+    const gatewayOnline = gatewayState === "connected";
+    const statusText = gatewayBusy
+      ? "Hermes is thinking…"
+      : settings.allowAction
+        ? "Action requests still require policy receipts."
+        : "Action authority is off.";
+    const bubbleMessage =
+      buddy.message ||
+      (hasGateway
+        ? gatewayOnline
+          ? "Gateway link is live. Ask me anything."
+          : "Connect to the Hermes gateway to start chatting."
+        : "");
 
     function updateSettings(patch: Partial<BuddySettings>) {
       onSettingsChange({
@@ -1566,6 +1715,18 @@ const SpeechBubble = forwardRef<
 
     function handleSubmit(event: FormEvent<HTMLFormElement>) {
       event.preventDefault();
+      const trimmed = draft.trim();
+
+      if (!trimmed) {
+        return;
+      }
+
+      if (hasGateway) {
+        onSendChat(trimmed);
+        setDraft("");
+        return;
+      }
+
       setDraft("");
     }
 
@@ -1598,16 +1759,52 @@ const SpeechBubble = forwardRef<
             Set
           </button>
         </div>
-        <p className="speech-bubble__message">{buddy.message}</p>
+        <p className="speech-bubble__message">{bubbleMessage}</p>
+        {hasGateway ? (
+          <div
+            className={[
+              "speech-bubble__gateway",
+              `speech-bubble__gateway--${gatewayState}`,
+            ].join(" ")}
+          >
+            <span className="speech-bubble__gateway-status">
+              {connectionLabelForState(gatewayState)}
+            </span>
+            {gatewayDetail ? (
+              <span className="speech-bubble__gateway-detail">{gatewayDetail}</span>
+            ) : null}
+            <div className="speech-bubble__gateway-actions">
+              {gatewayOnline ? (
+                <button type="button" onClick={onGatewayDisconnect}>
+                  Disconnect
+                </button>
+              ) : (
+                <button type="button" onClick={onGatewayConnect}>
+                  Connect
+                </button>
+              )}
+            </div>
+          </div>
+        ) : null}
         <form className="speech-bubble__composer" onSubmit={handleSubmit}>
           <input
             type="text"
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
-            placeholder={`Ask ${buddy.shortName}`}
+            placeholder={
+              hasGateway && !gatewayOnline
+                ? `Connect ${buddy.shortName} first`
+                : `Ask ${buddy.shortName}`
+            }
             aria-label={`Ask ${buddy.shortName}`}
+            disabled={hasGateway ? !gatewayOnline || gatewayBusy : false}
           />
-          <button type="submit" title="Record intent" aria-label="Record intent">
+          <button
+            type="submit"
+            title="Send to Hermes"
+            aria-label="Send to Hermes"
+            disabled={hasGateway ? !gatewayOnline || gatewayBusy : false}
+          >
             Go
           </button>
         </form>
@@ -1668,6 +1865,40 @@ const SpeechBubble = forwardRef<
                 onChange={(event) => updateSettings({ allowExternalShare: event.target.checked })}
               />
             </label>
+            {hasGateway ? (
+              <>
+                <label>
+                  <span>Gateway URL</span>
+                  <input
+                    type="url"
+                    value={gatewayUrl}
+                    onChange={(event) =>
+                      onGatewaySettingsChange(
+                        normalizeGatewaySettings({
+                          url: event.target.value,
+                          autoConnect: gatewayAutoConnect,
+                        }),
+                      )
+                    }
+                  />
+                </label>
+                <label className="speech-bubble__check">
+                  <span>Auto-connect</span>
+                  <input
+                    type="checkbox"
+                    checked={gatewayAutoConnect}
+                    onChange={(event) =>
+                      onGatewaySettingsChange(
+                        normalizeGatewaySettings({
+                          url: gatewayUrl,
+                          autoConnect: event.target.checked,
+                        }),
+                      )
+                    }
+                  />
+                </label>
+              </>
+            ) : null}
             <p>{profile.identity.ownerLabel} connection: {settings.connectionLabel}</p>
           </div>
         ) : null}

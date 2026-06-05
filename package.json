@@ -9,6 +9,7 @@
     "desktop:build": "tauri build",
     "build": "tsc && vite build",
     "preview": "vite preview --host 127.0.0.1 --port 1420",
+    "gateway:dev": "node scripts/gateway-dev.mjs",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -23,6 +24,7 @@
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
     "typescript": "^5.7.2",
-    "vite": "^6.0.5"
+    "vite": "^6.0.5",
+    "ws": "^8.18.3"
   }
 }

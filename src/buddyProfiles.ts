@@ -188,6 +188,10 @@ export const BUDDY_PROFILES: Record<string, BuddyProfile> = {
   },
 };
 
+export function buddyHasGateway(profile: BuddyProfile): boolean {
+  return profile.identity.id === "hermes";
+}
+
 export function createDefaultBuddySettings(profile: BuddyProfile): BuddySettings {
   return {
     enabled: true,

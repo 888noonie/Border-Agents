@@ -156,8 +156,7 @@
 .bb-speech-bubble {
   position: fixed;
   z-index: calc(var(--bb-z-index) + 2);
-  display: flex;
-  align-items: center;
+  display: grid;
   gap: 7px;
   max-width: min(380px, calc(100vw - 56px));
   padding: 10px 12px;
@@ -168,7 +167,7 @@
   color: #182033;
   font-size: 13px;
   line-height: 1.25;
-  white-space: nowrap;
+  white-space: normal;
   pointer-events: auto;
 }
 
@@ -180,6 +179,24 @@
   color: #174de0;
 }
 
+.bb-speech-bubble__header,
+.bb-speech-bubble__meta,
+.bb-speech-bubble__composer,
+.bb-speech-bubble__settings label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.bb-speech-bubble__message,
+.bb-speech-bubble__status {
+  margin: 0;
+}
+
+.bb-speech-bubble__message {
+  color: #34435a;
+}
+
 .bb-speech-bubble__owner {
   border-radius: 999px;
   padding: 2px 7px;
@@ -187,6 +204,95 @@
   color: #174de0;
   font-size: 11px;
   font-weight: 760;
+}
+
+.bb-speech-bubble__icon-button,
+.bb-speech-bubble__composer button,
+.bb-speech-bubble__meta button {
+  border: 1px solid rgb(188 203 222 / 0.8);
+  border-radius: 999px;
+  background: rgb(248 251 255 / 0.94);
+  color: #182033;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 760;
+}
+
+.bb-speech-bubble__icon-button {
+  margin-left: auto;
+  padding: 2px 8px;
+}
+
+.bb-speech-bubble__composer input,
+.bb-speech-bubble__settings input,
+.bb-speech-bubble__settings select {
+  min-width: 0;
+  border: 1px solid rgb(188 203 222 / 0.86);
+  border-radius: 10px;
+  background: white;
+  color: #182033;
+  font: inherit;
+}
+
+.bb-speech-bubble__composer input {
+  flex: 1 1 auto;
+  width: 100%;
+  padding: 7px 8px;
+}
+
+.bb-speech-bubble__composer button {
+  padding: 7px 9px;
+}
+
+.bb-speech-bubble__meta {
+  justify-content: space-between;
+  color: #64748b;
+  font-size: 11px;
+}
+
+.bb-speech-bubble__meta button {
+  overflow: hidden;
+  max-width: 150px;
+  padding: 3px 8px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bb-speech-bubble__settings {
+  display: grid;
+  gap: 7px;
+  padding-top: 7px;
+  border-top: 1px solid #dce8f4;
+}
+
+.bb-speech-bubble__settings label {
+  justify-content: space-between;
+}
+
+.bb-speech-bubble__settings label > span {
+  flex: 0 0 auto;
+  color: #52627a;
+  font-size: 11px;
+  font-weight: 760;
+}
+
+.bb-speech-bubble__settings input:not([type="checkbox"]),
+.bb-speech-bubble__settings select {
+  flex: 1 1 auto;
+  width: 160px;
+  padding: 6px 8px;
+}
+
+.bb-speech-bubble__check input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--bb-color);
+}
+
+.bb-speech-bubble__status {
+  color: #66758c;
+  font-size: 11px;
 }
 
 .bb-speech-bubble::after {

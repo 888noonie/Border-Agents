@@ -90,6 +90,30 @@
         color: #174de0;
       }
 
+      .field-stack {
+        display: grid;
+        gap: 8px;
+        margin-top: 10px;
+      }
+
+      .field-stack span {
+        color: #637083;
+        font-size: 11px;
+        font-weight: 720;
+      }
+
+      select,
+      input[type="text"] {
+        box-sizing: border-box;
+        width: 100%;
+        border: 1px solid #cbddec;
+        border-radius: 10px;
+        padding: 9px 10px;
+        color: #182033;
+        font: inherit;
+        font-size: 12px;
+      }
+
       .status {
         min-height: 18px;
         margin-top: 10px;
@@ -114,6 +138,22 @@
           Show Hermes
           <input id="hermesEnabled" type="checkbox" />
         </label>
+        <div class="field-stack">
+          <span>Platform</span>
+          <select id="provider"></select>
+          <span>Model</span>
+          <input id="modelLabel" type="text" />
+          <span>Memory</span>
+          <select id="memoryMode"></select>
+        </div>
+        <label>
+          Agent action
+          <input id="allowAction" type="checkbox" />
+        </label>
+        <label>
+          External share
+          <input id="allowExternalShare" type="checkbox" />
+        </label>
       </div>
 
       <label>
@@ -126,6 +166,7 @@
       <button id="showHermes" type="button">Summon Hermes</button>
       <div class="status" id="status"></div>
     </main>
+    <script src="profiles.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

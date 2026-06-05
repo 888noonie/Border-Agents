@@ -1,4 +1,7 @@
 const SETTINGS_KEY = "border-buddies:settings:v1";
+importScripts("profiles.js");
+
+const profile = self.BorderBuddiesProfiles.profiles.hermes;
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.get([SETTINGS_KEY], (stored) => {
@@ -7,12 +10,7 @@ chrome.runtime.onInstalled.addListener(() => {
     }
 
     chrome.storage.local.set({
-      [SETTINGS_KEY]: {
-        enabled: true,
-        hermesEnabled: true,
-        websocketSync: false,
-        websocketUrl: "ws://127.0.0.1:17387/border-buddies",
-      },
+      [SETTINGS_KEY]: self.BorderBuddiesProfiles.createDefaultSettings(profile),
     });
   });
 });

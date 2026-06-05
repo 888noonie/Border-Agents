@@ -114,6 +114,7 @@ const BUDDY_WINDOWS: &[BuddyWindowSpec] = &[
         slot: 0.68,
     },
 ];
+const DEFAULT_BUDDY_IDS: &[&str] = &["hermes"];
 
 const DOCK_ZONES: &[DockZone] = &[
     DockZone {
@@ -254,6 +255,16 @@ fn configure_buddy_window(
     })
 }
 
+#[tauri::command]
+fn current_buddy_id(window: WebviewWindow) -> Option<String> {
+    let label = window.label();
+
+    BUDDY_WINDOWS
+        .iter()
+        .find(|spec| spec.label == label)
+        .map(|spec| spec.id.to_string())
+}
+
 #[derive(serde::Deserialize, Clone, Debug)]
 struct Hitbox {
     x: i32,
@@ -361,7 +372,13 @@ fn create_buddy_windows(app: &AppHandle) -> Result<(), String> {
         .next()
         .ok_or_else(|| "No active monitor selected for Border Buddies".to_string())?;
 
+    let enabled_buddy_ids = enabled_buddy_ids();
+
     for spec in BUDDY_WINDOWS {
+        if !enabled_buddy_ids.iter().any(|buddy_id| *buddy_id == spec.id) {
+            continue;
+        }
+
         if app.get_webview_window(spec.label).is_some() {
             continue;
         }
@@ -385,7 +402,8 @@ fn create_buddy_windows(app: &AppHandle) -> Result<(), String> {
         .minimizable(false)
         .shadow(false)
         .focused(false)
-        .focusable(false)
+        .focusable(true)
+        .disable_drag_drop_handler()
         .visible(true)
         .build()
         .map_err(|error| error.to_string())?;
@@ -394,6 +412,29 @@ fn create_buddy_windows(app: &AppHandle) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn enabled_buddy_ids() -> Vec<&'static str> {
+    let Ok(value) = std::env::var("BORDER_BUDDIES") else {
+        return DEFAULT_BUDDY_IDS.to_vec();
+    };
+
+    let selected = value
+        .split(',')
+        .filter_map(|candidate| {
+            let candidate = candidate.trim();
+            BUDDY_WINDOWS
+                .iter()
+                .find(|spec| spec.id == candidate)
+                .map(|spec| spec.id)
+        })
+        .collect::<Vec<_>>();
+
+    if selected.is_empty() {
+        DEFAULT_BUDDY_IDS.to_vec()
+    } else {
+        selected
+    }
 }
 
 fn configure_overlay_window(window: &WebviewWindow) -> Result<(), String> {
@@ -486,18 +527,11 @@ fn calculate_bounds(monitors: &[MonitorFrame]) -> Result<DockBounds, String> {
     })
 }
 
-/// Returns the fixed (width, height) envelope for a buddy window on the given
-/// edge. This is the maximum size the window will ever need, so it never has
-/// to be resized — eliminating the compositor ghosting that transparent window
-/// resizes cause on Linux.
-fn calculate_buddy_envelope(edge: &str) -> (u32, u32) {
-    match edge {
-        // Keep the fixed native windows small; the input shape handles click-through
-        // inside this compact envelope.
-        "right" | "left" => (320, 150),
-        "top" | "bottom" => (300, 150),
-        _ => (320, 150),
-    }
+/// Returns the fixed (width, height) envelope for a buddy control window. The
+/// panel is wide enough for the speech bubble and tall enough for the expanded
+/// settings controls, while still relying on the input shape for click-through.
+fn calculate_buddy_envelope(_edge: &str) -> (u32, u32) {
+    (384, 392)
 }
 
 fn calculate_buddy_window_bounds(
@@ -617,6 +651,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             configure_border_dock,
             configure_buddy_window,
+            current_buddy_id,
             snap_buddy_window,
             set_buddy_window_interactive,
             set_input_hitboxes

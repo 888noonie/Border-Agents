@@ -1,5 +1,7 @@
 import {
   type CSSProperties,
+  type ChangeEvent,
+  type FormEvent,
   type PointerEvent as ReactPointerEvent,
   useEffect,
   forwardRef,
@@ -10,11 +12,22 @@ import {
   useCallback,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import clawManifest from "../characters/crab/manifest.json";
 import hermesManifest from "../characters/hermes/manifest.json";
 import owlManifest from "../characters/owl/manifest.json";
+import {
+  BUDDY_MEMORY_LABELS,
+  BUDDY_PROFILES,
+  BUDDY_PROVIDER_LABELS,
+  type BuddyMemoryMode,
+  type BuddyProvider,
+  type BuddySettings,
+  createDefaultBuddySettings,
+  normalizeBuddySettings,
+} from "../src/buddyProfiles";
 import "./BorderDock.css";
 
 export interface Hitbox {
@@ -125,6 +138,7 @@ type AgentPlacement =
 
 type FreeAgentPlacement = Extract<AgentPlacement, { state: "free" }>;
 type AgentPlacements = Record<string, AgentPlacement>;
+type BuddySettingsMap = Record<string, BuddySettings>;
 
 type ActiveDrag = {
   agentId: string;
@@ -142,7 +156,10 @@ const INITIAL_LAYOUT: DockLayout = {
 const FREE_AGENT_SIZE = 118;
 const FREE_AGENT_MARGIN = 16;
 const SNAP_DISTANCE = 96;
-const PLACEMENT_STORAGE_KEY = "border-buddies:placements:v3";
+const PLACEMENT_STORAGE_KEY = "border-buddies:placements:v4";
+const SETTINGS_STORAGE_KEY = "border-buddies:settings:v2";
+const HIDDEN_NATIVE_WINDOW_ID = "__native_hidden__";
+const DEFAULT_BORDER_BUDDY_ID = "hermes";
 const PASS_THROUGH_SHORTCUT = "CommandOrControl+Alt+B";
 const IDLE_FADE_DELAY = 5600;
 const IDLE_CLICK_THROUGH_PULSE = 900;
@@ -227,6 +244,11 @@ const defaultPlacements = buddies.reduce<AgentPlacements>((placements, buddy) =>
   return placements;
 }, {});
 
+const defaultBuddySettings = buddies.reduce<BuddySettingsMap>((settings, buddy) => {
+  settings[buddy.id] = createDefaultBuddySettings(BUDDY_PROFILES[buddy.id]);
+  return settings;
+}, {});
+
 async function setDockInputEnabled(enabled: boolean) {
   try {
     await getCurrentWindow().setIgnoreCursorEvents(!enabled);
@@ -241,21 +263,29 @@ export function BorderDock() {
   const clickThroughRef = useRef(false);
   const idleTimerRef = useRef<number | null>(null);
   const nativeMoveSnapTimerRef = useRef<number | null>(null);
+  const initialWindowBuddyId = useMemo(getCurrentBuddyIdFromUrl, []);
+  const [windowBuddyId, setWindowBuddyId] = useState<string | null | undefined>(
+    initialWindowBuddyId ?? undefined,
+  );
   const [layout, setLayout] = useState<DockLayout>(INITIAL_LAYOUT);
-  const [activeAgentId, setActiveAgentId] = useState("hermes");
+  const [activeAgentId, setActiveAgentId] = useState(initialWindowBuddyId ?? DEFAULT_BORDER_BUDDY_ID);
   const [draggingAgentId, setDraggingAgentId] = useState<string | null>(null);
   const [clickThrough, setClickThrough] = useState(false);
   const [idle, setIdle] = useState(false);
   const [placements, setPlacements] = useState<AgentPlacements>(() =>
     loadStoredPlacements(defaultPlacements),
   );
+  const [buddySettings, setBuddySettings] = useState<BuddySettingsMap>(() =>
+    loadStoredBuddySettings(defaultBuddySettings),
+  );
   const placementsRef = useRef<AgentPlacements>(placements);
 
-  const windowBuddyId = useMemo(() => new URLSearchParams(window.location.search).get("buddy"), []);
   const windowBuddy = useMemo(
     () => buddies.find((buddy) => buddy.id === windowBuddyId) ?? null,
     [windowBuddyId],
   );
+  const resolvingWindowBuddy = windowBuddyId === undefined;
+  const hiddenNativeWindow = windowBuddyId === HIDDEN_NATIVE_WINDOW_ID;
   const perBuddyWindow = Boolean(windowBuddy);
   const visibleBuddies = windowBuddy ? [windowBuddy] : buddies;
   const multiMonitor = useMemo(
@@ -277,9 +307,41 @@ export function BorderDock() {
   }, [placements]);
 
   useEffect(() => {
+    if (windowBuddyId !== undefined) {
+      return;
+    }
+
+    let mounted = true;
+
+    async function resolveWindowBuddyId() {
+      const buddyId = await getCurrentBuddyId();
+
+      if (mounted) {
+        setWindowBuddyId(buddyId);
+      }
+    }
+
+    resolveWindowBuddyId();
+
+    return () => {
+      mounted = false;
+    };
+  }, [windowBuddyId]);
+
+  useEffect(() => {
+    if (windowBuddy) {
+      setActiveAgentId(windowBuddy.id);
+    }
+  }, [windowBuddy]);
+
+  useEffect(() => {
     let mounted = true;
 
     async function configureWindow() {
+      if (resolvingWindowBuddy || hiddenNativeWindow) {
+        return;
+      }
+
       await setDockInputEnabled(true);
 
       try {
@@ -331,6 +393,8 @@ export function BorderDock() {
     };
   }, [
     multiMonitor,
+    hiddenNativeWindow,
+    resolvingWindowBuddy,
     windowBuddy,
     windowBuddyPlacement?.edge,
     windowBuddyPlacement?.state,
@@ -340,6 +404,10 @@ export function BorderDock() {
   useEffect(() => {
     localStorage.setItem(PLACEMENT_STORAGE_KEY, JSON.stringify(placements));
   }, [placements]);
+
+  useEffect(() => {
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(buddySettings));
+  }, [buddySettings]);
 
   useEffect(() => {
     async function registerPassThroughShortcut() {
@@ -676,6 +744,10 @@ export function BorderDock() {
     });
   }
 
+  if (resolvingWindowBuddy || hiddenNativeWindow) {
+    return null;
+  }
+
   return (
     <main
       className={[
@@ -714,6 +786,13 @@ export function BorderDock() {
             onActivate={() => setActiveAgentId(buddy.id)}
             onManualTuck={() => tuckBuddy(buddy.id)}
             placement={placements[buddy.id] ?? defaultPlacements[buddy.id]}
+            settings={buddySettings[buddy.id] ?? defaultBuddySettings[buddy.id]}
+            onSettingsChange={(settings) =>
+              setBuddySettings((current) => ({
+                ...current,
+                [buddy.id]: normalizeBuddySettings(BUDDY_PROFILES[buddy.id], settings),
+              }))
+            }
           />
         ))}
       </div>
@@ -806,6 +885,8 @@ function BuddyHotspot({
   onActivate,
   placement,
   onManualTuck,
+  settings,
+  onSettingsChange,
 }: {
   active: boolean;
   buddy: DockBuddy;
@@ -816,6 +897,8 @@ function BuddyHotspot({
   onActivate: () => void;
   placement: AgentPlacement;
   onManualTuck: () => void;
+  settings: BuddySettings;
+  onSettingsChange: (settings: BuddySettings) => void;
 }) {
   const edge = placement.edge;
   const style = {
@@ -833,6 +916,7 @@ function BuddyHotspot({
   const headRef = useRef<HTMLButtonElement>(null);
   const bubbleRef = useRef<HTMLDivElement>(null);
   const { setHitboxes } = useBuddyHitbox();
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const isBubbleVisible = active && buddy.message && placement.state === "tucked";
   const freeX = placement.state === "free" ? placement.x : null;
@@ -840,6 +924,19 @@ function BuddyHotspot({
 
   useLayoutEffect(() => {
     const boxes: Hitbox[] = [];
+
+    if (settingsOpen && isBubbleVisible && bubbleRef.current) {
+      const r = bubbleRef.current.getBoundingClientRect();
+      setHitboxes([
+        {
+          x: Math.max(0, Math.round(r.left) - 8),
+          y: Math.max(0, Math.round(r.top) - 8),
+          w: Math.min(window.innerWidth, Math.round(r.width) + 16),
+          h: Math.min(window.innerHeight, Math.round(r.height) + 16),
+        },
+      ]);
+      return;
+    }
 
     if (headRef.current) {
       const r = headRef.current.getBoundingClientRect();
@@ -862,7 +959,7 @@ function BuddyHotspot({
     }
 
     setHitboxes(boxes);
-  }, [placement.state, freeX, freeY, isBubbleVisible, setHitboxes]);
+  }, [placement.state, freeX, freeY, isBubbleVisible, settingsOpen, setHitboxes]);
 
   return (
     <section
@@ -885,7 +982,15 @@ function BuddyHotspot({
       onDoubleClick={onManualTuck}
     >
       {isBubbleVisible ? (
-        <SpeechBubble buddy={buddy} edge={edge} ref={bubbleRef} />
+        <SpeechBubble
+          buddy={buddy}
+          edge={edge}
+          onSettingsChange={onSettingsChange}
+          onSettingsToggle={() => setSettingsOpen((open) => !open)}
+          ref={bubbleRef}
+          settings={settings}
+          settingsOpen={settingsOpen}
+        />
       ) : null}
       <button
         ref={headRef}
@@ -900,15 +1005,141 @@ function BuddyHotspot({
   );
 }
 
-const SpeechBubble = forwardRef<HTMLDivElement, { buddy: DockBuddy; edge: Edge }>(
-  ({ buddy, edge }, ref) => {
+const SpeechBubble = forwardRef<
+  HTMLDivElement,
+  {
+    buddy: DockBuddy;
+    edge: Edge;
+    settings: BuddySettings;
+    settingsOpen: boolean;
+    onSettingsToggle: () => void;
+    onSettingsChange: (settings: BuddySettings) => void;
+  }
+>(
+  ({ buddy, edge, settings, settingsOpen, onSettingsToggle, onSettingsChange }, ref) => {
+    const [draft, setDraft] = useState("");
+    const profile = BUDDY_PROFILES[buddy.id];
+    const providerLabel = BUDDY_PROVIDER_LABELS[settings.provider];
+    const memoryLabel = BUDDY_MEMORY_LABELS[settings.memoryMode];
+    const statusText = settings.allowAction
+      ? "Action requests still require policy receipts."
+      : "Action authority is off.";
+
+    function updateSettings(patch: Partial<BuddySettings>) {
+      onSettingsChange({
+        ...settings,
+        ...patch,
+      });
+    }
+
+    function handleSubmit(event: FormEvent<HTMLFormElement>) {
+      event.preventDefault();
+      setDraft("");
+    }
+
+    function handleProviderChange(event: ChangeEvent<HTMLSelectElement>) {
+      updateSettings({ provider: event.target.value as BuddyProvider });
+    }
+
+    function handleMemoryModeChange(event: ChangeEvent<HTMLSelectElement>) {
+      updateSettings({ memoryMode: event.target.value as BuddyMemoryMode });
+    }
+
     return (
-      <div ref={ref} className={`speech-bubble speech-bubble--${edge}`} role="status">
-        <strong>{buddy.shortName}</strong>
-        <span className="speech-bubble__owner">{buddy.ownerLabel}</span>
-        <span>{buddy.message}</span>
-        {buddy.id === "crab" ? <span aria-hidden="true">🦀</span> : null}
-        {buddy.id === "hermes" ? <span aria-hidden="true">✦</span> : null}
+      <div
+        ref={ref}
+        className={`speech-bubble speech-bubble--${edge}`}
+        role="region"
+        aria-label={`${buddy.shortName} buddy controls`}
+      >
+        <div className="speech-bubble__header">
+          <strong>{buddy.shortName}</strong>
+          <span className="speech-bubble__owner">{providerLabel}</span>
+          <button
+            type="button"
+            className="speech-bubble__icon-button"
+            aria-expanded={settingsOpen}
+            aria-label={`${buddy.shortName} settings`}
+            title={`${buddy.shortName} settings`}
+            onClick={onSettingsToggle}
+          >
+            Set
+          </button>
+        </div>
+        <p className="speech-bubble__message">{buddy.message}</p>
+        <form className="speech-bubble__composer" onSubmit={handleSubmit}>
+          <input
+            type="text"
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder={`Ask ${buddy.shortName}`}
+            aria-label={`Ask ${buddy.shortName}`}
+          />
+          <button type="submit" title="Record intent" aria-label="Record intent">
+            Go
+          </button>
+        </form>
+        <div className="speech-bubble__meta">
+          <button
+            type="button"
+            className="speech-bubble__provider"
+            onClick={onSettingsToggle}
+            title="Open connection settings"
+          >
+            {settings.modelLabel}
+          </button>
+          <span>{memoryLabel}</span>
+        </div>
+        {settingsOpen ? (
+          <div className="speech-bubble__settings" aria-label={`${buddy.shortName} settings`}>
+            <label>
+              <span>Platform</span>
+              <select value={settings.provider} onChange={handleProviderChange}>
+                {Object.entries(BUDDY_PROVIDER_LABELS).map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              <span>Model</span>
+              <input
+                type="text"
+                value={settings.modelLabel}
+                onChange={(event) => updateSettings({ modelLabel: event.target.value })}
+              />
+            </label>
+            <label>
+              <span>Memory</span>
+              <select value={settings.memoryMode} onChange={handleMemoryModeChange}>
+                {Object.entries(BUDDY_MEMORY_LABELS).map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="speech-bubble__check">
+              <span>Agent action</span>
+              <input
+                type="checkbox"
+                checked={settings.allowAction}
+                onChange={(event) => updateSettings({ allowAction: event.target.checked })}
+              />
+            </label>
+            <label className="speech-bubble__check">
+              <span>External share</span>
+              <input
+                type="checkbox"
+                checked={settings.allowExternalShare}
+                onChange={(event) => updateSettings({ allowExternalShare: event.target.checked })}
+              />
+            </label>
+            <p>{profile.identity.ownerLabel} connection: {settings.connectionLabel}</p>
+          </div>
+        ) : null}
+        <p className="speech-bubble__status">{statusText}</p>
       </div>
     );
   }
@@ -1119,6 +1350,28 @@ function loadStoredPlacements(fallback: AgentPlacements): AgentPlacements {
   }
 }
 
+function loadStoredBuddySettings(fallback: BuddySettingsMap): BuddySettingsMap {
+  try {
+    const storedValue = localStorage.getItem(SETTINGS_STORAGE_KEY);
+
+    if (!storedValue) {
+      return fallback;
+    }
+
+    const stored = JSON.parse(storedValue) as Partial<BuddySettingsMap>;
+
+    return buddies.reduce<BuddySettingsMap>((settings, buddy) => {
+      settings[buddy.id] = normalizeBuddySettings(
+        BUDDY_PROFILES[buddy.id],
+        stored[buddy.id],
+      );
+      return settings;
+    }, {});
+  } catch {
+    return fallback;
+  }
+}
+
 function isValidPlacement(placement: unknown): placement is AgentPlacement {
   if (!placement || typeof placement !== "object") {
     return false;
@@ -1206,6 +1459,47 @@ function getPreviewDockSlot(edge: Edge, placement: FreeAgentPlacement, stageRect
 
 function defaultDockSlot(buddyId: string) {
   return buddies.find((buddy) => buddy.id === buddyId)?.dockSlot ?? 0.5;
+}
+
+function getCurrentBuddyIdFromUrl() {
+  const buddyId = new URLSearchParams(window.location.search).get("buddy");
+  return buddyId || null;
+}
+
+async function getCurrentBuddyId() {
+  const buddyId = getCurrentBuddyIdFromUrl();
+
+  if (buddyId) {
+    return buddyId;
+  }
+
+  try {
+    const nativeBuddyId = await invoke<string | null>("current_buddy_id");
+    return nativeBuddyId ?? DEFAULT_BORDER_BUDDY_ID;
+  } catch {
+    // Browser previews do not have the native command.
+  }
+
+  try {
+    const label = getCurrentWebviewWindow().label;
+    const labelBuddyId = getBuddyIdFromLabel(label);
+
+    if (labelBuddyId) {
+      return labelBuddyId;
+    }
+  } catch {
+    // Browser previews do not expose a Tauri webview label.
+  }
+
+  try {
+    return getBuddyIdFromLabel(getCurrentWindow().label);
+  } catch {
+    return null;
+  }
+}
+
+function getBuddyIdFromLabel(label: string) {
+  return label.startsWith("buddy-") ? label.slice("buddy-".length) : null;
 }
 
 function nearestDockSlot(edge: Edge, position: number) {

@@ -28,6 +28,15 @@ import {
   createDefaultBuddySettings,
   normalizeBuddySettings,
 } from "../src/buddyProfiles";
+import {
+  cycleDockRenderMode,
+  DEFAULT_DOCK_SETTINGS,
+  DOCK_RENDER_MODE_LABELS,
+  DOCK_SETTINGS_STORAGE_KEY,
+  loadStoredDockSettings,
+  type DockRenderMode,
+  type DockSettings,
+} from "../src/dockSettings";
 import "./BorderDock.css";
 
 export interface Hitbox {
@@ -61,6 +70,93 @@ export function useBuddyHitbox() {
   }, []);
 
   return { setHitboxes };
+}
+
+function useDockHitboxRegistry() {
+  const boxesByBuddy = useRef<Map<string, Hitbox[]>>(new Map());
+  const chromeNodeRef = useRef<HTMLDivElement | null>(null);
+  const [chromeNode, setChromeNode] = useState<HTMLDivElement | null>(null);
+  const { setHitboxes } = useBuddyHitbox();
+
+  const controlsRef = useCallback((node: HTMLDivElement | null) => {
+    chromeNodeRef.current = node;
+    setChromeNode(node);
+  }, []);
+
+  const flushHitboxes = useCallback(() => {
+    const boxes = Array.from(boxesByBuddy.current.values()).flat();
+    const chrome = chromeNodeRef.current;
+
+    if (chrome) {
+      const rect = chrome.getBoundingClientRect();
+      boxes.push({
+        x: Math.round(rect.left),
+        y: Math.round(rect.top),
+        w: Math.round(rect.width),
+        h: Math.round(rect.height),
+      });
+    }
+
+    setHitboxes(boxes);
+  }, [setHitboxes]);
+
+  const reportHitboxes = useCallback(
+    (buddyId: string, boxes: Hitbox[]) => {
+      boxesByBuddy.current.set(buddyId, boxes);
+      flushHitboxes();
+    },
+    [flushHitboxes],
+  );
+
+  const clearBuddyHitboxes = useCallback(
+    (buddyId: string) => {
+      boxesByBuddy.current.delete(buddyId);
+      flushHitboxes();
+    },
+    [flushHitboxes],
+  );
+
+  const clearAllHitboxes = useCallback(() => {
+    boxesByBuddy.current.clear();
+    flushHitboxes();
+  }, [flushHitboxes]);
+
+  const refreshChromeHitboxes = useCallback(() => {
+    flushHitboxes();
+  }, [flushHitboxes]);
+
+  useEffect(() => {
+    if (!chromeNode || typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    const observer = new ResizeObserver(() => {
+      flushHitboxes();
+    });
+
+    observer.observe(chromeNode);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [chromeNode, flushHitboxes]);
+
+  return {
+    controlsRef,
+    reportHitboxes,
+    clearBuddyHitboxes,
+    clearAllHitboxes,
+    refreshChromeHitboxes,
+  };
+}
+
+function isBrowserPreviewSurface() {
+  try {
+    const label = getCurrentWebviewWindow().label;
+    return label !== "border-dock" && !label.startsWith("buddy-");
+  } catch {
+    return true;
+  }
 }
 
 type Edge = "top" | "right" | "bottom" | "left";
@@ -161,6 +257,8 @@ const SETTINGS_STORAGE_KEY = "border-buddies:settings:v2";
 const HIDDEN_NATIVE_WINDOW_ID = "__native_hidden__";
 const DEFAULT_BORDER_BUDDY_ID = "hermes";
 const PASS_THROUGH_SHORTCUT = "CommandOrControl+Alt+B";
+const DOCK_COLLAPSE_SHORTCUT = "CommandOrControl+Alt+H";
+const FULL_RENDER_MODE: DockRenderMode = "head+bubble";
 const IDLE_FADE_DELAY = 5600;
 const IDLE_CLICK_THROUGH_PULSE = 900;
 const DOCK_SLOTS_BY_EDGE: Record<Edge, number[]> = {
@@ -278,7 +376,17 @@ export function BorderDock() {
   const [buddySettings, setBuddySettings] = useState<BuddySettingsMap>(() =>
     loadStoredBuddySettings(defaultBuddySettings),
   );
+  const [dockSettings, setDockSettings] = useState<DockSettings>(() =>
+    loadStoredDockSettings(DEFAULT_DOCK_SETTINGS),
+  );
   const placementsRef = useRef<AgentPlacements>(placements);
+  const {
+    controlsRef,
+    reportHitboxes,
+    clearBuddyHitboxes,
+    clearAllHitboxes,
+    refreshChromeHitboxes,
+  } = useDockHitboxRegistry();
 
   const windowBuddy = useMemo(
     () => buddies.find((buddy) => buddy.id === windowBuddyId) ?? null,
@@ -287,11 +395,19 @@ export function BorderDock() {
   const resolvingWindowBuddy = windowBuddyId === undefined;
   const hiddenNativeWindow = windowBuddyId === HIDDEN_NATIVE_WINDOW_ID;
   const perBuddyWindow = Boolean(windowBuddy);
-  const visibleBuddies = windowBuddy ? [windowBuddy] : buddies;
+  const unifiedDock = !perBuddyWindow;
+  const dockCollapsed = unifiedDock && dockSettings.collapsed;
+  const dockRenderMode = dockSettings.renderMode;
+  const visibleBuddies = useMemo(() => {
+    const roster = windowBuddy ? [windowBuddy] : buddies;
+    return roster.filter((buddy) => buddySettings[buddy.id]?.enabled !== false);
+  }, [windowBuddy, buddySettings]);
   const multiMonitor = useMemo(
     () => new URLSearchParams(window.location.search).get("multiMonitor") === "true",
     [],
   );
+  const browserPreview = useMemo(() => isBrowserPreviewSurface(), []);
+  const effectiveRenderMode = unifiedDock ? dockRenderMode : FULL_RENDER_MODE;
   const windowBuddyPlacement = windowBuddy
     ? placements[windowBuddy.id] ?? defaultPlacements[windowBuddy.id]
     : null;
@@ -410,7 +526,20 @@ export function BorderDock() {
   }, [buddySettings]);
 
   useEffect(() => {
-    async function registerPassThroughShortcut() {
+    localStorage.setItem(DOCK_SETTINGS_STORAGE_KEY, JSON.stringify(dockSettings));
+  }, [dockSettings]);
+
+  useEffect(() => {
+    if (dockCollapsed) {
+      clearAllHitboxes();
+      return;
+    }
+
+    refreshChromeHitboxes();
+  }, [dockCollapsed, effectiveRenderMode, clearAllHitboxes, refreshChromeHitboxes]);
+
+  useEffect(() => {
+    async function registerDockShortcuts() {
       try {
         await register(PASS_THROUGH_SHORTCUT, (event) => {
           if (event.state === "Pressed") {
@@ -420,15 +549,56 @@ export function BorderDock() {
       } catch {
         // The visible Pass button still works when the global shortcut is unavailable.
       }
+
+      if (!unifiedDock) {
+        return;
+      }
+
+      try {
+        await register(DOCK_COLLAPSE_SHORTCUT, (event) => {
+          if (event.state === "Pressed") {
+            setDockSettings((current) => ({
+              ...current,
+              collapsed: !current.collapsed,
+            }));
+          }
+        });
+      } catch {
+        // The visible Hide button still works when the global shortcut is unavailable.
+      }
     }
 
-    registerPassThroughShortcut();
+    registerDockShortcuts();
 
     return () => {
       unregister(PASS_THROUGH_SHORTCUT).catch(() => {});
+      unregister(DOCK_COLLAPSE_SHORTCUT).catch(() => {});
       setDockInputEnabled(true);
     };
-  }, []);
+  }, [unifiedDock]);
+
+  useEffect(() => {
+    if (!unifiedDock || dockCollapsed) {
+      return;
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") {
+        return;
+      }
+
+      setDockSettings((current) => ({
+        ...current,
+        collapsed: true,
+      }));
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [dockCollapsed, unifiedDock]);
 
   useEffect(() => {
     function handlePointerMove(event: PointerEvent) {
@@ -752,11 +922,14 @@ export function BorderDock() {
     <main
       className={[
         "border-dock",
-        perBuddyWindow ? "border-dock--per-buddy" : "",
+        perBuddyWindow ? "border-dock--per-buddy" : "border-dock--unified",
+        browserPreview ? "border-dock--preview" : "",
+        unifiedDock ? `border-dock--render-${effectiveRenderMode.replace("+", "-plus-")}` : "",
+        dockCollapsed ? "border-dock--collapsed" : "",
         idle ? "border-dock--idle" : "",
         clickThrough ? "border-dock--click-through" : "",
       ].join(" ")}
-      data-window-buddy={windowBuddy?.id ?? "preview"}
+      data-window-buddy={windowBuddy?.id ?? "dock"}
       aria-label="Border Buddies dock"
       onPointerEnter={markActivity}
       onPointerMove={markActivity}
@@ -766,35 +939,62 @@ export function BorderDock() {
         data-monitor-count={layout.activeMonitorIds.length}
         ref={stageRef}
       >
-        {!perBuddyWindow ? (
-          <DockControls
+        {unifiedDock ? (
+          <DockChrome
             clickThrough={clickThrough}
+            collapsed={dockCollapsed}
+            controlsRef={controlsRef}
+            onCollapseToggle={() =>
+              setDockSettings((current) => ({
+                ...current,
+                collapsed: !current.collapsed,
+              }))
+            }
+            onCycleRenderMode={() =>
+              setDockSettings((current) => ({
+                ...current,
+                renderMode: cycleDockRenderMode(current.renderMode),
+              }))
+            }
             onDragWindow={dragOverlayWindow}
             onResizeWindow={() => resizeOverlayWindow("SouthEast")}
             onToggleClickThrough={() => setClickThroughMode(!clickThroughRef.current)}
+            renderMode={effectiveRenderMode}
           />
         ) : null}
-        {visibleBuddies.map((buddy) => (
-          <BuddyHotspot
-            buddy={buddy}
-            active={buddy.id === activeAgentId}
-            dragging={buddy.id === draggingAgentId}
-            key={buddy.id}
-            onDragEnd={finishBuddyDrag}
-            onDragMove={moveBuddy}
-            onDragStart={(event) => startBuddyDrag(buddy, event)}
-            onActivate={() => setActiveAgentId(buddy.id)}
-            onManualTuck={() => tuckBuddy(buddy.id)}
-            placement={placements[buddy.id] ?? defaultPlacements[buddy.id]}
-            settings={buddySettings[buddy.id] ?? defaultBuddySettings[buddy.id]}
-            onSettingsChange={(settings) =>
-              setBuddySettings((current) => ({
-                ...current,
-                [buddy.id]: normalizeBuddySettings(BUDDY_PROFILES[buddy.id], settings),
-              }))
-            }
-          />
-        ))}
+        {!dockCollapsed
+          ? visibleBuddies.map((buddy) => (
+              <BuddyHotspot
+                buddy={buddy}
+                active={buddy.id === activeAgentId}
+                collapsed={dockCollapsed}
+                dragging={buddy.id === draggingAgentId}
+                key={buddy.id}
+                onDragEnd={finishBuddyDrag}
+                onDragMove={moveBuddy}
+                onDragStart={(event) => startBuddyDrag(buddy, event)}
+                onActivate={() => setActiveAgentId(buddy.id)}
+                onDeactivate={() => {
+                  if (activeAgentId === buddy.id) {
+                    setActiveAgentId("");
+                  }
+                }}
+                onManualTuck={() => tuckBuddy(buddy.id)}
+                onClearHitboxes={() => clearBuddyHitboxes(buddy.id)}
+                onReportHitboxes={(boxes) => reportHitboxes(buddy.id, boxes)}
+                perBuddyWindow={perBuddyWindow}
+                placement={placements[buddy.id] ?? defaultPlacements[buddy.id]}
+                renderMode={effectiveRenderMode}
+                settings={buddySettings[buddy.id] ?? defaultBuddySettings[buddy.id]}
+                onSettingsChange={(settings) =>
+                  setBuddySettings((current) => ({
+                    ...current,
+                    [buddy.id]: normalizeBuddySettings(BUDDY_PROFILES[buddy.id], settings),
+                  }))
+                }
+              />
+            ))
+          : null}
       </div>
     </main>
   );
@@ -825,52 +1025,93 @@ async function startNativeBuddyDrag(buddyId: string, edge: Edge, bubbleVisible: 
   }
 }
 
-function DockControls({
+function DockChrome({
   clickThrough,
+  collapsed,
+  controlsRef,
+  onCollapseToggle,
+  onCycleRenderMode,
   onDragWindow,
   onResizeWindow,
   onToggleClickThrough,
+  renderMode,
 }: {
   clickThrough: boolean;
+  collapsed: boolean;
+  controlsRef: (node: HTMLDivElement | null) => void;
+  onCollapseToggle: () => void;
+  onCycleRenderMode: () => void;
   onDragWindow: () => void;
   onResizeWindow: () => void;
   onToggleClickThrough: () => void;
+  renderMode: DockRenderMode;
 }) {
   return (
-    <div className="dock-controls" aria-label="Border Buddies window controls">
-      <span className="dock-controls__hint">
-        {clickThrough ? "Click-through on" : "Ctrl+Alt+B passes clicks through"}
-      </span>
-      <button
-        className="dock-control dock-control--move"
-        type="button"
-        onPointerDown={(event) => {
-          event.preventDefault();
-          onDragWindow();
-        }}
-        title="Move overlay window"
-      >
-        Move
-      </button>
-      <button
-        className="dock-control dock-control--resize"
-        type="button"
-        onPointerDown={(event) => {
-          event.preventDefault();
-          onResizeWindow();
-        }}
-        title="Resize overlay window"
-      >
-        Resize
-      </button>
-      <button
-        className="dock-control dock-control--pass"
-        type="button"
-        onClick={onToggleClickThrough}
-        title="Toggle click-through mode"
-      >
-        {clickThrough ? "Catch" : "Pass"}
-      </button>
+    <div className="dock-chrome" ref={controlsRef}>
+      {collapsed ? (
+        <button
+          className="dock-peek"
+          type="button"
+          onClick={onCollapseToggle}
+          title="Expand Border Buddies dock"
+        >
+          Buddies
+        </button>
+      ) : (
+        <div className="dock-controls" aria-label="Border Buddies window controls">
+          <span className="dock-controls__hint">
+            {clickThrough
+              ? "Click-through on"
+              : "Ctrl+Alt+B pass-through · Ctrl+Alt+H hide · Esc collapse"}
+          </span>
+          <button
+            className="dock-control dock-control--mode"
+            type="button"
+            onClick={onCycleRenderMode}
+            title="Cycle dock render mode"
+          >
+            {DOCK_RENDER_MODE_LABELS[renderMode]}
+          </button>
+          <button
+            className="dock-control dock-control--move"
+            type="button"
+            onPointerDown={(event) => {
+              event.preventDefault();
+              onDragWindow();
+            }}
+            title="Move overlay window"
+          >
+            Move
+          </button>
+          <button
+            className="dock-control dock-control--resize"
+            type="button"
+            onPointerDown={(event) => {
+              event.preventDefault();
+              onResizeWindow();
+            }}
+            title="Resize overlay window"
+          >
+            Resize
+          </button>
+          <button
+            className="dock-control dock-control--pass"
+            type="button"
+            onClick={onToggleClickThrough}
+            title="Toggle click-through mode"
+          >
+            {clickThrough ? "Catch" : "Pass"}
+          </button>
+          <button
+            className="dock-control dock-control--collapse"
+            type="button"
+            onClick={onCollapseToggle}
+            title="Collapse dock and reclaim screen (Ctrl+Alt+H)"
+          >
+            Hide
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -878,25 +1119,37 @@ function DockControls({
 function BuddyHotspot({
   active,
   buddy,
+  collapsed,
   dragging,
+  onClearHitboxes,
   onDragEnd,
   onDragMove,
   onDragStart,
   onActivate,
+  onDeactivate,
+  onReportHitboxes,
+  perBuddyWindow,
   placement,
   onManualTuck,
+  renderMode,
   settings,
   onSettingsChange,
 }: {
   active: boolean;
   buddy: DockBuddy;
+  collapsed: boolean;
   dragging: boolean;
+  onClearHitboxes: () => void;
   onDragEnd: () => void;
   onDragMove: (event: ReactPointerEvent<HTMLElement>) => void;
   onDragStart: (event: ReactPointerEvent<HTMLElement>) => void;
   onActivate: () => void;
+  onDeactivate: () => void;
+  onReportHitboxes: (boxes: Hitbox[]) => void;
+  perBuddyWindow: boolean;
   placement: AgentPlacement;
   onManualTuck: () => void;
+  renderMode: DockRenderMode;
   settings: BuddySettings;
   onSettingsChange: (settings: BuddySettings) => void;
 }) {
@@ -904,6 +1157,7 @@ function BuddyHotspot({
   const style = {
     "--agent-color": buddy.color,
     "--agent-accent": buddy.accentColor ?? buddy.color,
+    "--agent-slot": placement.state === "tucked" ? `${placement.slot * 100}%` : "50%",
   } as CSSProperties;
 
   if (placement.state === "free") {
@@ -918,27 +1172,41 @@ function BuddyHotspot({
   const { setHitboxes } = useBuddyHitbox();
   const [settingsOpen, setSettingsOpen] = useState(false);
 
-  const isBubbleVisible = active && buddy.message && placement.state === "tucked";
+  const showHead = renderMode !== "bubble";
+  const showBubble =
+    renderMode !== "head" && active && buddy.message && placement.state === "tucked";
+  const isBubbleVisible = showBubble;
   const freeX = placement.state === "free" ? placement.x : null;
   const freeY = placement.state === "free" ? placement.y : null;
 
   useLayoutEffect(() => {
+    if (collapsed) {
+      onClearHitboxes();
+      return;
+    }
+
     const boxes: Hitbox[] = [];
 
     if (settingsOpen && isBubbleVisible && bubbleRef.current) {
       const r = bubbleRef.current.getBoundingClientRect();
-      setHitboxes([
+      const settingsBoxes = [
         {
           x: Math.max(0, Math.round(r.left) - 8),
           y: Math.max(0, Math.round(r.top) - 8),
           w: Math.min(window.innerWidth, Math.round(r.width) + 16),
           h: Math.min(window.innerHeight, Math.round(r.height) + 16),
         },
-      ]);
+      ];
+
+      if (perBuddyWindow) {
+        setHitboxes(settingsBoxes);
+      } else {
+        onReportHitboxes(settingsBoxes);
+      }
       return;
     }
 
-    if (headRef.current) {
+    if (showHead && headRef.current) {
       const r = headRef.current.getBoundingClientRect();
       boxes.push({
         x: Math.round(r.left),
@@ -958,8 +1226,24 @@ function BuddyHotspot({
       });
     }
 
-    setHitboxes(boxes);
-  }, [placement.state, freeX, freeY, isBubbleVisible, settingsOpen, setHitboxes]);
+    if (perBuddyWindow) {
+      setHitboxes(boxes);
+    } else {
+      onReportHitboxes(boxes);
+    }
+  }, [
+    collapsed,
+    isBubbleVisible,
+    onClearHitboxes,
+    onReportHitboxes,
+    perBuddyWindow,
+    placement.state,
+    freeX,
+    freeY,
+    settingsOpen,
+    setHitboxes,
+    showHead,
+  ]);
 
   return (
     <section
@@ -992,15 +1276,23 @@ function BuddyHotspot({
           settingsOpen={settingsOpen}
         />
       ) : null}
-      <button
-        ref={headRef}
-        className="agent-button"
-        type="button"
-        onClick={onActivate}
-        onPointerDown={onDragStart}
-      >
-        <BuddyFigure buddyId={buddy.id} state={placement.state} />
-      </button>
+      {showHead ? (
+        <button
+          ref={headRef}
+          className="agent-button"
+          type="button"
+          onClick={() => {
+            if (active) {
+              onDeactivate();
+            } else {
+              onActivate();
+            }
+          }}
+          onPointerDown={onDragStart}
+        >
+          <BuddyFigure buddyId={buddy.id} state={placement.state} />
+        </button>
+      ) : null}
     </section>
   );
 }
@@ -1474,14 +1766,12 @@ async function getCurrentBuddyId() {
   }
 
   try {
-    const nativeBuddyId = await invoke<string | null>("current_buddy_id");
-    return nativeBuddyId ?? DEFAULT_BORDER_BUDDY_ID;
-  } catch {
-    // Browser previews do not have the native command.
-  }
-
-  try {
     const label = getCurrentWebviewWindow().label;
+
+    if (label === "border-dock") {
+      return null;
+    }
+
     const labelBuddyId = getBuddyIdFromLabel(label);
 
     if (labelBuddyId) {
@@ -1492,7 +1782,23 @@ async function getCurrentBuddyId() {
   }
 
   try {
-    return getBuddyIdFromLabel(getCurrentWindow().label);
+    const windowLabel = getCurrentWindow().label;
+
+    if (windowLabel === "border-dock") {
+      return null;
+    }
+
+    const labelBuddyId = getBuddyIdFromLabel(windowLabel);
+
+    if (labelBuddyId) {
+      return labelBuddyId;
+    }
+  } catch {
+    // Browser previews do not expose a Tauri window label.
+  }
+
+  try {
+    return await invoke<string | null>("current_buddy_id");
   } catch {
     return null;
   }

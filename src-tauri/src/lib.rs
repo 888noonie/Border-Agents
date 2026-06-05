@@ -634,17 +634,28 @@ fn lerp_i32(start: i32, end: i32, slot: f64) -> i32 {
     start + ((end - start) as f64 * slot).round() as i32
 }
 
+fn legacy_per_buddy_windows_enabled() -> bool {
+    std::env::var("BORDER_BUDDIES_LEGACY_WINDOWS")
+        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
-            if let Some(manager_window) = app.get_webview_window("border-dock") {
-                manager_window.hide()?;
-            }
+            if legacy_per_buddy_windows_enabled() {
+                if let Some(manager_window) = app.get_webview_window("border-dock") {
+                    manager_window.hide()?;
+                }
 
-            create_buddy_windows(app.handle()).map_err(|error| -> Box<dyn std::error::Error> {
-                Box::new(std::io::Error::new(std::io::ErrorKind::Other, error))
-            })?;
+                create_buddy_windows(app.handle()).map_err(|error| -> Box<dyn std::error::Error> {
+                    Box::new(std::io::Error::new(std::io::ErrorKind::Other, error))
+                })?;
+            } else if let Some(dock_window) = app.get_webview_window("border-dock") {
+                configure_overlay_window(&dock_window)?;
+                dock_window.show()?;
+            }
 
             Ok(())
         })

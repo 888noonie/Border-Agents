@@ -17,7 +17,10 @@ body,
   height: 100%;
   margin: 0;
   overflow: hidden;
-  background: transparent;
+  /* Near-invisible background gives the Linux compositor proper damage-region
+     tracking so transparent windows don't ghost/trail on repaint. */
+  background: rgba(0, 0, 0, 0.005);
+  pointer-events: none;
 }
 
 body {

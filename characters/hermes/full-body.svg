@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="320" viewBox="0 0 256 320" role="img" aria-label="Hermes full body">
+  <defs>
+    <radialGradient id="halo" cx="50%" cy="42%" r="62%">
+      <stop offset="0" stop-color="#7df9ff" stop-opacity="0.42"/>
+      <stop offset="1" stop-color="#7df9ff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="body" x1="66" y1="42" x2="198" y2="284" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2f7dff"/>
+      <stop offset="0.48" stop-color="#111b34"/>
+      <stop offset="1" stop-color="#050913"/>
+    </linearGradient>
+    <linearGradient id="cape" x1="164" y1="132" x2="244" y2="300" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2f7dff"/>
+      <stop offset="1" stop-color="#7df9ff"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="320" fill="transparent"/>
+  <ellipse cx="128" cy="156" rx="120" ry="142" fill="url(#halo)"/>
+  <path d="M109 43c18-31 55-31 76 0-28-8-53-8-76 0Z" fill="#7df9ff" opacity="0.86"/>
+  <path d="M170 147c42 20 68 68 58 139-38-13-65-43-78-88Z" fill="url(#cape)" opacity="0.5"/>
+  <ellipse cx="128" cy="128" rx="88" ry="86" fill="url(#body)"/>
+  <ellipse cx="132" cy="218" rx="58" ry="66" fill="url(#body)"/>
+  <path d="M56 246c20-14 42-19 66-12" fill="none" stroke="#2f7dff" stroke-width="14" stroke-linecap="round"/>
+  <path d="M171 217c24-18 42-43 53-75" fill="none" stroke="#7df9ff" stroke-width="9" stroke-linecap="round"/>
+  <circle cx="180" cy="132" r="7" fill="#7df9ff"/>
+  <ellipse cx="98" cy="111" rx="24" ry="31" fill="#f2fbff"/>
+  <ellipse cx="155" cy="107" rx="24" ry="31" fill="#f2fbff"/>
+  <circle cx="106" cy="112" r="10" fill="#071020"/>
+  <circle cx="164" cy="108" r="10" fill="#071020"/>
+  <circle cx="111" cy="105" r="4" fill="#fff"/>
+  <circle cx="169" cy="101" r="4" fill="#fff"/>
+  <path d="M99 150c25 23 58 23 86-2" fill="none" stroke="#7df9ff" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="132" cy="201" r="20" fill="#7df9ff" opacity="0.86"/>
+  <circle cx="132" cy="201" r="9" fill="#f2fbff"/>
+  <path d="M96 284c12 8 26 8 39 0" fill="none" stroke="#0a1224" stroke-width="12" stroke-linecap="round"/>
+  <path d="M146 284c12 8 26 8 39 0" fill="none" stroke="#0a1224" stroke-width="12" stroke-linecap="round"/>
+</svg>

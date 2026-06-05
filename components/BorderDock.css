@@ -4,6 +4,39 @@
   overflow: hidden;
   background: transparent;
   pointer-events: none;
+  /* Force GPU compositing layer to prevent ghosting on Linux transparent windows */
+  transform: translateZ(0);
+  backface-visibility: hidden;
+}
+
+.border-dock--click-through .agent-hotspot,
+.border-dock--click-through .speech-bubble {
+  opacity: 0.42;
+}
+
+.border-dock--click-through .dock-controls {
+  opacity: 0.72;
+}
+
+.border-dock--per-buddy {
+  width: 100vw;
+  height: 100vh;
+}
+
+.border-dock--per-buddy .dock-stage {
+  background: transparent;
+}
+
+.border-dock--idle .agent-hotspot {
+  opacity: 0.46;
+}
+
+.border-dock--idle .agent-hotspot--active {
+  opacity: 0.72;
+}
+
+.border-dock--idle .speech-bubble {
+  opacity: 0.52;
 }
 
 .dock-stage {
@@ -13,6 +46,62 @@
     radial-gradient(circle at 98% 48%, rgb(255 77 77 / 0.08), transparent 22rem),
     radial-gradient(circle at 50% 0%, rgb(139 92 246 / 0.08), transparent 18rem);
   pointer-events: none;
+  transform: translateZ(0);
+  will-change: contents;
+}
+
+
+.dock-controls {
+  position: fixed;
+  top: 10px;
+  left: 50%;
+  z-index: 6;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  padding: 5px;
+  border: 1px solid rgb(125 249 255 / 0.28);
+  border-radius: 999px;
+  background: rgb(8 17 31 / 0.34);
+  box-shadow: 0 14px 34px rgb(8 17 31 / 0.18);
+  opacity: 0.16;
+  pointer-events: auto;
+  transform: translateX(-50%);
+  transition: opacity 160ms ease, background 160ms ease;
+}
+
+.dock-controls:hover,
+.dock-controls:focus-within {
+  background: rgb(8 17 31 / 0.72);
+  opacity: 1;
+}
+
+.dock-controls__hint {
+  max-width: 190px;
+  padding: 0 8px;
+  color: rgb(255 255 255 / 0.84);
+  font-size: 11px;
+  font-weight: 720;
+  white-space: nowrap;
+}
+
+.dock-control {
+  min-width: 44px;
+  border: 0;
+  border-radius: 999px;
+  padding: 6px 10px;
+  background: rgb(255 255 255 / 0.9);
+  color: #172033;
+  cursor: grab;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 760;
+  letter-spacing: 0;
+  pointer-events: auto;
+}
+
+.dock-control--resize {
+  cursor: nwse-resize;
 }
 
 .agent-hotspot {
@@ -25,6 +114,8 @@
   display: grid;
   place-items: center;
   pointer-events: auto;
+  will-change: transform, opacity;
+  backface-visibility: hidden;
   transition:
     left 180ms ease,
     top 180ms ease,
@@ -40,25 +131,25 @@
 
 .agent-hotspot--tucked.agent-hotspot--right {
   top: 48%;
-  right: -0.72rem;
+  right: -1rem;
   transform: translateY(-50%);
 }
 
 .agent-hotspot--tucked.agent-hotspot--top {
-  top: -1.45rem;
+  top: -1.75rem;
   left: 50%;
   transform: translateX(-50%);
 }
 
 .agent-hotspot--tucked.agent-hotspot--bottom {
-  bottom: -1.55rem;
+  bottom: -1.85rem;
   left: 50%;
   transform: translateX(-50%);
 }
 
 .agent-hotspot--tucked.agent-hotspot--left {
   top: 50%;
-  left: -0.72rem;
+  left: -1rem;
   transform: translateY(-50%);
 }
 
@@ -90,6 +181,30 @@
   transition: none;
 }
 
+.border-dock--per-buddy .agent-hotspot {
+  z-index: 1;
+}
+
+.border-dock--per-buddy .agent-hotspot--free {
+  --agent-size: 7.35rem;
+}
+
+.border-dock--per-buddy .agent-hotspot--tucked.agent-hotspot--right {
+  right: -0.2rem;
+}
+
+.border-dock--per-buddy .agent-hotspot--tucked.agent-hotspot--left {
+  left: -0.2rem;
+}
+
+.border-dock--per-buddy .agent-hotspot--tucked.agent-hotspot--top {
+  top: -1.2rem;
+}
+
+.border-dock--per-buddy .agent-hotspot--tucked.agent-hotspot--bottom {
+  bottom: -1.3rem;
+}
+
 .agent-button {
   width: var(--agent-size);
   height: var(--agent-size);
@@ -101,7 +216,11 @@
   pointer-events: auto;
   touch-action: none;
   filter: drop-shadow(0 1.35rem 1.8rem rgb(39 32 26 / 0.2));
-  animation: agent-bob 3.4s ease-in-out infinite;
+  will-change: transform, filter;
+  backface-visibility: hidden;
+  animation:
+    buddy-idle-bob 3.6s ease-in-out infinite,
+    buddy-head-glance 7.8s ease-in-out infinite;
 }
 
 .agent-hotspot--tucked .agent-button {
@@ -135,10 +254,20 @@
   height: 5rem;
 }
 
+.agent-svg--hermes {
+  width: 4.8rem;
+  height: 4.8rem;
+}
+
 .agent-svg--body,
-.agent-svg--crab-body {
+.agent-svg--crab-body,
+.agent-svg--hermes-body {
   width: 100%;
   height: 100%;
+}
+
+.agent-hotspot[data-buddy="hermes"] .agent-svg {
+  animation: buddy-glow-pulse 4.2s ease-in-out infinite;
 }
 
 .speech-bubble {
@@ -159,6 +288,31 @@
   line-height: 1.25;
   white-space: nowrap;
   pointer-events: auto;
+}
+
+.border-dock--per-buddy .speech-bubble {
+  min-width: 0;
+  width: fit-content;
+  max-width: calc(100vw - 5.1rem);
+  padding: 0.72rem 0.86rem;
+  font-size: 0.86rem;
+  white-space: normal;
+}
+
+.border-dock--per-buddy .speech-bubble--right {
+  right: 3.05rem;
+}
+
+.border-dock--per-buddy .speech-bubble--left {
+  left: 3.05rem;
+}
+
+.border-dock--per-buddy .speech-bubble--top {
+  top: 3.05rem;
+}
+
+.border-dock--per-buddy .speech-bubble--bottom {
+  bottom: 3.05rem;
 }
 
 .speech-bubble strong {
@@ -238,7 +392,7 @@
 
 .crab-claw--top {
   transform-origin: 70px 60px;
-  animation: claw-wave 2.7s ease-in-out infinite;
+  animation: buddy-claw-wave 2.7s ease-in-out infinite;
 }
 
 .crab-claw--bottom {
@@ -322,7 +476,59 @@
   fill: #fff0df;
 }
 
-@keyframes agent-bob {
+.hermes-halo {
+  fill: var(--agent-accent);
+  opacity: 0.12;
+}
+
+.hermes-accent {
+  fill: var(--agent-accent);
+}
+
+.hermes-crest {
+  opacity: 0.9;
+}
+
+.hermes-line {
+  fill: none;
+  stroke: var(--agent-accent);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 4;
+}
+
+.hermes-smile {
+  stroke-width: 4;
+}
+
+.hermes-arm {
+  stroke-width: 7;
+}
+
+.hermes-baton {
+  stroke-width: 4;
+}
+
+.hermes-cape {
+  fill: #2f7dff;
+  opacity: 0.5;
+}
+
+.hermes-core {
+  opacity: 0.86;
+}
+
+.hermes-pupil {
+  animation: buddy-eye-glance 7.8s ease-in-out infinite;
+}
+
+.hermes-star {
+  fill: var(--agent-accent);
+  animation: buddy-star-glint 5.2s ease-in-out infinite;
+  transform-origin: center;
+}
+
+@keyframes buddy-idle-bob {
   0%,
   100% {
     transform: translateY(0) rotate(-1deg);
@@ -333,7 +539,69 @@
   }
 }
 
-@keyframes claw-wave {
+@keyframes buddy-head-glance {
+  0%,
+  72%,
+  100% {
+    translate: 0 0;
+  }
+
+  78% {
+    translate: 2px 0;
+  }
+
+  84% {
+    translate: -1px 0;
+  }
+}
+
+@keyframes buddy-eye-glance {
+  0%,
+  72%,
+  100% {
+    transform: translateX(0);
+  }
+
+  78% {
+    transform: translateX(3px);
+  }
+
+  84% {
+    transform: translateX(-2px);
+  }
+}
+
+@keyframes buddy-glow-pulse {
+  0%,
+  100% {
+    filter: drop-shadow(0 0 5px rgb(125 249 255 / 0.2));
+  }
+
+  50% {
+    filter: drop-shadow(0 0 16px rgb(125 249 255 / 0.55));
+  }
+}
+
+@keyframes buddy-star-glint {
+  0%,
+  80%,
+  100% {
+    opacity: 0;
+    transform: scale(0.6) rotate(0deg);
+  }
+
+  86% {
+    opacity: 1;
+    transform: scale(1.15) rotate(20deg);
+  }
+
+  92% {
+    opacity: 0.3;
+    transform: scale(0.85) rotate(40deg);
+  }
+}
+
+@keyframes buddy-claw-wave {
   0%,
   100% {
     transform: rotate(-2deg);
@@ -341,6 +609,18 @@
 
   50% {
     transform: rotate(9deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-hotspot,
+  .agent-button,
+  .agent-svg,
+  .hermes-pupil,
+  .hermes-star,
+  .crab-claw--top {
+    animation: none !important;
+    transition: none !important;
   }
 }
 

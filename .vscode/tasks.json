@@ -4,7 +4,11 @@
     {
       "label": "BB start",
       "type": "shell",
-      "command": "npm run dev",
+      "command": "bash",
+      "args": [
+        "-lc",
+        "source \"$HOME/.cargo/env\" 2>/dev/null || true; npm run desktop:dev"
+      ],
       "options": {
         "cwd": "${workspaceFolder}"
       },
@@ -21,7 +25,7 @@
       "command": "bash",
       "args": [
         "-lc",
-        "pids=$(ss -ltnp 2>/dev/null | awk '/:1420 / {print $NF}' | sed -n 's/.*pid=\\([0-9][0-9]*\\).*/\\1/p' | sort -u); if [ -n \"$pids\" ]; then kill $pids && echo \"Stopped Border Buddies dev server on port 1420.\"; else echo \"No Border Buddies dev server found on port 1420.\"; fi"
+        "port_pids=$(ss -ltnp 2>/dev/null | awk '/:1420 / {print $NF}' | sed -n 's/.*pid=\\([0-9][0-9]*\\).*/\\1/p' | sort -u); tauri_pids=$(pgrep -f 'target/debug/border-agents|tauri dev|border-agents' 2>/dev/null | sort -u); pids=$(printf '%s\\n%s\\n' \"$port_pids\" \"$tauri_pids\" | awk 'NF' | sort -u); if [ -n \"$pids\" ]; then kill $pids 2>/dev/null || true; echo \"Stopped Border Buddies desktop/dev processes.\"; else echo \"No Border Buddies desktop/dev processes found.\"; fi"
       ],
       "options": {
         "cwd": "${workspaceFolder}"
@@ -29,6 +33,20 @@
       "presentation": {
         "reveal": "always",
         "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "BB browser preview",
+      "type": "shell",
+      "command": "npm run dev",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
         "clear": true
       },
       "problemMatcher": []

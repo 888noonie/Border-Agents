@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="Hermes tucked head">
+  <defs>
+    <radialGradient id="halo" cx="50%" cy="50%" r="60%">
+      <stop offset="0" stop-color="#7df9ff" stop-opacity="0.55"/>
+      <stop offset="1" stop-color="#7df9ff" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="shell" x1="60" y1="30" x2="202" y2="222" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2f7dff"/>
+      <stop offset="0.55" stop-color="#111b34"/>
+      <stop offset="1" stop-color="#050913"/>
+    </linearGradient>
+  </defs>
+  <circle cx="128" cy="128" r="112" fill="url(#halo)"/>
+  <path d="M112 42c18-30 52-28 70-1-25-8-49-8-70 1Z" fill="#7df9ff" opacity="0.85"/>
+  <path d="M55 144c0-60 40-106 95-106 46 0 82 33 82 82 0 62-51 100-109 91-40-6-68-32-68-67Z" fill="url(#shell)"/>
+  <path d="M78 101c31-34 82-42 126-12" fill="none" stroke="#7df9ff" stroke-width="8" stroke-linecap="round" opacity="0.62"/>
+  <ellipse cx="112" cy="123" rx="26" ry="32" fill="#f2fbff"/>
+  <ellipse cx="172" cy="119" rx="26" ry="32" fill="#f2fbff"/>
+  <circle cx="120" cy="123" r="11" fill="#071020"/>
+  <circle cx="181" cy="119" r="11" fill="#071020"/>
+  <circle cx="125" cy="116" r="4" fill="#fff"/>
+  <circle cx="186" cy="112" r="4" fill="#fff"/>
+  <path d="M116 162c24 22 55 22 82-2" fill="none" stroke="#7df9ff" stroke-width="8" stroke-linecap="round"/>
+  <path d="M214 123c22 10 32 26 30 48-18-7-32-18-42-35Z" fill="#1f4fd8" opacity="0.78"/>
+</svg>

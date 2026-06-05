@@ -2,17 +2,56 @@ import {
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
   useEffect,
+  forwardRef,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  useCallback,
 } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { register, unregister } from "@tauri-apps/plugin-global-shortcut";
 import clawManifest from "../characters/crab/manifest.json";
+import hermesManifest from "../characters/hermes/manifest.json";
 import owlManifest from "../characters/owl/manifest.json";
 import "./BorderDock.css";
 
+export interface Hitbox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+export function useBuddyHitbox() {
+  const pending = useRef<Hitbox[]>([]);
+  const raf = useRef<number | null>(null);
+
+  const flush = useCallback(() => {
+    if (raf.current) cancelAnimationFrame(raf.current);
+    raf.current = requestAnimationFrame(() => {
+      invoke("set_input_hitboxes", { boxes: pending.current }).catch(() => {});
+    });
+  }, []);
+
+  const setHitboxes = useCallback(
+    (boxes: Hitbox[]) => {
+      pending.current = boxes;
+      flush();
+    },
+    [flush],
+  );
+
+  useEffect(() => () => {
+    if (raf.current) cancelAnimationFrame(raf.current);
+  }, []);
+
+  return { setHitboxes };
+}
+
 type Edge = "top" | "right" | "bottom" | "left";
+type ResizeDirection = "East" | "North" | "NorthEast" | "NorthWest" | "South" | "SouthEast" | "SouthWest" | "West";
 
 type BuddyOwnerKind = "model" | "agent" | "project" | "subscription" | "workflow";
 
@@ -26,7 +65,9 @@ type DockBuddy = {
   personality: string;
   speechStyle: string;
   edge: Edge;
+  dockSlot: number;
   color: string;
+  accentColor?: string;
   message?: string;
   visible: "primary" | "faint";
 };
@@ -54,10 +95,26 @@ type DockLayout = {
   multiMonitor: boolean;
 };
 
+type BuddyWindowLayout = {
+  buddyId: string;
+  monitor: MonitorFrame;
+  bounds: DockLayout["bounds"];
+  interactive: boolean;
+};
+
+type BuddySnapResult = {
+  buddyId: string;
+  snapped: boolean;
+  edge: Edge | null;
+  slot: number | null;
+  bounds: DockLayout["bounds"];
+};
+
 type AgentPlacement =
   | {
       state: "tucked";
       edge: Edge;
+      slot: number;
     }
   | {
       state: "free";
@@ -85,9 +142,34 @@ const INITIAL_LAYOUT: DockLayout = {
 const FREE_AGENT_SIZE = 118;
 const FREE_AGENT_MARGIN = 16;
 const SNAP_DISTANCE = 96;
-const PLACEMENT_STORAGE_KEY = "border-buddies:placements:v2";
+const PLACEMENT_STORAGE_KEY = "border-buddies:placements:v3";
+const PASS_THROUGH_SHORTCUT = "CommandOrControl+Alt+B";
+const IDLE_FADE_DELAY = 5600;
+const IDLE_CLICK_THROUGH_PULSE = 900;
+const DOCK_SLOTS_BY_EDGE: Record<Edge, number[]> = {
+  left: [0.22, 0.5, 0.78],
+  right: [0.22, 0.5, 0.78],
+  top: [0.24, 0.5, 0.76],
+  bottom: [0.24, 0.5, 0.76],
+};
 
 const buddies: DockBuddy[] = [
+  {
+    id: hermesManifest.id,
+    name: hermesManifest.name,
+    shortName: "Hermes",
+    ownerKind: "model",
+    ownerLabel: hermesManifest.owner,
+    role: hermesManifest.role,
+    personality: hermesManifest.personality,
+    speechStyle: hermesManifest.speech_style,
+    edge: hermesManifest.border_position as Edge,
+    dockSlot: 0.58,
+    color: hermesManifest.color,
+    accentColor: hermesManifest.accent_color,
+    message: "Signal caught. Want the sharp version?",
+    visible: "primary",
+  },
   {
     id: clawManifest.id,
     name: clawManifest.name,
@@ -97,10 +179,11 @@ const buddies: DockBuddy[] = [
     role: clawManifest.role,
     personality: clawManifest.personality,
     speechStyle: "Short, celebratory, a little cheeky",
-    edge: clawManifest.border_position as Edge,
+    edge: "left",
+    dockSlot: 0.72,
     color: clawManifest.color,
     message: "Memory graded! Trusted pieces ready?",
-    visible: "primary",
+    visible: "faint",
   },
   {
     id: owlManifest.id,
@@ -112,6 +195,7 @@ const buddies: DockBuddy[] = [
     personality: owlManifest.personality,
     speechStyle: "Concise, exact, gently corrective",
     edge: owlManifest.border_position as Edge,
+    dockSlot: 0.24,
     color: owlManifest.color,
     message: "One source is assertable.",
     visible: "faint",
@@ -126,6 +210,7 @@ const buddies: DockBuddy[] = [
     personality: "Curious, warm, careful",
     speechStyle: "Lively, curious, helpful",
     edge: "bottom",
+    dockSlot: 0.68,
     color: "#ef6a3a",
     message: "5 memories found. 1 trusted.",
     visible: "faint",
@@ -136,6 +221,7 @@ const defaultPlacements = buddies.reduce<AgentPlacements>((placements, buddy) =>
   placements[buddy.id] = {
     state: "tucked",
     edge: buddy.edge,
+    slot: buddy.dockSlot,
   };
 
   return placements;
@@ -152,17 +238,43 @@ async function setDockInputEnabled(enabled: boolean) {
 export function BorderDock() {
   const stageRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<ActiveDrag | null>(null);
+  const clickThroughRef = useRef(false);
+  const idleTimerRef = useRef<number | null>(null);
+  const nativeMoveSnapTimerRef = useRef<number | null>(null);
   const [layout, setLayout] = useState<DockLayout>(INITIAL_LAYOUT);
-  const [activeAgentId, setActiveAgentId] = useState("crab");
+  const [activeAgentId, setActiveAgentId] = useState("hermes");
   const [draggingAgentId, setDraggingAgentId] = useState<string | null>(null);
+  const [clickThrough, setClickThrough] = useState(false);
+  const [idle, setIdle] = useState(false);
   const [placements, setPlacements] = useState<AgentPlacements>(() =>
     loadStoredPlacements(defaultPlacements),
   );
+  const placementsRef = useRef<AgentPlacements>(placements);
 
+  const windowBuddyId = useMemo(() => new URLSearchParams(window.location.search).get("buddy"), []);
+  const windowBuddy = useMemo(
+    () => buddies.find((buddy) => buddy.id === windowBuddyId) ?? null,
+    [windowBuddyId],
+  );
+  const perBuddyWindow = Boolean(windowBuddy);
+  const visibleBuddies = windowBuddy ? [windowBuddy] : buddies;
   const multiMonitor = useMemo(
     () => new URLSearchParams(window.location.search).get("multiMonitor") === "true",
     [],
   );
+  const windowBuddyPlacement = windowBuddy
+    ? placements[windowBuddy.id] ?? defaultPlacements[windowBuddy.id]
+    : null;
+  const windowBuddyBubbleVisible = Boolean(
+    windowBuddy &&
+      windowBuddy.id === activeAgentId &&
+      windowBuddy.message &&
+      windowBuddyPlacement?.state === "tucked",
+  );
+
+  useEffect(() => {
+    placementsRef.current = placements;
+  }, [placements]);
 
   useEffect(() => {
     let mounted = true;
@@ -171,6 +283,32 @@ export function BorderDock() {
       await setDockInputEnabled(true);
 
       try {
+        if (windowBuddy && windowBuddyPlacement) {
+          const nextLayout = await invoke<BuddyWindowLayout>("configure_buddy_window", {
+            request: {
+              buddyId: windowBuddy.id,
+              edge: windowBuddyPlacement.edge,
+              state: windowBuddyPlacement.state,
+              slot:
+                windowBuddyPlacement.state === "tucked"
+                  ? windowBuddyPlacement.slot
+                  : windowBuddy.dockSlot,
+              bubbleVisible: windowBuddyBubbleVisible,
+            },
+          });
+
+          if (mounted) {
+            setLayout({
+              monitors: [nextLayout.monitor],
+              activeMonitorIds: [nextLayout.monitor.id],
+              bounds: nextLayout.bounds,
+              multiMonitor: false,
+            });
+          }
+
+          return;
+        }
+
         const nextLayout = await invoke<DockLayout>("configure_border_dock", {
           multiMonitor,
         });
@@ -191,13 +329,193 @@ export function BorderDock() {
       mounted = false;
       setDockInputEnabled(true);
     };
-  }, [multiMonitor]);
+  }, [
+    multiMonitor,
+    windowBuddy,
+    windowBuddyPlacement?.edge,
+    windowBuddyPlacement?.state,
+    windowBuddyBubbleVisible,
+  ]);
 
   useEffect(() => {
     localStorage.setItem(PLACEMENT_STORAGE_KEY, JSON.stringify(placements));
   }, [placements]);
 
+  useEffect(() => {
+    async function registerPassThroughShortcut() {
+      try {
+        await register(PASS_THROUGH_SHORTCUT, (event) => {
+          if (event.state === "Pressed") {
+            setClickThroughMode(!clickThroughRef.current);
+          }
+        });
+      } catch {
+        // The visible Pass button still works when the global shortcut is unavailable.
+      }
+    }
+
+    registerPassThroughShortcut();
+
+    return () => {
+      unregister(PASS_THROUGH_SHORTCUT).catch(() => {});
+      setDockInputEnabled(true);
+    };
+  }, []);
+
+  useEffect(() => {
+    function handlePointerMove(event: PointerEvent) {
+      markActivity();
+      moveBuddyFromPoint(event.clientX, event.clientY);
+    }
+
+    function handlePointerEnd() {
+      finishBuddyDrag();
+    }
+
+    if (draggingAgentId) {
+      window.addEventListener("pointermove", handlePointerMove);
+      window.addEventListener("pointerup", handlePointerEnd);
+      window.addEventListener("pointercancel", handlePointerEnd);
+    }
+
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerEnd);
+      window.removeEventListener("pointercancel", handlePointerEnd);
+    };
+  }, [draggingAgentId]);
+
+  useEffect(() => {
+    if (!perBuddyWindow || !windowBuddy) {
+      return;
+    }
+
+    let cleanupMovedListener: (() => void) | null = null;
+
+    getCurrentWindow()
+      .onMoved(() => {
+        markActivity();
+
+        const currentPlacement =
+          placementsRef.current[windowBuddy.id] ?? defaultPlacements[windowBuddy.id];
+
+        if (currentPlacement.state !== "free") {
+          return;
+        }
+
+        setDraggingAgentId(windowBuddy.id);
+
+        if (nativeMoveSnapTimerRef.current) {
+          window.clearTimeout(nativeMoveSnapTimerRef.current);
+        }
+
+        nativeMoveSnapTimerRef.current = window.setTimeout(async () => {
+          try {
+            const result = await invoke<BuddySnapResult>("snap_buddy_window", {
+              request: {
+                buddyId: windowBuddy.id,
+                bubbleVisible: windowBuddyBubbleVisible,
+              },
+            });
+
+            if (result.snapped && result.edge) {
+              setPlacements((current) => ({
+                ...current,
+                [windowBuddy.id]: {
+                  state: "tucked",
+                  edge: result.edge as Edge,
+                  slot: result.slot ?? windowBuddy.dockSlot,
+                },
+              }));
+            }
+          } catch {
+            // Browser previews and unsupported window managers keep the free placement.
+          } finally {
+            setDraggingAgentId(null);
+          }
+        }, 240);
+      })
+      .then((unlisten) => {
+        cleanupMovedListener = unlisten;
+      })
+      .catch(() => {});
+
+    return () => {
+      cleanupMovedListener?.();
+
+      if (nativeMoveSnapTimerRef.current) {
+        window.clearTimeout(nativeMoveSnapTimerRef.current);
+      }
+    };
+  }, [perBuddyWindow, windowBuddy, windowBuddyBubbleVisible]);
+
+  useEffect(() => {
+    markActivity();
+
+    return () => {
+      if (idleTimerRef.current) {
+        window.clearTimeout(idleTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!perBuddyWindow || draggingAgentId || !idle) {
+      setBuddyWindowInteractive(true);
+      return;
+    }
+
+    const canPulseClickThrough =
+      windowBuddy?.visible === "faint" ||
+      (windowBuddyPlacement?.state === "tucked" && !windowBuddyBubbleVisible);
+
+    if (!canPulseClickThrough) {
+      return;
+    }
+
+    setBuddyWindowInteractive(false);
+    const restoreTimer = window.setTimeout(() => {
+      setBuddyWindowInteractive(true);
+    }, IDLE_CLICK_THROUGH_PULSE);
+
+    return () => {
+      window.clearTimeout(restoreTimer);
+      setBuddyWindowInteractive(true);
+    };
+  }, [
+    draggingAgentId,
+    idle,
+    perBuddyWindow,
+    windowBuddy?.visible,
+    windowBuddyBubbleVisible,
+    windowBuddyPlacement?.state,
+  ]);
+
+  function markActivity() {
+    setIdle(false);
+
+    if (idleTimerRef.current) {
+      window.clearTimeout(idleTimerRef.current);
+    }
+
+    idleTimerRef.current = window.setTimeout(() => {
+      setIdle(true);
+    }, IDLE_FADE_DELAY);
+  }
+
+  function setClickThroughMode(enabled: boolean) {
+    clickThroughRef.current = enabled;
+    setClickThrough(enabled);
+    setBuddyWindowInteractive(!enabled);
+  }
+
   function startBuddyDrag(buddy: DockBuddy, event: ReactPointerEvent<HTMLElement>) {
+    if (clickThrough) {
+      return;
+    }
+
+    markActivity();
+
     const stageRect = stageRef.current?.getBoundingClientRect();
 
     if (!stageRect) {
@@ -205,7 +523,13 @@ export function BorderDock() {
     }
 
     event.preventDefault();
-    event.currentTarget.setPointerCapture(event.pointerId);
+    event.stopPropagation();
+
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Window-level listeners keep dragging reliable on desktop webviews.
+    }
 
     const pointerX = event.clientX - stageRect.left;
     const pointerY = event.clientY - stageRect.top;
@@ -214,6 +538,18 @@ export function BorderDock() {
       currentPlacement.state === "free"
         ? currentPlacement
         : getFreePlacement(buddy.edge, pointerX, pointerY, stageRect);
+
+    if (perBuddyWindow) {
+      dragRef.current = null;
+      setActiveAgentId(buddy.id);
+      setDraggingAgentId(buddy.id);
+      setPlacements((current) => ({
+        ...current,
+        [buddy.id]: centerFreePlacement(freePlacement.edge, stageRect),
+      }));
+      startNativeBuddyDrag(buddy.id, freePlacement.edge, windowBuddyBubbleVisible);
+      return;
+    }
 
     dragRef.current = {
       agentId: buddy.id,
@@ -230,6 +566,11 @@ export function BorderDock() {
   }
 
   function moveBuddy(event: ReactPointerEvent<HTMLElement>) {
+    markActivity();
+    moveBuddyFromPoint(event.clientX, event.clientY);
+  }
+
+  function moveBuddyFromPoint(clientX: number, clientY: number) {
     const activeDrag = dragRef.current;
     const stageRect = stageRef.current?.getBoundingClientRect();
 
@@ -237,8 +578,8 @@ export function BorderDock() {
       return;
     }
 
-    const pointerX = event.clientX - stageRect.left;
-    const pointerY = event.clientY - stageRect.top;
+    const pointerX = clientX - stageRect.left;
+    const pointerY = clientY - stageRect.top;
 
     setPlacements((current) => {
       const currentPlacement = current[activeDrag.agentId] ?? defaultPlacements[activeDrag.agentId];
@@ -265,6 +606,7 @@ export function BorderDock() {
   }
 
   function finishBuddyDrag() {
+    markActivity();
     const activeDrag = dragRef.current;
     const stageRect = stageRef.current?.getBoundingClientRect();
 
@@ -293,12 +635,30 @@ export function BorderDock() {
         [activeDrag.agentId]: {
           state: "tucked",
           edge: snappedEdge,
+          slot: getPreviewDockSlot(snappedEdge, currentPlacement, stageRect),
         },
       };
     });
   }
 
+  async function dragOverlayWindow() {
+    try {
+      await getCurrentWindow().startDragging();
+    } catch {
+      // Browser previews do not have a native window to drag.
+    }
+  }
+
+  async function resizeOverlayWindow(direction: ResizeDirection) {
+    try {
+      await getCurrentWindow().startResizeDragging(direction);
+    } catch {
+      // Browser previews do not have a native window to resize.
+    }
+  }
+
   function tuckBuddy(buddyId: string) {
+    markActivity();
     setPlacements((current) => {
       const currentPlacement = current[buddyId] ?? defaultPlacements[buddyId];
 
@@ -307,19 +667,42 @@ export function BorderDock() {
         [buddyId]: {
           state: "tucked",
           edge: currentPlacement.edge,
+          slot:
+            currentPlacement.state === "tucked"
+              ? currentPlacement.slot
+              : defaultDockSlot(buddyId),
         },
       };
     });
   }
 
   return (
-    <main className="border-dock" aria-label="Border Buddies dock">
+    <main
+      className={[
+        "border-dock",
+        perBuddyWindow ? "border-dock--per-buddy" : "",
+        idle ? "border-dock--idle" : "",
+        clickThrough ? "border-dock--click-through" : "",
+      ].join(" ")}
+      data-window-buddy={windowBuddy?.id ?? "preview"}
+      aria-label="Border Buddies dock"
+      onPointerEnter={markActivity}
+      onPointerMove={markActivity}
+    >
       <div
         className="dock-stage"
         data-monitor-count={layout.activeMonitorIds.length}
         ref={stageRef}
       >
-        {buddies.map((buddy) => (
+        {!perBuddyWindow ? (
+          <DockControls
+            clickThrough={clickThrough}
+            onDragWindow={dragOverlayWindow}
+            onResizeWindow={() => resizeOverlayWindow("SouthEast")}
+            onToggleClickThrough={() => setClickThroughMode(!clickThroughRef.current)}
+          />
+        ) : null}
+        {visibleBuddies.map((buddy) => (
           <BuddyHotspot
             buddy={buddy}
             active={buddy.id === activeAgentId}
@@ -335,6 +718,81 @@ export function BorderDock() {
         ))}
       </div>
     </main>
+  );
+}
+
+async function setBuddyWindowInteractive(interactive: boolean) {
+  try {
+    await invoke("set_buddy_window_interactive", { interactive });
+  } catch {
+    await setDockInputEnabled(interactive);
+  }
+}
+
+async function startNativeBuddyDrag(buddyId: string, edge: Edge, bubbleVisible: boolean) {
+  try {
+    await invoke("configure_buddy_window", {
+      request: {
+        buddyId,
+        edge,
+        state: "free",
+        slot: defaultDockSlot(buddyId),
+        bubbleVisible,
+      },
+    });
+    await getCurrentWindow().startDragging();
+  } catch {
+    // Browser previews and unsupported window managers keep the local drag behavior.
+  }
+}
+
+function DockControls({
+  clickThrough,
+  onDragWindow,
+  onResizeWindow,
+  onToggleClickThrough,
+}: {
+  clickThrough: boolean;
+  onDragWindow: () => void;
+  onResizeWindow: () => void;
+  onToggleClickThrough: () => void;
+}) {
+  return (
+    <div className="dock-controls" aria-label="Border Buddies window controls">
+      <span className="dock-controls__hint">
+        {clickThrough ? "Click-through on" : "Ctrl+Alt+B passes clicks through"}
+      </span>
+      <button
+        className="dock-control dock-control--move"
+        type="button"
+        onPointerDown={(event) => {
+          event.preventDefault();
+          onDragWindow();
+        }}
+        title="Move overlay window"
+      >
+        Move
+      </button>
+      <button
+        className="dock-control dock-control--resize"
+        type="button"
+        onPointerDown={(event) => {
+          event.preventDefault();
+          onResizeWindow();
+        }}
+        title="Resize overlay window"
+      >
+        Resize
+      </button>
+      <button
+        className="dock-control dock-control--pass"
+        type="button"
+        onClick={onToggleClickThrough}
+        title="Toggle click-through mode"
+      >
+        {clickThrough ? "Catch" : "Pass"}
+      </button>
+    </div>
   );
 }
 
@@ -362,6 +820,7 @@ function BuddyHotspot({
   const edge = placement.edge;
   const style = {
     "--agent-color": buddy.color,
+    "--agent-accent": buddy.accentColor ?? buddy.color,
   } as CSSProperties;
 
   if (placement.state === "free") {
@@ -370,6 +829,40 @@ function BuddyHotspot({
       "--agent-y": `${placement.y}px`,
     });
   }
+
+  const headRef = useRef<HTMLButtonElement>(null);
+  const bubbleRef = useRef<HTMLDivElement>(null);
+  const { setHitboxes } = useBuddyHitbox();
+
+  const isBubbleVisible = active && buddy.message && placement.state === "tucked";
+  const freeX = placement.state === "free" ? placement.x : null;
+  const freeY = placement.state === "free" ? placement.y : null;
+
+  useLayoutEffect(() => {
+    const boxes: Hitbox[] = [];
+
+    if (headRef.current) {
+      const r = headRef.current.getBoundingClientRect();
+      boxes.push({
+        x: Math.round(r.left),
+        y: Math.round(r.top),
+        w: Math.round(r.width),
+        h: Math.round(r.height),
+      });
+    }
+
+    if (isBubbleVisible && bubbleRef.current) {
+      const r = bubbleRef.current.getBoundingClientRect();
+      boxes.push({
+        x: Math.round(r.left),
+        y: Math.round(r.top),
+        w: Math.round(r.width),
+        h: Math.round(r.height),
+      });
+    }
+
+    setHitboxes(boxes);
+  }, [placement.state, freeX, freeY, isBubbleVisible, setHitboxes]);
 
   return (
     <section
@@ -381,6 +874,7 @@ function BuddyHotspot({
         dragging ? "agent-hotspot--dragging" : "",
         buddy.visible === "faint" ? "agent-hotspot--faint" : "",
       ].join(" ")}
+      data-buddy={buddy.id}
       style={style}
       aria-label={`${buddy.shortName}: ${buddy.ownerLabel} ${buddy.role}`}
       onPointerEnter={() => setDockInputEnabled(true)}
@@ -390,10 +884,11 @@ function BuddyHotspot({
       onPointerCancel={onDragEnd}
       onDoubleClick={onManualTuck}
     >
-      {active && buddy.message && placement.state === "tucked" ? (
-        <SpeechBubble buddy={buddy} edge={edge} />
+      {isBubbleVisible ? (
+        <SpeechBubble buddy={buddy} edge={edge} ref={bubbleRef} />
       ) : null}
       <button
+        ref={headRef}
         className="agent-button"
         type="button"
         onClick={onActivate}
@@ -405,18 +900,25 @@ function BuddyHotspot({
   );
 }
 
-function SpeechBubble({ buddy, edge }: { buddy: DockBuddy; edge: Edge }) {
-  return (
-    <div className={`speech-bubble speech-bubble--${edge}`} role="status">
-      <strong>{buddy.shortName}</strong>
-      <span className="speech-bubble__owner">{buddy.ownerLabel}</span>
-      <span>{buddy.message}</span>
-      {buddy.id === "crab" ? <span aria-hidden="true">🦀</span> : null}
-    </div>
-  );
-}
+const SpeechBubble = forwardRef<HTMLDivElement, { buddy: DockBuddy; edge: Edge }>(
+  ({ buddy, edge }, ref) => {
+    return (
+      <div ref={ref} className={`speech-bubble speech-bubble--${edge}`} role="status">
+        <strong>{buddy.shortName}</strong>
+        <span className="speech-bubble__owner">{buddy.ownerLabel}</span>
+        <span>{buddy.message}</span>
+        {buddy.id === "crab" ? <span aria-hidden="true">🦀</span> : null}
+        {buddy.id === "hermes" ? <span aria-hidden="true">✦</span> : null}
+      </div>
+    );
+  }
+);
 
 function BuddyFigure({ buddyId, state }: { buddyId: string; state: AgentPlacement["state"] }) {
+  if (buddyId === "hermes") {
+    return state === "free" ? <HermesBody /> : <HermesHead />;
+  }
+
   if (buddyId === "crab") {
     return state === "free" ? <ClawBody /> : <ClawHead />;
   }
@@ -426,6 +928,67 @@ function BuddyFigure({ buddyId, state }: { buddyId: string; state: AgentPlacemen
   }
 
   return state === "free" ? <FoxBody /> : <FoxHead />;
+}
+
+function HermesHead() {
+  return (
+    <svg className="agent-svg agent-svg--hermes" viewBox="0 0 128 128" aria-hidden="true">
+      <defs>
+        <linearGradient id="hermesHeadShell" x1="30" y1="10" x2="110" y2="130" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#2f7dff" />
+          <stop offset="0.52" stopColor="#111b34" />
+          <stop offset="1" stopColor="#050913" />
+        </linearGradient>
+      </defs>
+      <circle className="hermes-halo" cx="66" cy="64" r="55" />
+      <path className="hermes-accent hermes-crest" d="M55 20c10-18 28-18 39 0-14-4-27-4-39 0Z" />
+      <path className="hermes-shell" d="M25 72c0-31 22-55 51-55 25 0 43 18 43 43 0 33-27 54-58 49-22-3-36-17-36-37Z" fill="url(#hermesHeadShell)" />
+      <path className="hermes-line" d="M38 50c18-18 45-22 68-6" />
+      <ellipse className="eye" cx="56" cy="61" rx="13" ry="16" />
+      <ellipse className="eye" cx="88" cy="59" rx="13" ry="16" />
+      <circle className="pupil hermes-pupil" cx="60" cy="62" r="5" />
+      <circle className="pupil hermes-pupil" cx="92" cy="60" r="5" />
+      <circle className="shine" cx="63" cy="57" r="2" />
+      <circle className="shine" cx="95" cy="55" r="2" />
+      <path className="hermes-line hermes-smile" d="M58 82c13 11 29 11 43-1" />
+      <path className="hermes-cape" d="M108 61c13 6 18 15 17 27-10-4-18-10-24-19Z" />
+      <path className="hermes-star" d="M31 30l3 7 7 3-7 3-3 7-3-7-7-3 7-3z" />
+    </svg>
+  );
+}
+
+function HermesBody() {
+  return (
+    <svg className="agent-svg agent-svg--hermes-body" viewBox="0 0 128 160" aria-hidden="true">
+      <defs>
+        <linearGradient id="hermesBodyShell" x1="30" y1="10" x2="110" y2="150" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#2f7dff" />
+          <stop offset="0.52" stopColor="#111b34" />
+          <stop offset="1" stopColor="#050913" />
+        </linearGradient>
+      </defs>
+      <ellipse className="hermes-halo" cx="64" cy="78" rx="60" ry="72" />
+      <path className="hermes-accent hermes-crest" d="M54 22c10-18 29-18 40 0-15-4-28-4-40 0Z" />
+      <path className="hermes-cape" d="M85 74c22 10 36 34 31 70-20-7-35-22-42-45Z" />
+      <ellipse className="hermes-shell" cx="64" cy="64" rx="44" ry="43" fill="url(#hermesBodyShell)" />
+      <ellipse className="hermes-shell" cx="66" cy="109" rx="29" ry="33" fill="url(#hermesBodyShell)" />
+      <path className="hermes-line hermes-arm" d="M28 123c10-7 21-10 33-6" />
+      <path className="hermes-line hermes-baton" d="M85 108c12-9 22-22 27-38" />
+      <circle className="hermes-accent" cx="90" cy="66" r="4" />
+      <ellipse className="eye" cx="49" cy="56" rx="12" ry="15" />
+      <ellipse className="eye" cx="78" cy="54" rx="12" ry="15" />
+      <circle className="pupil hermes-pupil" cx="53" cy="56" r="5" />
+      <circle className="pupil hermes-pupil" cx="82" cy="54" r="5" />
+      <circle className="shine" cx="56" cy="52" r="2" />
+      <circle className="shine" cx="85" cy="50" r="2" />
+      <path className="hermes-line hermes-smile" d="M50 75c13 12 29 12 43-1" />
+      <circle className="hermes-accent hermes-core" cx="66" cy="100" r="10" />
+      <circle cx="66" cy="100" r="4" fill="#f2fbff" />
+      <path d="M48 142c6 4 13 4 20 0" fill="none" stroke="#071020" strokeWidth="6" strokeLinecap="round" />
+      <path d="M73 142c6 4 13 4 20 0" fill="none" stroke="#071020" strokeWidth="6" strokeLinecap="round" />
+      <path className="hermes-star" d="M23 30l3 7 7 3-7 3-3 7-3-7-7-3 7-3z" />
+    </svg>
+  );
 }
 
 function ClawHead() {
@@ -568,7 +1131,7 @@ function isValidPlacement(placement: unknown): placement is AgentPlacement {
   }
 
   if (candidate.state === "tucked") {
-    return true;
+    return typeof candidate.slot === "number";
   }
 
   return (
@@ -603,6 +1166,23 @@ function getFreePlacement(
   };
 }
 
+function centerFreePlacement(edge: Edge, stageRect: DOMRect): FreeAgentPlacement {
+  return {
+    state: "free",
+    edge,
+    x: clamp(
+      (stageRect.width - FREE_AGENT_SIZE) / 2,
+      FREE_AGENT_MARGIN,
+      stageRect.width - FREE_AGENT_SIZE - FREE_AGENT_MARGIN,
+    ),
+    y: clamp(
+      (stageRect.height - FREE_AGENT_SIZE) / 2,
+      FREE_AGENT_MARGIN,
+      stageRect.height - FREE_AGENT_SIZE - FREE_AGENT_MARGIN,
+    ),
+  };
+}
+
 function getSnapEdge(placement: FreeAgentPlacement, stageRect: DOMRect) {
   const distances: Array<[Edge, number]> = [
     ["left", placement.x],
@@ -613,6 +1193,25 @@ function getSnapEdge(placement: FreeAgentPlacement, stageRect: DOMRect) {
   const [edge, distance] = distances.sort((a, b) => a[1] - b[1])[0];
 
   return distance <= SNAP_DISTANCE ? edge : null;
+}
+
+function getPreviewDockSlot(edge: Edge, placement: FreeAgentPlacement, stageRect: DOMRect) {
+  const position =
+    edge === "left" || edge === "right"
+      ? (placement.y + FREE_AGENT_SIZE / 2) / stageRect.height
+      : (placement.x + FREE_AGENT_SIZE / 2) / stageRect.width;
+
+  return nearestDockSlot(edge, position);
+}
+
+function defaultDockSlot(buddyId: string) {
+  return buddies.find((buddy) => buddy.id === buddyId)?.dockSlot ?? 0.5;
+}
+
+function nearestDockSlot(edge: Edge, position: number) {
+  return DOCK_SLOTS_BY_EDGE[edge].reduce((nearest, slot) =>
+    Math.abs(slot - position) < Math.abs(nearest - position) ? slot : nearest,
+  );
 }
 
 function clamp(value: number, min: number, max: number) {

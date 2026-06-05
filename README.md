@@ -43,4 +43,38 @@ Each buddy is a miniature, expressive character with its own personality.
 - Celebration micro-moments (e.g. crab dance on safe share)
 - Full customization: appearance, voice lines, triggers
 
+## Run On Pop!_OS Desktop
+
+Start the always-on-top transparent desktop overlay:
+
+```bash
+cd "$HOME/TETRATHEDRAL/Border Agents/Border-Agents"
+source "$HOME/.cargo/env"
+npm run desktop:dev
+```
+
+In VS Code, run the task:
+
+```text
+BB start
+```
+
+Stop the desktop overlay:
+
+```text
+BB stop
+```
+
+Build an installable desktop bundle:
+
+```bash
+npm run desktop:build
+```
+
+The browser-only preview is still available with:
+
+```bash
+npm run dev
+```
+
 Governance ensures they are reliable. Playfulness ensures you'll love having them around.

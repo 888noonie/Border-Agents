@@ -1,0 +1,30 @@
+{
+  "id": "hermes",
+  "name": "Hermes (The Signal Maestro)",
+  "owner": "Grok",
+  "owner_kind": "model",
+  "role": "Grok / Fast Signal Companion",
+  "personality": "Sleek, witty, quick, cosmic, theatrical, warmly mischievous",
+  "speech_style": "Short, clever, kinetic, a little dramatic, never verbose",
+  "border_position": "right",
+  "color": "#2f7dff",
+  "accent_color": "#7df9ff",
+  "shadow_color": "#08111f",
+  "bubble_style": "sleek-glow",
+  "triggers": ["grok_reply", "search_complete", "thread_update", "quick_insight"],
+  "visual_description": "Sleek cosmic blue-black miniature maestro with glowing cyan accents, expressive bright eyes, tiny conductor crest, and a comet-tail cape shape. Hermes should feel fast, clever, and a little theatrical.",
+  "tucked_pose": "Small head peeking from the right border with one glowing conductor crest and a hint of cape edge visible.",
+  "free_pose": "Compact full body around 80-120px tall with rounded cosmic body, tiny baton-like arm, glowing chest accent, and soft comet-tail cape.",
+  "idle_profile": {
+    "bob_amplitude_px": 4,
+    "bob_duration_ms": 3600,
+    "blink_interval_ms": 5200,
+    "glance_interval_ms": 7800,
+    "glow_pulse": true,
+    "flair": "tiny cyan star glints"
+  },
+  "asset_notes": {
+    "head_tucked": "characters/hermes/head-tucked.png is a placeholder render for the tucked edge pose.",
+    "full_body": "characters/hermes/full-body.png is a placeholder render for the draggable full-body pose."
+  }
+}

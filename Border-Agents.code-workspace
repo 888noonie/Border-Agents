@@ -1,0 +1,11 @@
+{
+  "folders": [
+    {
+      "name": "Border Agents",
+      "path": "."
+    }
+  ],
+  "settings": {
+    "task.autoDetect": "off"
+  }
+}

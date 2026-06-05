@@ -308,20 +308,11 @@ fn set_input_hitboxes(window: WebviewWindow, boxes: Vec<Hitbox>) -> Result<(), S
 
 #[tauri::command]
 fn reset_dock_input(window: WebviewWindow) -> Result<(), String> {
+    // Only restore cursor capture. Clearing the GTK input shape here races with
+    // native window drags and can crash WebKitGTK on the next move attempt.
     window
         .set_ignore_cursor_events(false)
         .map_err(|error| error.to_string())?;
-
-    #[cfg(target_os = "linux")]
-    {
-        use gtk::prelude::*;
-
-        let gtk_win = window.gtk_window().map_err(|e| e.to_string())?;
-        if let Some(gdk_win) = gtk_win.window() {
-            let region = cairo::Region::create();
-            gdk_win.input_shape_combine_region(&region, 0, 0);
-        }
-    }
 
     Ok(())
 }

@@ -55,14 +55,22 @@ export interface Hitbox {
   h: number;
 }
 
-export function useBuddyHitbox() {
+export function useBuddyHitbox(overlayDragActiveRef?: MutableRefObject<boolean>) {
   const pending = useRef<Hitbox[]>([]);
   const raf = useRef<number | null>(null);
   const failureCount = useRef(0);
 
   const flush = useCallback(() => {
+    if (overlayDragActiveRef?.current) {
+      return;
+    }
+
     if (raf.current) cancelAnimationFrame(raf.current);
     raf.current = requestAnimationFrame(async () => {
+      if (overlayDragActiveRef?.current) {
+        return;
+      }
+
       try {
         await invoke("set_input_hitboxes", { boxes: pending.current });
         failureCount.current = 0;
@@ -70,7 +78,7 @@ export function useBuddyHitbox() {
         failureCount.current += 1;
       }
     });
-  }, []);
+  }, [overlayDragActiveRef]);
 
   const hasHitboxFailures = useCallback(() => failureCount.current > 0, []);
 
@@ -89,11 +97,14 @@ export function useBuddyHitbox() {
   return { setHitboxes, hasHitboxFailures };
 }
 
-function useDockHitboxRegistry(clickThroughRef: MutableRefObject<boolean>) {
+function useDockHitboxRegistry(
+  clickThroughRef: MutableRefObject<boolean>,
+  overlayDragActiveRef: MutableRefObject<boolean>,
+) {
   const boxesByBuddy = useRef<Map<string, Hitbox[]>>(new Map());
   const chromeNodeRef = useRef<HTMLDivElement | null>(null);
   const [chromeNode, setChromeNode] = useState<HTMLDivElement | null>(null);
-  const { setHitboxes, hasHitboxFailures } = useBuddyHitbox();
+  const { setHitboxes, hasHitboxFailures } = useBuddyHitbox(overlayDragActiveRef);
 
   const controlsRef = useCallback((node: HTMLDivElement | null) => {
     chromeNodeRef.current = node;
@@ -101,6 +112,10 @@ function useDockHitboxRegistry(clickThroughRef: MutableRefObject<boolean>) {
   }, []);
 
   const flushHitboxes = useCallback(() => {
+    if (overlayDragActiveRef.current) {
+      return;
+    }
+
     const boxes = Array.from(boxesByBuddy.current.values()).flat();
     const chrome = chromeNodeRef.current;
 
@@ -115,7 +130,7 @@ function useDockHitboxRegistry(clickThroughRef: MutableRefObject<boolean>) {
     }
 
     setHitboxes(boxes);
-  }, [setHitboxes]);
+  }, [overlayDragActiveRef, setHitboxes]);
 
   const reportHitboxes = useCallback(
     (buddyId: string, boxes: Hitbox[]) => {
@@ -405,6 +420,8 @@ export function BorderDock() {
   );
   const placementsRef = useRef<AgentPlacements>(placements);
   const dragStartedAtRef = useRef<number | null>(null);
+  const overlayDragActiveRef = useRef(false);
+  const overlayDragEndTimerRef = useRef<number | null>(null);
   const [healReport, setHealReport] = useState<DockHealReport | null>(null);
   const {
     controlsRef,
@@ -413,7 +430,7 @@ export function BorderDock() {
     clearAllHitboxes,
     refreshChromeHitboxes,
     hasHitboxFailures,
-  } = useDockHitboxRegistry(clickThroughRef);
+  } = useDockHitboxRegistry(clickThroughRef, overlayDragActiveRef);
 
   const windowBuddy = useMemo(
     () => buddies.find((buddy) => buddy.id === windowBuddyId) ?? null,
@@ -576,8 +593,31 @@ export function BorderDock() {
     refreshChromeHitboxes();
   }, [dockCollapsed, effectiveRenderMode, clearAllHitboxes, refreshChromeHitboxes]);
 
+  const markOverlayDragActive = useCallback(() => {
+    overlayDragActiveRef.current = true;
+
+    if (overlayDragEndTimerRef.current) {
+      window.clearTimeout(overlayDragEndTimerRef.current);
+    }
+  }, []);
+
+  const markOverlayDragEnded = useCallback(() => {
+    if (overlayDragEndTimerRef.current) {
+      window.clearTimeout(overlayDragEndTimerRef.current);
+    }
+
+    overlayDragEndTimerRef.current = window.setTimeout(() => {
+      overlayDragActiveRef.current = false;
+      refreshChromeHitboxes();
+    }, 280);
+  }, [refreshChromeHitboxes]);
+
   const performSelfHeal = useCallback(
     async (options?: { panic?: boolean; routine?: boolean }) => {
+      if (overlayDragActiveRef.current) {
+        return createHealReport([]);
+      }
+
       const actions: DockHealAction[] = [];
 
       if (
@@ -722,6 +762,18 @@ export function BorderDock() {
       return;
     }
 
+    let unlistenMoved: (() => void) | null = null;
+
+    getCurrentWindow()
+      .onMoved(() => {
+        markOverlayDragActive();
+        markOverlayDragEnded();
+      })
+      .then((unlisten) => {
+        unlistenMoved = unlisten;
+      })
+      .catch(() => {});
+
     const intervalId = window.setInterval(() => {
       performSelfHeal({ routine: true });
     }, SELF_HEAL_INTERVAL_MS);
@@ -735,10 +787,17 @@ export function BorderDock() {
     window.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
+      unlistenMoved?.();
+
+      if (overlayDragEndTimerRef.current) {
+        window.clearTimeout(overlayDragEndTimerRef.current);
+      }
+
+      overlayDragActiveRef.current = false;
       window.clearInterval(intervalId);
       window.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [nativeUnifiedDock, performSelfHeal]);
+  }, [markOverlayDragActive, markOverlayDragEnded, nativeUnifiedDock, performSelfHeal]);
 
   useEffect(() => {
     if (!unifiedDock || dockCollapsed) {
@@ -1036,19 +1095,19 @@ export function BorderDock() {
     });
   }
 
-  async function dragOverlayWindow() {
-    try {
-      await getCurrentWindow().startDragging();
-    } catch {
-      // Browser previews do not have a native window to drag.
-    }
+  function beginOverlayWindowDrag() {
+    // Native move is handled by data-tauri-drag-region on the Move control.
+    // We only pause hitbox/self-heal updates while the compositor is dragging.
+    markOverlayDragActive();
   }
 
-  async function resizeOverlayWindow(direction: ResizeDirection) {
+  function beginOverlayWindowResize(direction: ResizeDirection) {
+    markOverlayDragActive();
+
     try {
-      await getCurrentWindow().startResizeDragging(direction);
+      void getCurrentWindow().startResizeDragging(direction);
     } catch {
-      // Browser previews do not have a native window to resize.
+      markOverlayDragEnded();
     }
   }
 
@@ -1113,8 +1172,8 @@ export function BorderDock() {
                 renderMode: cycleDockRenderMode(current.renderMode),
               }))
             }
-            onDragWindow={dragOverlayWindow}
-            onResizeWindow={() => resizeOverlayWindow("SouthEast")}
+            onBeginOverlayDrag={beginOverlayWindowDrag}
+            onBeginOverlayResize={() => beginOverlayWindowResize("SouthEast")}
             onRecover={() => performSelfHeal({ panic: true })}
             onToggleClickThrough={() => setClickThroughMode(!clickThroughRef.current)}
             healReport={healReport}
@@ -1191,9 +1250,9 @@ function DockChrome({
   healReport,
   onCollapseToggle,
   onCycleRenderMode,
-  onDragWindow,
+  onBeginOverlayDrag,
+  onBeginOverlayResize,
   onRecover,
-  onResizeWindow,
   onToggleClickThrough,
   renderMode,
 }: {
@@ -1203,9 +1262,9 @@ function DockChrome({
   healReport: DockHealReport | null;
   onCollapseToggle: () => void;
   onCycleRenderMode: () => void;
-  onDragWindow: () => void;
+  onBeginOverlayDrag: () => void;
+  onBeginOverlayResize: () => void;
   onRecover: () => void;
-  onResizeWindow: () => void;
   onToggleClickThrough: () => void;
   renderMode: DockRenderMode;
 }) {
@@ -1241,11 +1300,9 @@ function DockChrome({
           </button>
           <button
             className="dock-control dock-control--move"
+            data-tauri-drag-region
             type="button"
-            onPointerDown={(event) => {
-              event.preventDefault();
-              onDragWindow();
-            }}
+            onPointerDown={onBeginOverlayDrag}
             title="Move overlay window"
           >
             Move
@@ -1255,7 +1312,7 @@ function DockChrome({
             type="button"
             onPointerDown={(event) => {
               event.preventDefault();
-              onResizeWindow();
+              onBeginOverlayResize();
             }}
             title="Resize overlay window"
           >

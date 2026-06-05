@@ -2,6 +2,7 @@ import {
   type CSSProperties,
   type ChangeEvent,
   type FormEvent,
+  type MutableRefObject,
   type PointerEvent as ReactPointerEvent,
   useEffect,
   forwardRef,
@@ -29,6 +30,14 @@ import {
   normalizeBuddySettings,
 } from "../src/buddyProfiles";
 import {
+  createHealReport,
+  DOCK_RECOVER_SHORTCUT,
+  SELF_HEAL_INTERVAL_MS,
+  STUCK_DRAG_TIMEOUT_MS,
+  type DockHealAction,
+  type DockHealReport,
+} from "../src/dockSelfHeal";
+import {
   cycleDockRenderMode,
   DEFAULT_DOCK_SETTINGS,
   DOCK_RENDER_MODE_LABELS,
@@ -49,13 +58,21 @@ export interface Hitbox {
 export function useBuddyHitbox() {
   const pending = useRef<Hitbox[]>([]);
   const raf = useRef<number | null>(null);
+  const failureCount = useRef(0);
 
   const flush = useCallback(() => {
     if (raf.current) cancelAnimationFrame(raf.current);
-    raf.current = requestAnimationFrame(() => {
-      invoke("set_input_hitboxes", { boxes: pending.current }).catch(() => {});
+    raf.current = requestAnimationFrame(async () => {
+      try {
+        await invoke("set_input_hitboxes", { boxes: pending.current });
+        failureCount.current = 0;
+      } catch {
+        failureCount.current += 1;
+      }
     });
   }, []);
+
+  const hasHitboxFailures = useCallback(() => failureCount.current > 0, []);
 
   const setHitboxes = useCallback(
     (boxes: Hitbox[]) => {
@@ -69,14 +86,14 @@ export function useBuddyHitbox() {
     if (raf.current) cancelAnimationFrame(raf.current);
   }, []);
 
-  return { setHitboxes };
+  return { setHitboxes, hasHitboxFailures };
 }
 
-function useDockHitboxRegistry() {
+function useDockHitboxRegistry(clickThroughRef: MutableRefObject<boolean>) {
   const boxesByBuddy = useRef<Map<string, Hitbox[]>>(new Map());
   const chromeNodeRef = useRef<HTMLDivElement | null>(null);
   const [chromeNode, setChromeNode] = useState<HTMLDivElement | null>(null);
-  const { setHitboxes } = useBuddyHitbox();
+  const { setHitboxes, hasHitboxFailures } = useBuddyHitbox();
 
   const controlsRef = useCallback((node: HTMLDivElement | null) => {
     chromeNodeRef.current = node;
@@ -102,10 +119,16 @@ function useDockHitboxRegistry() {
 
   const reportHitboxes = useCallback(
     (buddyId: string, boxes: Hitbox[]) => {
+      if (clickThroughRef.current) {
+        boxesByBuddy.current.delete(buddyId);
+        flushHitboxes();
+        return;
+      }
+
       boxesByBuddy.current.set(buddyId, boxes);
       flushHitboxes();
     },
-    [flushHitboxes],
+    [clickThroughRef, flushHitboxes],
   );
 
   const clearBuddyHitboxes = useCallback(
@@ -147,6 +170,7 @@ function useDockHitboxRegistry() {
     clearBuddyHitboxes,
     clearAllHitboxes,
     refreshChromeHitboxes,
+    hasHitboxFailures,
   };
 }
 
@@ -380,13 +404,16 @@ export function BorderDock() {
     loadStoredDockSettings(DEFAULT_DOCK_SETTINGS),
   );
   const placementsRef = useRef<AgentPlacements>(placements);
+  const dragStartedAtRef = useRef<number | null>(null);
+  const [healReport, setHealReport] = useState<DockHealReport | null>(null);
   const {
     controlsRef,
     reportHitboxes,
     clearBuddyHitboxes,
     clearAllHitboxes,
     refreshChromeHitboxes,
-  } = useDockHitboxRegistry();
+    hasHitboxFailures,
+  } = useDockHitboxRegistry(clickThroughRef);
 
   const windowBuddy = useMemo(
     () => buddies.find((buddy) => buddy.id === windowBuddyId) ?? null,
@@ -407,6 +434,17 @@ export function BorderDock() {
     [],
   );
   const browserPreview = useMemo(() => isBrowserPreviewSurface(), []);
+  const nativeUnifiedDock = useMemo(() => {
+    if (!unifiedDock || browserPreview) {
+      return false;
+    }
+
+    try {
+      return getCurrentWebviewWindow().label === "border-dock";
+    } catch {
+      return false;
+    }
+  }, [browserPreview, unifiedDock]);
   const effectiveRenderMode = unifiedDock ? dockRenderMode : FULL_RENDER_MODE;
   const windowBuddyPlacement = windowBuddy
     ? placements[windowBuddy.id] ?? defaultPlacements[windowBuddy.id]
@@ -538,6 +576,93 @@ export function BorderDock() {
     refreshChromeHitboxes();
   }, [dockCollapsed, effectiveRenderMode, clearAllHitboxes, refreshChromeHitboxes]);
 
+  const performSelfHeal = useCallback(
+    async (options?: { panic?: boolean; routine?: boolean }) => {
+      const actions: DockHealAction[] = [];
+
+      if (
+        draggingAgentId &&
+        dragStartedAtRef.current &&
+        Date.now() - dragStartedAtRef.current > STUCK_DRAG_TIMEOUT_MS
+      ) {
+        dragRef.current = null;
+        setDraggingAgentId(null);
+        actions.push("cleared-stuck-drag");
+      }
+
+      if (options?.panic) {
+        if (clickThroughRef.current) {
+          clickThroughRef.current = false;
+          setClickThrough(false);
+          actions.push("disabled-pass-through");
+        }
+
+        if (dockCollapsed) {
+          setDockSettings((current) => ({
+            ...current,
+            collapsed: false,
+          }));
+          actions.push("expanded-dock");
+        }
+      }
+
+      const shouldResetPointer =
+        options?.panic || hasHitboxFailures() || actions.includes("cleared-stuck-drag");
+
+      if (nativeUnifiedDock && shouldResetPointer) {
+        try {
+          await invoke("reset_dock_input");
+          actions.push("restored-pointer");
+        } catch {
+          await setDockInputEnabled(true);
+        }
+      } else if (!nativeUnifiedDock && !clickThroughRef.current) {
+        await setDockInputEnabled(true);
+        actions.push("restored-pointer");
+      }
+
+      if (dockCollapsed || clickThroughRef.current) {
+        clearAllHitboxes();
+      } else {
+        refreshChromeHitboxes();
+      }
+      actions.push("refreshed-hitboxes");
+
+      const report = createHealReport(actions);
+      const meaningfulActions = actions.filter((action) => action !== "refreshed-hitboxes");
+
+      if (options?.panic || meaningfulActions.length > 0) {
+        setHealReport(report);
+      }
+
+      return report;
+    },
+    [
+      clearAllHitboxes,
+      dockCollapsed,
+      draggingAgentId,
+      hasHitboxFailures,
+      nativeUnifiedDock,
+      refreshChromeHitboxes,
+    ],
+  );
+
+  function setClickThroughMode(enabled: boolean) {
+    clickThroughRef.current = enabled;
+    setClickThrough(enabled);
+
+    if (nativeUnifiedDock) {
+      if (enabled) {
+        clearAllHitboxes();
+      } else {
+        refreshChromeHitboxes();
+      }
+      return;
+    }
+
+    setBuddyWindowInteractive(!enabled);
+  }
+
   useEffect(() => {
     async function registerDockShortcuts() {
       try {
@@ -566,6 +691,16 @@ export function BorderDock() {
       } catch {
         // The visible Hide button still works when the global shortcut is unavailable.
       }
+
+      try {
+        await register(DOCK_RECOVER_SHORTCUT, (event) => {
+          if (event.state === "Pressed") {
+            performSelfHeal({ panic: true });
+          }
+        });
+      } catch {
+        // Routine self-heal still runs on the maintenance interval.
+      }
     }
 
     registerDockShortcuts();
@@ -573,9 +708,37 @@ export function BorderDock() {
     return () => {
       unregister(PASS_THROUGH_SHORTCUT).catch(() => {});
       unregister(DOCK_COLLAPSE_SHORTCUT).catch(() => {});
+      unregister(DOCK_RECOVER_SHORTCUT).catch(() => {});
       setDockInputEnabled(true);
     };
-  }, [unifiedDock]);
+  }, [performSelfHeal, unifiedDock]);
+
+  useEffect(() => {
+    dragStartedAtRef.current = draggingAgentId ? Date.now() : null;
+  }, [draggingAgentId]);
+
+  useEffect(() => {
+    if (!nativeUnifiedDock) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      performSelfHeal({ routine: true });
+    }, SELF_HEAL_INTERVAL_MS);
+
+    function handleVisibilityChange() {
+      if (document.visibilityState === "visible") {
+        performSelfHeal({ routine: true });
+      }
+    }
+
+    window.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.clearInterval(intervalId);
+      window.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [nativeUnifiedDock, performSelfHeal]);
 
   useEffect(() => {
     if (!unifiedDock || dockCollapsed) {
@@ -739,12 +902,6 @@ export function BorderDock() {
     idleTimerRef.current = window.setTimeout(() => {
       setIdle(true);
     }, IDLE_FADE_DELAY);
-  }
-
-  function setClickThroughMode(enabled: boolean) {
-    clickThroughRef.current = enabled;
-    setClickThrough(enabled);
-    setBuddyWindowInteractive(!enabled);
   }
 
   function startBuddyDrag(buddy: DockBuddy, event: ReactPointerEvent<HTMLElement>) {
@@ -958,7 +1115,9 @@ export function BorderDock() {
             }
             onDragWindow={dragOverlayWindow}
             onResizeWindow={() => resizeOverlayWindow("SouthEast")}
+            onRecover={() => performSelfHeal({ panic: true })}
             onToggleClickThrough={() => setClickThroughMode(!clickThroughRef.current)}
+            healReport={healReport}
             renderMode={effectiveRenderMode}
           />
         ) : null}
@@ -1029,9 +1188,11 @@ function DockChrome({
   clickThrough,
   collapsed,
   controlsRef,
+  healReport,
   onCollapseToggle,
   onCycleRenderMode,
   onDragWindow,
+  onRecover,
   onResizeWindow,
   onToggleClickThrough,
   renderMode,
@@ -1039,13 +1200,17 @@ function DockChrome({
   clickThrough: boolean;
   collapsed: boolean;
   controlsRef: (node: HTMLDivElement | null) => void;
+  healReport: DockHealReport | null;
   onCollapseToggle: () => void;
   onCycleRenderMode: () => void;
   onDragWindow: () => void;
+  onRecover: () => void;
   onResizeWindow: () => void;
   onToggleClickThrough: () => void;
   renderMode: DockRenderMode;
 }) {
+  const recentHeal =
+    healReport && Date.now() - healReport.at < 20_000 ? healReport.actions.join(", ") : null;
   return (
     <div className="dock-chrome" ref={controlsRef}>
       {collapsed ? (
@@ -1062,7 +1227,9 @@ function DockChrome({
           <span className="dock-controls__hint">
             {clickThrough
               ? "Click-through on"
-              : "Ctrl+Alt+B pass-through · Ctrl+Alt+H hide · Esc collapse"}
+              : recentHeal
+                ? "Self-heal check complete"
+                : "Ctrl+Alt+B pass · Ctrl+Alt+H hide · Ctrl+Alt+Shift+R recover"}
           </span>
           <button
             className="dock-control dock-control--mode"
@@ -1109,6 +1276,14 @@ function DockChrome({
             title="Collapse dock and reclaim screen (Ctrl+Alt+H)"
           >
             Hide
+          </button>
+          <button
+            className="dock-control dock-control--recover"
+            type="button"
+            onClick={onRecover}
+            title="Recover dock controls if the overlay feels stuck (Ctrl+Alt+Shift+R)"
+          >
+            Heal
           </button>
         </div>
       )}
@@ -1258,8 +1433,16 @@ function BuddyHotspot({
       data-buddy={buddy.id}
       style={style}
       aria-label={`${buddy.shortName}: ${buddy.ownerLabel} ${buddy.role}`}
-      onPointerEnter={() => setDockInputEnabled(true)}
-      onPointerLeave={() => setDockInputEnabled(true)}
+      onPointerEnter={() => {
+        if (perBuddyWindow) {
+          setDockInputEnabled(true);
+        }
+      }}
+      onPointerLeave={() => {
+        if (perBuddyWindow) {
+          setDockInputEnabled(true);
+        }
+      }}
       onPointerMove={onDragMove}
       onPointerUp={onDragEnd}
       onPointerCancel={onDragEnd}

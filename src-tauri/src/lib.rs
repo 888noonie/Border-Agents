@@ -307,6 +307,26 @@ fn set_input_hitboxes(window: WebviewWindow, boxes: Vec<Hitbox>) -> Result<(), S
 }
 
 #[tauri::command]
+fn reset_dock_input(window: WebviewWindow) -> Result<(), String> {
+    window
+        .set_ignore_cursor_events(false)
+        .map_err(|error| error.to_string())?;
+
+    #[cfg(target_os = "linux")]
+    {
+        use gtk::prelude::*;
+
+        let gtk_win = window.gtk_window().map_err(|e| e.to_string())?;
+        if let Some(gdk_win) = gtk_win.window() {
+            let region = cairo::Region::create();
+            gdk_win.input_shape_combine_region(&region, 0, 0);
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 fn set_buddy_window_interactive(_window: WebviewWindow, _interactive: bool) -> Result<(), String> {
     // Left as a no-op if we rely on input shapes, or optionally toggle visibility
     // window
@@ -665,7 +685,8 @@ pub fn run() {
             current_buddy_id,
             snap_buddy_window,
             set_buddy_window_interactive,
-            set_input_hitboxes
+            set_input_hitboxes,
+            reset_dock_input
         ])
         .run(tauri::generate_context!())
         .expect("error while running Border Agents");

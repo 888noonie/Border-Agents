@@ -154,6 +154,11 @@
   background: rgb(255 255 255 / 0.78);
 }
 
+.dock-control--recover {
+  cursor: pointer;
+  background: rgb(125 249 255 / 0.88);
+}
+
 .agent-hotspot {
   --agent-size: 3.45rem;
   --agent-color: #ff4d4d;

@@ -20,7 +20,7 @@
         "focus": true
       },
       "problemMatcher": [],
-      "detail": "Start Border Agents desktop overlay (Tauri + Vite)"
+      "detail": "Start gateway + desktop; logs to .bb-logs/bb-latest.log"
     },
     {
       "label": "BB gateway",
@@ -38,7 +38,7 @@
         "focus": true
       },
       "problemMatcher": [],
-      "detail": "Start Hermes dev gateway on ws://127.0.0.1:17387/border-buddies"
+      "detail": "Gateway only; logs to .bb-logs/bb-latest.log"
     },
     {
       "label": "BB stop",
@@ -56,6 +56,23 @@
       },
       "problemMatcher": [],
       "detail": "Stop desktop overlay, Vite dev server, and gateway"
+    },
+    {
+      "label": "BB report",
+      "type": "shell",
+      "command": "bash",
+      "args": ["scripts/bb-report.sh"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "none",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": false
+      },
+      "problemMatcher": [],
+      "detail": "Print .bb-logs/bb-events.log and process status after a crash"
     },
     {
       "label": "BB clean cache",

@@ -32,3 +32,4 @@ kill $pids 2>/dev/null || true
 sleep 1
 kill -9 $pids 2>/dev/null || true
 echo "Stopped Border Buddies desktop/dev/gateway processes."
+echo "Diagnostic report: cd Border-Agents && npm run report"

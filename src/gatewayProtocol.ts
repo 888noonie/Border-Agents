@@ -2,7 +2,11 @@ export const GATEWAY_PROTOCOL_VERSION = 1;
 
 export const DEFAULT_GATEWAY_URL = "ws://127.0.0.1:17387/border-buddies";
 
-export type GatewaySource = "border-dock" | "browser-extension" | "gateway-dev";
+export type GatewaySource =
+  | "border-dock"
+  | "browser-extension"
+  | "browser-preview"
+  | "gateway-dev";
 
 export type GatewayConnectionState =
   | "idle"

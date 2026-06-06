@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { bbLog } from "./bbDiagnostics";
 import { BuddyGatewayClient } from "./gatewayClient";
 import {
   type GatewayConnectionState,
@@ -73,6 +74,11 @@ export function useBuddyGateway({
         onStateChange: (nextState, nextDetail) => {
           setState(nextState);
           setDetail(nextDetail ?? null);
+          void bbLog("info", "gateway state", {
+            source,
+            state: nextState,
+            detail: nextDetail ?? null,
+          });
 
           if (nextState !== "connecting") {
             setBusy(false);

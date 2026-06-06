@@ -3,59 +3,211 @@ import { WebSocketServer } from "ws";
 
 const PORT = 17387;
 const PATH = "/border-buddies";
+const HERMES_PROVIDER = process.env.HERMES_PROVIDER?.trim() || "echo";
+const HERMES_API_BASE = normalizeApiBase(process.env.HERMES_API_BASE);
+const HERMES_API_KEY = process.env.HERMES_API_KEY?.trim() || "";
+const HERMES_MODEL = process.env.HERMES_MODEL?.trim() || "";
+const HERMES_SYSTEM_PROMPT =
+  process.env.HERMES_SYSTEM_PROMPT?.trim() ||
+  "You are Hermes, a concise desktop companion speaking through the Border Agents buddy gateway. Be direct, useful, and clear.";
 
 const hermesReplies = [
-  "Signal caught. Want the sharp version?",
-  "I can stay tucked and still watch the thread.",
-  "Gateway link is live. Ask me anything.",
-  "Sharp read: your border dock is connected.",
+  "Hermes here — dev gateway is live on your desktop dock.",
+  "Border link ready. Send a message and I'll echo it back.",
+  "Gateway connected. This is the first-connection test path.",
+  "I'm listening. Ask me anything to verify the wire.",
 ];
 
-const server = createServer((_request, response) => {
+function log(message, detail) {
+  const stamp = new Date().toISOString();
+  if (detail === undefined) {
+    console.log(`[bb-gateway ${stamp}] ${message}`);
+    return;
+  }
+
+  console.log(`[bb-gateway ${stamp}] ${message}`, detail);
+}
+
+function logError(message, error) {
+  const stamp = new Date().toISOString();
+  console.error(`[bb-gateway ${stamp}] ERROR: ${message}`, error);
+}
+
+function normalizeApiBase(value) {
+  const raw = String(value ?? "").trim();
+  if (!raw) {
+    return "";
+  }
+  return raw.replace(/\/+$/, "");
+}
+
+function gatewayMode() {
+  if (HERMES_PROVIDER === "echo") {
+    return "echo";
+  }
+
+  if (!HERMES_API_BASE || !HERMES_MODEL) {
+    return "misconfigured";
+  }
+
+  return "openai-compatible";
+}
+
+function gatewayStatusMessage() {
+  const mode = gatewayMode();
+  if (mode === "openai-compatible") {
+    return `Hermes gateway ready (${HERMES_PROVIDER}: ${HERMES_MODEL})`;
+  }
+
+  if (mode === "misconfigured") {
+    return "Hermes gateway missing HERMES_API_BASE or HERMES_MODEL";
+  }
+
+  return "Hermes gateway ready (fallback echo)";
+}
+
+async function askHermes(text) {
+  const mode = gatewayMode();
+  if (mode !== "openai-compatible") {
+    const echo = String(text ?? "").trim();
+    return echo.length > 0
+      ? `Hermes echo: ${echo}`
+      : hermesReplies[Math.floor(Math.random() * hermesReplies.length)];
+  }
+
+  const headers = {
+    "content-type": "application/json",
+  };
+
+  if (HERMES_API_KEY) {
+    headers.authorization = `Bearer ${HERMES_API_KEY}`;
+  }
+
+  const response = await fetch(`${HERMES_API_BASE}/chat/completions`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model: HERMES_MODEL,
+      messages: [
+        { role: "system", content: HERMES_SYSTEM_PROMPT },
+        { role: "user", content: String(text ?? "") },
+      ],
+      temperature: 0.4,
+      stream: false,
+    }),
+  });
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`Hermes provider returned ${response.status}: ${body.slice(0, 500)}`);
+  }
+
+  const payload = await response.json();
+  const reply = payload?.choices?.[0]?.message?.content;
+
+  if (typeof reply !== "string" || !reply.trim()) {
+    throw new Error("Hermes provider returned an empty reply");
+  }
+
+  return reply.trim();
+}
+
+process.on("uncaughtException", (error) => {
+  logError("uncaught exception", error);
+  process.exit(1);
+});
+
+process.on("unhandledRejection", (reason) => {
+  logError("unhandled rejection", reason);
+  process.exit(1);
+});
+
+const server = createServer((request, response) => {
+  log(`HTTP ${request.method} ${request.url}`);
   response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
   response.end("Border Buddies gateway dev server\n");
 });
 
+server.on("error", (error) => {
+  logError(`HTTP server failed on 127.0.0.1:${PORT}`, error);
+  process.exit(1);
+});
+
 const wss = new WebSocketServer({ server, path: PATH });
 
-wss.on("connection", (socket) => {
+wss.on("error", (error) => {
+  logError("WebSocket server error", error);
+});
+
+wss.on("connection", (socket, request) => {
+  const remote = request.socket.remoteAddress ?? "unknown";
+  log(`client connected from ${remote}`);
+
+  socket.on("error", (error) => {
+    logError("socket error", error);
+  });
+
+  socket.on("close", () => {
+    log(`client disconnected from ${remote}`);
+  });
+
   socket.on("message", (raw) => {
     let message;
 
     try {
       message = JSON.parse(String(raw));
-    } catch {
+    } catch (error) {
+      logError("invalid JSON from client", { raw: String(raw), error });
       return;
     }
+
+    const source = message?.source ? String(message.source) : "unknown";
+    log("message", { source, ...message });
 
     if (message?.type === "hello") {
       socket.send(
         JSON.stringify({
           type: "status",
-          gateway: "border-buddies-dev",
-          provider: "grok",
+          gateway: "hermes-gateway",
+          provider: HERMES_PROVIDER,
           buddies: ["hermes"],
-          message: "Hermes gateway ready",
+          message: gatewayStatusMessage(),
         }),
       );
       return;
     }
 
     if (message?.type === "chat" && message.buddy === "hermes") {
-      const echo = String(message.text ?? "").trim();
-      const reply =
-        echo.length > 0
-          ? `Hermes: ${echo}`
-          : hermesReplies[Math.floor(Math.random() * hermesReplies.length)];
+      void (async () => {
+        try {
+          const reply = await askHermes(message.text);
 
-      socket.send(
-        JSON.stringify({
-          type: "chat_reply",
-          buddy: "hermes",
-          text: reply,
-          requestId: message.requestId,
-        }),
-      );
+          socket.send(
+            JSON.stringify({
+              type: "chat_reply",
+              buddy: "hermes",
+              text: reply,
+              requestId: message.requestId,
+            }),
+          );
+          log("chat_reply", {
+            source,
+            buddy: "hermes",
+            provider: HERMES_PROVIDER,
+            requestId: message.requestId,
+          });
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          logError("Hermes request failed", errorMessage);
+          socket.send(
+            JSON.stringify({
+              type: "error",
+              message: errorMessage,
+              code: "hermes_request_failed",
+            }),
+          );
+        }
+      })();
       return;
     }
 
@@ -72,5 +224,10 @@ wss.on("connection", (socket) => {
 });
 
 server.listen(PORT, "127.0.0.1", () => {
-  console.log(`Buddy gateway listening on ws://127.0.0.1:${PORT}${PATH}`);
+  log(`listening on ws://127.0.0.1:${PORT}${PATH}`, {
+    provider: HERMES_PROVIDER,
+    mode: gatewayMode(),
+    apiBase: HERMES_API_BASE || null,
+    model: HERMES_MODEL || null,
+  });
 });

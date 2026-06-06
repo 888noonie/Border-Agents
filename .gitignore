@@ -2,10 +2,26 @@ node_modules/
 dist/
 target/
 src-tauri/target/
+coverage/
+.nyc_output/
+.turbo/
+*.tsbuildinfo
+.eslintcache
 
 .DS_Store
+Thumbs.db
+*.swp
+*.swo
 *.log
 .bb-logs/
 .env
 .env.*
 !.env.example
+*.local
+*.pem
+*.key
+
+# Generated diagnostic / improvement reports (living artifacts, not committed source)
+Repo_Improvement_Report.md
+*Improvement_Report*.md
+*.report.md

@@ -5,7 +5,7 @@ export type DockSettings = {
   renderMode: DockRenderMode;
 };
 
-export const DOCK_SETTINGS_STORAGE_KEY = "border-buddies:dock:v1";
+export const DOCK_SETTINGS_STORAGE_KEY = "border-buddies:dock:v2";
 
 export const DOCK_RENDER_MODE_LABELS: Record<DockRenderMode, string> = {
   head: "Heads",

@@ -76,6 +76,12 @@
   opacity: 0.72;
 }
 
+.border-dock--idle .agent-hotspot--free,
+.border-dock--idle .agent-hotspot--free.agent-hotspot--active {
+  opacity: 1;
+  filter: none;
+}
+
 .border-dock--idle .speech-bubble {
   opacity: 0.52;
 }
@@ -157,6 +163,43 @@
 .dock-control--recover {
   cursor: pointer;
   background: rgb(125 249 255 / 0.88);
+}
+
+.dock-control--recall {
+  cursor: pointer;
+  background: rgb(255 196 120 / 0.92);
+  color: #2a1600;
+}
+
+.dock-pass-banner {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 8;
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid rgb(255 196 120 / 0.7);
+  border-radius: 0.85rem;
+  background: rgb(42 22 0 / 0.88);
+  box-shadow: 0 0.8rem 1.6rem rgb(8 17 31 / 0.28);
+  color: rgb(255 244 220 / 0.96);
+  font-size: 0.78rem;
+  font-weight: 650;
+  pointer-events: auto;
+}
+
+.dock-pass-banner button {
+  border: 0;
+  border-radius: 999px;
+  padding: 0.35rem 0.72rem;
+  background: rgb(125 249 255 / 0.92);
+  color: #102033;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 760;
 }
 
 .agent-hotspot {

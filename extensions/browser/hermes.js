@@ -8,7 +8,7 @@
     edge: "right",
     color: "#2f7dff",
     accent: "#7df9ff",
-    message: "Signal caught. Want the sharp version?",
+    message: "Your border messenger — chat lives on the desktop dock.",
     bobDuration: 3600,
     snapDistance: 96,
   };
@@ -80,11 +80,10 @@
 
   function nextLine() {
     const lines = [
-      "Signal caught. Want the sharp version?",
-      "Grok has a fast read for you.",
-      "Thread shimmer detected.",
-      "I found the spicy useful bit.",
-      "Tiny insight, neatly wrapped.",
+      "Hermes on the border — desktop dock owns the gateway chat.",
+      "Placement synced. Open the desktop buddy to talk.",
+      "Browser buddy is watching the thread.",
+      "Gateway bubbles land here; chat sends from the dock.",
     ];
 
     return lines[Math.floor(Math.random() * lines.length)];

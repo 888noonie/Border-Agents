@@ -9,7 +9,15 @@ The project makes AI trust boundaries visible and inspectable via friendly "Bord
 
 **Current reality check**: The desktop overlay + buddy UX is advanced and Linux-hardened. The core governance primitives (MemoryPacket, MemoryGrader, SafeContextFrame, receipts, PurposePolicy) exist only in specs/docs — **not yet implemented in code**. UI contains placeholder "memoryMode" settings. Per AGENTS.md, prove the grading primitive before expanding.
 
+**Live status update (2026-06-07)**: The first Hermes UX concept is working. Desktop Hermes can be interacted with through the border overlay, the local gateway can route real OpenAI-compatible provider replies, and the browser preview/extension path can connect to the same Hermes gateway. Significant UI extraction work has occurred since this map was written (new `components/buddy/BuddySurface.tsx`, `BuddyPanel.tsx`, `BuddyUiBubble.tsx` etc. with their own `measureHitboxes` + layout-driven reporting). The big `BorderDock.tsx` is no longer quite as monolithic. See [docs/FIX_LIST.md](./FIX_LIST.md) for the resolved blocker history and remaining polish.
+
+**Current top blocker**: No code implementation yet for the v0.1 deterministic memory grading primitive (MemoryPacket, PurposePolicy, MemoryGrader, SafeContextFrame, PromptRenderer, GradeReceipt). The UX proof is now strong enough to return focus to the AGENTS.md law: prove the grading primitive before expanding into a general agent framework.
+
+See FIX_LIST.md for full history of the attempt, current code locations, exact test sequence, and continuation steps.
+
 ---
+
+
 
 ## 1. High-Level Layers (Mental Model)
 
@@ -189,6 +197,8 @@ npm run gateway:dev          # or "BB gateway" task (ws://127.0.0.1:17387/border
 - "Every governance rule needs tests" — none visible for core.
 - "Authorization must be graded" + "Every grade must produce a receipt" — UI chrome only.
 - "Do not expand into a general agent framework until the memory grading primitive is proven."
+
+**Note on current branch state (updated 2026-06-07)**: The Hermes clickability/gateway issue is resolved enough to commit as a working UX concept. The next project gate is the deterministic memory grading primitive and its tests.
 
 **Roadmap alignment** (docs/ROADMAP.md):
 - v0.1 (grading proof) → mostly docs
@@ -378,5 +388,6 @@ Follow the AGENTS "narrow wedge first" discipline: land the MemoryGrader + recei
 
 The project has real potential to make "AI you can trust because you can see the borders" feel delightful. The map + this feedback should let you (and future contributors/AIs) make steady, lawful progress.
 
-Update this section in REPO_MAP.md as the architecture evolves.
+**Live update (2026-06-07)**: See `docs/FIX_LIST.md` for the resolved Hermes clickability/gateway milestone. A partial extraction of the buddy surface/panel/chat has begun (addressing some of the monolith risk called out above). The map remains a good high-level picture; keep it and the fix list in sync as the governance core lands.
 
+Update this section in REPO_MAP.md as the architecture evolves.

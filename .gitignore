@@ -5,3 +5,7 @@ src-tauri/target/
 
 .DS_Store
 *.log
+.bb-logs/
+.env
+.env.*
+!.env.example

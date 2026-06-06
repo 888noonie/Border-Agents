@@ -1,8 +1,65 @@
 use serde::{Deserialize, Serialize};
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{
     AppHandle, Manager, PhysicalPosition, PhysicalSize, Position, Size, WebviewUrl, WebviewWindow,
     WebviewWindowBuilder,
 };
+
+static BB_LOG_MUTEX: Mutex<()> = Mutex::new(());
+
+const MAX_HITBOX_DIMENSION: i32 = 8192;
+
+fn bb_events_log(line: &str) {
+    eprintln!("{line}");
+
+    let Ok(_guard) = BB_LOG_MUTEX.lock() else {
+        return;
+    };
+
+    if let Ok(path) = std::env::var("BB_LOG_EVENTS") {
+        if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(path) {
+            let _ = writeln!(file, "{line}");
+        }
+    }
+}
+
+fn bb_events_timestamp() -> String {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(duration) => duration.as_millis().to_string(),
+        Err(_) => "0".to_string(),
+    }
+}
+
+fn init_bb_diagnostics() {
+    std::panic::set_hook(Box::new(|info| {
+        bb_events_log(&format!(
+            "[rust panic {}] {info}",
+            bb_events_timestamp()
+        ));
+    }));
+
+    bb_events_log(&format!(
+        "[rust {}] diagnostics initialized (RUST_BACKTRACE={})",
+        bb_events_timestamp(),
+        std::env::var("RUST_BACKTRACE").unwrap_or_else(|_| "unset".to_string())
+    ));
+}
+
+fn sanitize_hitbox(hitbox: &Hitbox) -> Option<(i32, i32, i32, i32)> {
+    if hitbox.w <= 0 || hitbox.h <= 0 {
+        return None;
+    }
+
+    let width = hitbox.w.clamp(1, MAX_HITBOX_DIMENSION);
+    let height = hitbox.h.clamp(1, MAX_HITBOX_DIMENSION);
+    let x = hitbox.x.clamp(-4096, 16384);
+    let y = hitbox.y.clamp(-4096, 16384);
+
+    Some((x, y, width, height))
+}
 
 #[derive(Debug, Serialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -274,6 +331,12 @@ struct Hitbox {
 }
 
 #[tauri::command]
+fn bb_append_log(line: String) -> Result<(), String> {
+    bb_events_log(&line);
+    Ok(())
+}
+
+#[tauri::command]
 fn set_input_hitboxes(window: WebviewWindow, boxes: Vec<Hitbox>) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
@@ -284,23 +347,66 @@ fn set_input_hitboxes(window: WebviewWindow, boxes: Vec<Hitbox>) -> Result<(), S
 
         let scale = gtk_win.scale_factor();
         let region = cairo::Region::create();
+        let mut applied = 0usize;
 
-        for b in &boxes {
-            if b.w <= 0 || b.h <= 0 {
+        for hitbox in &boxes {
+            let Some((x, y, width, height)) = sanitize_hitbox(hitbox) else {
                 continue;
-            }
+            };
 
             region
                 .union_rectangle(&cairo::RectangleInt::new(
-                    b.x * scale,
-                    b.y * scale,
-                    b.w * scale,
-                    b.h * scale,
+                    x * scale,
+                    y * scale,
+                    width * scale,
+                    height * scale,
                 ))
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| {
+                    let message = format!(
+                        "union_rectangle failed for hitbox {:?}: {error}",
+                        hitbox
+                    );
+                    bb_events_log(&format!(
+                        "[rust {}] ERROR: {}",
+                        bb_events_timestamp(),
+                        message
+                    ));
+                    message
+                })?;
+            applied += 1;
         }
 
         gdk_win.input_shape_combine_region(&region, 0, 0);
+
+        if applied == 0 && !boxes.is_empty() {
+            bb_events_log(&format!(
+                "[rust {}] WARN set_input_hitboxes produced empty region (requested={} scale={scale})",
+                bb_events_timestamp(),
+                boxes.len()
+            ));
+        }
+
+        // Opt-in diagnostics for the Hermes first-connection clickability work.
+        // Enable with `BB_LOG_HITBOXES=1` to confirm the clickable region the
+        // dock is actually applying to the border-dock window.
+        if std::env::var("BB_LOG_HITBOXES").is_ok() {
+            bb_events_log(&format!(
+                "[rust {}] set_input_hitboxes window={} applied={}/{} scale={} boxes={:?}",
+                bb_events_timestamp(),
+                window.label(),
+                applied,
+                boxes.len(),
+                scale,
+                boxes
+            ));
+        }
+
+
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (window, boxes);
     }
 
     Ok(())
@@ -308,20 +414,11 @@ fn set_input_hitboxes(window: WebviewWindow, boxes: Vec<Hitbox>) -> Result<(), S
 
 #[tauri::command]
 fn reset_dock_input(window: WebviewWindow) -> Result<(), String> {
+    // Only restore cursor capture. Clearing the GTK input shape here races with
+    // native window drags and can crash WebKitGTK on the next move attempt.
     window
         .set_ignore_cursor_events(false)
         .map_err(|error| error.to_string())?;
-
-    #[cfg(target_os = "linux")]
-    {
-        use gtk::prelude::*;
-
-        let gtk_win = window.gtk_window().map_err(|e| e.to_string())?;
-        if let Some(gdk_win) = gtk_win.window() {
-            let region = cairo::Region::create();
-            gdk_win.input_shape_combine_region(&region, 0, 0);
-        }
-    }
 
     Ok(())
 }
@@ -661,6 +758,8 @@ fn legacy_per_buddy_windows_enabled() -> bool {
 }
 
 pub fn run() {
+    init_bb_diagnostics();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
@@ -680,6 +779,7 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            bb_append_log,
             configure_border_dock,
             configure_buddy_window,
             current_buddy_id,

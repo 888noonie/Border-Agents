@@ -13,6 +13,7 @@
   const FREE_SIZE = 118;
   const TUCKED_SIZE = 54;
   const MARGIN = 12;
+  const GATEWAY_PROTOCOL_VERSION = 1;
 
   const hermes = window.BorderBuddiesHermes;
   const profileRuntime = window.BorderBuddiesProfiles;
@@ -29,6 +30,9 @@
     bubbleVisible: true,
     settingsOpen: false,
     composerDraft: "",
+    gatewayBusy: false,
+    gatewayStatus: "",
+    pendingChat: "",
     websocket: null,
     suppressClickUntil: 0,
   };
@@ -140,15 +144,15 @@
       </div>
       <p class="bb-speech-bubble__message">${escapeHtml(hermes.config.message)}</p>
       <form class="bb-speech-bubble__composer" data-bb-composer>
-        <input type="text" value="${escapeHtml(state.composerDraft)}" placeholder="Ask Hermes" aria-label="Ask Hermes">
-        <button type="submit" title="Record intent">Go</button>
+        <input type="text" value="${escapeHtml(state.composerDraft)}" placeholder="Ask Hermes" aria-label="Ask Hermes" ${state.gatewayBusy ? "disabled" : ""}>
+        <button type="submit" title="Ask Hermes" ${state.gatewayBusy ? "disabled" : ""}>${state.gatewayBusy ? "..." : "Go"}</button>
       </form>
       <div class="bb-speech-bubble__meta">
         <button type="button" data-bb-action="settings">${escapeHtml(state.settings.modelLabel)}</button>
         <span>${escapeHtml(profileRuntime.memoryLabels[state.settings.memoryMode])}</span>
       </div>
       ${state.settingsOpen ? renderSettingsPanel() : ""}
-      <p class="bb-speech-bubble__status">${state.settings.allowAction ? "Action requests require receipts." : "Action authority is off."}</p>
+      <p class="bb-speech-bubble__status">${escapeHtml(statusText())}</p>
     `;
     wireBubble(bubble);
 
@@ -223,8 +227,7 @@
 
     bubble.onsubmit = (event) => {
       event.preventDefault();
-      state.composerDraft = "";
-      render();
+      sendChat();
     };
   }
 
@@ -345,20 +348,60 @@
     }
 
     if (!state.settings.websocketSync) {
+      state.gatewayStatus = "Desktop sync is off.";
+      state.gatewayBusy = false;
       return;
     }
 
     try {
       const socket = new WebSocket(state.settings.websocketUrl);
       state.websocket = socket;
+      state.gatewayStatus = "Connecting to desktop gateway...";
+      render();
 
       socket.addEventListener("open", () => {
-        socket.send(JSON.stringify({ type: "hello", source: "browser-extension" }));
+        socket.send(
+          JSON.stringify({
+            type: "hello",
+            source: "browser-extension",
+            version: GATEWAY_PROTOCOL_VERSION,
+            buddy: "hermes",
+          }),
+        );
         socket.send(JSON.stringify({ type: "placement", buddy: "hermes", placement: state.placement }));
+        state.gatewayStatus = "Desktop gateway connected.";
+        if (state.pendingChat) {
+          const pending = state.pendingChat;
+          state.pendingChat = "";
+          sendChat(pending);
+        } else {
+          render();
+        }
+      });
+
+      socket.addEventListener("close", () => {
+        if (state.websocket === socket) {
+          state.gatewayStatus = "Desktop gateway offline.";
+          state.gatewayBusy = false;
+          render();
+        }
+      });
+
+      socket.addEventListener("error", () => {
+        if (state.websocket === socket) {
+          state.gatewayStatus = "Desktop gateway unreachable.";
+          state.gatewayBusy = false;
+          render();
+        }
       });
 
       socket.addEventListener("message", (event) => {
         const message = safeJson(event.data);
+
+        if (message?.type === "status") {
+          state.gatewayStatus = message.message || "Desktop gateway connected.";
+          render();
+        }
 
         if (message?.type === "placement" && message.buddy === "hermes" && message.placement) {
           state.placement = normalizePlacement(message.placement);
@@ -371,10 +414,65 @@
           state.bubbleVisible = true;
           render();
         }
+
+        if (message?.type === "chat_reply" && message.buddy === "hermes" && message.text) {
+          hermes.config.message = String(message.text);
+          state.gatewayBusy = false;
+          state.gatewayStatus = "Reply from desktop gateway.";
+          state.bubbleVisible = true;
+          render();
+        }
+
+        if (message?.type === "error") {
+          state.gatewayBusy = false;
+          state.gatewayStatus = message.message || "Desktop gateway error.";
+          state.bubbleVisible = true;
+          render();
+        }
       });
     } catch {
       state.websocket = null;
+      state.gatewayStatus = "Desktop gateway unreachable.";
+      state.gatewayBusy = false;
+      render();
     }
+  }
+
+  function sendChat(textOverride) {
+    const text = (textOverride ?? state.composerDraft).trim();
+
+    if (!text) {
+      return;
+    }
+
+    if (!state.settings.websocketSync) {
+      state.gatewayStatus = "Turn on Desktop sync to chat through Hermes.";
+      render();
+      return;
+    }
+
+    if (!state.websocket || state.websocket.readyState !== WebSocket.OPEN) {
+      state.pendingChat = text;
+      state.gatewayStatus = "Connecting to desktop gateway...";
+      connectWebSocket();
+      render();
+      return;
+    }
+
+    const requestId = `browser-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    state.composerDraft = "";
+    state.gatewayBusy = true;
+    state.gatewayStatus = "Hermes is thinking...";
+    hermes.config.message = text;
+    state.websocket.send(
+      JSON.stringify({
+        type: "chat",
+        buddy: "hermes",
+        text,
+        requestId,
+      }),
+    );
+    render();
   }
 
   function persistPlacement(sendSocket = true) {
@@ -397,6 +495,14 @@
     chrome.runtime?.sendMessage?.({ type: "BB_SETTINGS_UPDATED", settings: state.settings });
     render();
     connectWebSocket();
+  }
+
+  function statusText() {
+    if (state.gatewayStatus) {
+      return state.gatewayStatus;
+    }
+
+    return state.settings.allowAction ? "Action requests require receipts." : "Action authority is off.";
   }
 
   function loadPlacement() {

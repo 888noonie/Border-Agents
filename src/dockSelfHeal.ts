@@ -7,7 +7,9 @@ export type DockHealAction =
   | "restored-pointer"
   | "refreshed-hitboxes"
   | "expanded-dock"
-  | "disabled-pass-through";
+  | "disabled-pass-through"
+  | "recalled-buddies"
+  | "restored-overlay";
 
 export type DockHealReport = {
   healed: boolean;

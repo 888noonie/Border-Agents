@@ -5,37 +5,91 @@
       "label": "BB start",
       "type": "shell",
       "command": "bash",
-      "args": [
-        "-lc",
-        "source \"$HOME/.cargo/env\" 2>/dev/null || true; npm run desktop:dev"
-      ],
+      "args": ["scripts/bb-start.sh"],
       "options": {
         "cwd": "${workspaceFolder}"
+      },
+      "group": {
+        "kind": "build",
+        "isDefault": true
       },
       "presentation": {
         "reveal": "always",
         "panel": "dedicated",
-        "clear": true
+        "clear": true,
+        "focus": true
       },
-      "problemMatcher": []
+      "problemMatcher": [],
+      "detail": "Start gateway + desktop; logs to .bb-logs/bb-latest.log"
+    },
+    {
+      "label": "BB gateway",
+      "type": "shell",
+      "command": "bash",
+      "args": ["scripts/bb-gateway.sh"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true,
+        "focus": true
+      },
+      "problemMatcher": [],
+      "detail": "Gateway only; logs to .bb-logs/bb-latest.log"
     },
     {
       "label": "BB stop",
       "type": "shell",
       "command": "bash",
-      "args": [
-        "-lc",
-        "port_pids=$(ss -ltnp 2>/dev/null | awk '/:1420 / {print $NF}' | sed -n 's/.*pid=\\([0-9][0-9]*\\).*/\\1/p' | sort -u); tauri_pids=$(pgrep -f 'target/debug/border-agents|tauri dev|border-agents' 2>/dev/null | sort -u); pids=$(printf '%s\\n%s\\n' \"$port_pids\" \"$tauri_pids\" | awk 'NF' | sort -u); if [ -n \"$pids\" ]; then kill $pids 2>/dev/null || true; echo \"Stopped Border Buddies desktop/dev processes.\"; else echo \"No Border Buddies desktop/dev processes found.\"; fi"
-      ],
+      "args": ["scripts/bb-stop.sh"],
       "options": {
         "cwd": "${workspaceFolder}"
       },
+      "group": "none",
       "presentation": {
         "reveal": "always",
         "panel": "shared",
         "clear": true
       },
-      "problemMatcher": []
+      "problemMatcher": [],
+      "detail": "Stop desktop overlay, Vite dev server, and gateway"
+    },
+    {
+      "label": "BB report",
+      "type": "shell",
+      "command": "bash",
+      "args": ["scripts/bb-report.sh"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "none",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": false
+      },
+      "problemMatcher": [],
+      "detail": "Print .bb-logs/bb-events.log and process status after a crash"
+    },
+    {
+      "label": "BB clean cache",
+      "type": "shell",
+      "command": "bash",
+      "args": ["scripts/bb-clean.sh"],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "none",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Remove dist, Vite cache, and Rust target build artifacts"
     },
     {
       "label": "BB browser preview",
@@ -44,30 +98,14 @@
       "options": {
         "cwd": "${workspaceFolder}"
       },
+      "group": "none",
       "presentation": {
         "reveal": "always",
         "panel": "dedicated",
         "clear": true
       },
-      "problemMatcher": []
-    },
-    {
-      "label": "BB clean cache",
-      "type": "shell",
-      "command": "bash",
-      "args": [
-        "-lc",
-        "rm -rf dist node_modules/.vite .vite target src-tauri/target && echo \"Cleaned Border Buddies build and dev caches.\""
-      ],
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
-      "presentation": {
-        "reveal": "always",
-        "panel": "shared",
-        "clear": true
-      },
-      "problemMatcher": []
+      "problemMatcher": [],
+      "detail": "Browser-only Vite preview (no Tauri overlay)"
     }
   ]
 }

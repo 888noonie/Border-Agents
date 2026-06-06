@@ -52,7 +52,7 @@
     return {
       enabled: true,
       hermesEnabled: true,
-      websocketSync: false,
+      websocketSync: true,
       websocketUrl: "ws://127.0.0.1:17387/border-buddies",
       provider: profile.adapterDefaults.provider,
       modelLabel: profile.adapterDefaults.modelLabel,
@@ -76,7 +76,7 @@
     return {
       enabled: candidate.enabled !== false,
       hermesEnabled: candidate.hermesEnabled !== false,
-      websocketSync: candidate.websocketSync === true,
+      websocketSync: candidate.websocketSync !== false,
       websocketUrl: normalizeText(candidate.websocketUrl, defaults.websocketUrl),
       provider,
       modelLabel: normalizeText(candidate.modelLabel, defaults.modelLabel),

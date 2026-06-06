@@ -245,6 +245,12 @@
   padding: 7px 9px;
 }
 
+.bb-speech-bubble__composer input:disabled,
+.bb-speech-bubble__composer button:disabled {
+  cursor: wait;
+  opacity: 0.64;
+}
+
 .bb-speech-bubble__meta {
   justify-content: space-between;
   color: #64748b;

@@ -1,11 +1,8 @@
 import {
   type CSSProperties,
-  type ChangeEvent,
-  type FormEvent,
   type MutableRefObject,
   type PointerEvent as ReactPointerEvent,
   useEffect,
-  forwardRef,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -20,15 +17,23 @@ import clawManifest from "../characters/crab/manifest.json";
 import hermesManifest from "../characters/hermes/manifest.json";
 import owlManifest from "../characters/owl/manifest.json";
 import {
-  BUDDY_MEMORY_LABELS,
   BUDDY_PROFILES,
-  BUDDY_PROVIDER_LABELS,
-  type BuddyMemoryMode,
-  type BuddyProvider,
+  buddyHasGateway,
   type BuddySettings,
   createDefaultBuddySettings,
   normalizeBuddySettings,
 } from "../src/buddyProfiles";
+import { bbLog } from "../src/bbDiagnostics";
+import type { GatewayConnectionState } from "../src/gatewayProtocol";
+import {
+  DEFAULT_GATEWAY_SETTINGS,
+  GATEWAY_SETTINGS_STORAGE_KEY,
+  loadStoredGatewaySettings,
+  normalizeGatewaySettings,
+  type GatewaySettings,
+} from "../src/gatewaySettings";
+import { connectionLabelForState, useBuddyGateway } from "../src/useBuddyGateway";
+import { BuddySurface, type BuddySurfaceHandle } from "./buddy/BuddySurface";
 import {
   createHealReport,
   DOCK_RECOVER_SHORTCUT,
@@ -55,22 +60,36 @@ export interface Hitbox {
   h: number;
 }
 
-export function useBuddyHitbox() {
+export function useBuddyHitbox(overlayDragActiveRef?: MutableRefObject<boolean>) {
   const pending = useRef<Hitbox[]>([]);
   const raf = useRef<number | null>(null);
   const failureCount = useRef(0);
 
   const flush = useCallback(() => {
+    if (overlayDragActiveRef?.current) {
+      return;
+    }
+
     if (raf.current) cancelAnimationFrame(raf.current);
     raf.current = requestAnimationFrame(async () => {
+      if (overlayDragActiveRef?.current) {
+        return;
+      }
+
       try {
         await invoke("set_input_hitboxes", { boxes: pending.current });
         failureCount.current = 0;
-      } catch {
+      } catch (error) {
         failureCount.current += 1;
+        void bbLog("error", "set_input_hitboxes failed", {
+          failureCount: failureCount.current,
+          boxCount: pending.current.length,
+          boxes: pending.current,
+          error: String(error),
+        });
       }
     });
-  }, []);
+  }, [overlayDragActiveRef]);
 
   const hasHitboxFailures = useCallback(() => failureCount.current > 0, []);
 
@@ -89,18 +108,32 @@ export function useBuddyHitbox() {
   return { setHitboxes, hasHitboxFailures };
 }
 
-function useDockHitboxRegistry(clickThroughRef: MutableRefObject<boolean>) {
+function useDockHitboxRegistry(
+  clickThroughRef: MutableRefObject<boolean>,
+  overlayDragActiveRef: MutableRefObject<boolean>,
+) {
   const boxesByBuddy = useRef<Map<string, Hitbox[]>>(new Map());
   const chromeNodeRef = useRef<HTMLDivElement | null>(null);
+  const passBannerNodeRef = useRef<HTMLDivElement | null>(null);
   const [chromeNode, setChromeNode] = useState<HTMLDivElement | null>(null);
-  const { setHitboxes, hasHitboxFailures } = useBuddyHitbox();
+  const [passBannerNode, setPassBannerNode] = useState<HTMLDivElement | null>(null);
+  const { setHitboxes, hasHitboxFailures } = useBuddyHitbox(overlayDragActiveRef);
 
   const controlsRef = useCallback((node: HTMLDivElement | null) => {
     chromeNodeRef.current = node;
     setChromeNode(node);
   }, []);
 
+  const passBannerRef = useCallback((node: HTMLDivElement | null) => {
+    passBannerNodeRef.current = node;
+    setPassBannerNode(node);
+  }, []);
+
   const flushHitboxes = useCallback(() => {
+    if (overlayDragActiveRef.current) {
+      return;
+    }
+
     const boxes = Array.from(boxesByBuddy.current.values()).flat();
     const chrome = chromeNodeRef.current;
 
@@ -114,8 +147,19 @@ function useDockHitboxRegistry(clickThroughRef: MutableRefObject<boolean>) {
       });
     }
 
+    const passBanner = passBannerNodeRef.current;
+    if (passBanner) {
+      const rect = passBanner.getBoundingClientRect();
+      boxes.push({
+        x: Math.round(rect.left),
+        y: Math.round(rect.top),
+        w: Math.round(rect.width),
+        h: Math.round(rect.height),
+      });
+    }
+
     setHitboxes(boxes);
-  }, [setHitboxes]);
+  }, [overlayDragActiveRef, setHitboxes]);
 
   const reportHitboxes = useCallback(
     (buddyId: string, boxes: Hitbox[]) => {
@@ -164,8 +208,27 @@ function useDockHitboxRegistry(clickThroughRef: MutableRefObject<boolean>) {
     };
   }, [chromeNode, flushHitboxes]);
 
+  useEffect(() => {
+    if (!passBannerNode || typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    flushHitboxes();
+
+    const observer = new ResizeObserver(() => {
+      flushHitboxes();
+    });
+
+    observer.observe(passBannerNode);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [flushHitboxes, passBannerNode]);
+
   return {
     controlsRef,
+    passBannerRef,
     reportHitboxes,
     clearBuddyHitboxes,
     clearAllHitboxes,
@@ -276,6 +339,13 @@ const INITIAL_LAYOUT: DockLayout = {
 const FREE_AGENT_SIZE = 118;
 const FREE_AGENT_MARGIN = 16;
 const SNAP_DISTANCE = 96;
+const DOCKED_HEAD_HITBOX_SIZE = 96;
+const DOCKED_HEAD_EDGE_OVERLAP = 18;
+// A press only becomes a drag after the pointer travels this far. Below the
+// threshold the gesture is treated as a click so the buddy can be activated /
+// opened. This is what makes "click the border buddy to test Hermes" reliable.
+const DRAG_ACTIVATION_THRESHOLD = 6;
+
 const PLACEMENT_STORAGE_KEY = "border-buddies:placements:v4";
 const SETTINGS_STORAGE_KEY = "border-buddies:settings:v2";
 const HIDDEN_NATIVE_WINDOW_ID = "__native_hidden__";
@@ -306,7 +376,7 @@ const buddies: DockBuddy[] = [
     dockSlot: 0.58,
     color: hermesManifest.color,
     accentColor: hermesManifest.accent_color,
-    message: "Signal caught. Want the sharp version?",
+    message: "",
     visible: "primary",
   },
   {
@@ -382,7 +452,9 @@ async function setDockInputEnabled(enabled: boolean) {
 export function BorderDock() {
   const stageRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<ActiveDrag | null>(null);
+  const pendingDragCleanupRef = useRef<(() => void) | null>(null);
   const clickThroughRef = useRef(false);
+
   const idleTimerRef = useRef<number | null>(null);
   const nativeMoveSnapTimerRef = useRef<number | null>(null);
   const initialWindowBuddyId = useMemo(getCurrentBuddyIdFromUrl, []);
@@ -393,6 +465,11 @@ export function BorderDock() {
   const [activeAgentId, setActiveAgentId] = useState(initialWindowBuddyId ?? DEFAULT_BORDER_BUDDY_ID);
   const [draggingAgentId, setDraggingAgentId] = useState<string | null>(null);
   const [clickThrough, setClickThrough] = useState(false);
+  const [fullInputCapture, setFullInputCapture] = useState(false);
+  // Bumped periodically in native border mode to force all BuddyHotspot components
+  // to re-measure and re-report their head rects. This keeps the minimal clickable
+  // head regions alive even when no chat surface is open.
+  const [headForceKey, setHeadForceKey] = useState(0);
   const [idle, setIdle] = useState(false);
   const [placements, setPlacements] = useState<AgentPlacements>(() =>
     loadStoredPlacements(defaultPlacements),
@@ -403,17 +480,26 @@ export function BorderDock() {
   const [dockSettings, setDockSettings] = useState<DockSettings>(() =>
     loadStoredDockSettings(DEFAULT_DOCK_SETTINGS),
   );
+  const [gatewaySettings, setGatewaySettings] = useState<GatewaySettings>(() =>
+    loadStoredGatewaySettings(DEFAULT_GATEWAY_SETTINGS),
+  );
+  const [buddyMessages, setBuddyMessages] = useState<Record<string, string>>(() =>
+    Object.fromEntries(buddies.map((buddy) => [buddy.id, buddy.message ?? ""])),
+  );
   const placementsRef = useRef<AgentPlacements>(placements);
   const dragStartedAtRef = useRef<number | null>(null);
+  const overlayDragActiveRef = useRef(false);
+  const overlayDragEndTimerRef = useRef<number | null>(null);
   const [healReport, setHealReport] = useState<DockHealReport | null>(null);
   const {
     controlsRef,
+    passBannerRef,
     reportHitboxes,
     clearBuddyHitboxes,
     clearAllHitboxes,
     refreshChromeHitboxes,
     hasHitboxFailures,
-  } = useDockHitboxRegistry(clickThroughRef);
+  } = useDockHitboxRegistry(clickThroughRef, overlayDragActiveRef);
 
   const windowBuddy = useMemo(
     () => buddies.find((buddy) => buddy.id === windowBuddyId) ?? null,
@@ -446,6 +532,21 @@ export function BorderDock() {
     }
   }, [browserPreview, unifiedDock]);
   const effectiveRenderMode = unifiedDock ? dockRenderMode : FULL_RENDER_MODE;
+  const passThroughAvailable = !nativeUnifiedDock;
+  const gatewayEnabled = nativeUnifiedDock || browserPreview;
+  const gatewaySource = browserPreview ? "browser-preview" : "border-dock";
+  const gateway = useBuddyGateway({
+    settings: gatewaySettings,
+    source: gatewaySource,
+    enabled: gatewayEnabled,
+    onBubble: (buddyId, text) => {
+      setBuddyMessages((current) => ({
+        ...current,
+        [buddyId]: text,
+      }));
+      setActiveAgentId(buddyId);
+    },
+  });
   const windowBuddyPlacement = windowBuddy
     ? placements[windowBuddy.id] ?? defaultPlacements[windowBuddy.id]
     : null;
@@ -568,6 +669,66 @@ export function BorderDock() {
   }, [dockSettings]);
 
   useEffect(() => {
+    localStorage.setItem(GATEWAY_SETTINGS_STORAGE_KEY, JSON.stringify(gatewaySettings));
+  }, [gatewaySettings]);
+
+  useEffect(() => {
+    setBuddySettings((current) => {
+      const hermesSettings = current.hermes;
+      const nextLabel = connectionLabelForState(gateway.state);
+
+      if (!hermesSettings || hermesSettings.connectionLabel === nextLabel) {
+        return current;
+      }
+
+      return {
+        ...current,
+        hermes: {
+          ...hermesSettings,
+          connectionLabel: nextLabel,
+        },
+      };
+    });
+  }, [gateway.state]);
+
+  useEffect(() => {
+    if (!nativeUnifiedDock) {
+      return;
+    }
+
+    void bbLog("info", "desktop dock ready", {
+      gatewayEnabled,
+      gatewayState: gateway.state,
+      renderMode: effectiveRenderMode,
+    });
+
+    const heartbeat = window.setInterval(() => {
+      void bbLog("info", "heartbeat", {
+        gatewayState: gateway.state,
+        gatewayDetail: gateway.detail,
+        activeAgentId,
+        clickThrough,
+        dockCollapsed,
+        draggingAgentId,
+        hitboxFailures: hasHitboxFailures(),
+      });
+    }, 8000);
+
+    return () => window.clearInterval(heartbeat);
+  }, [
+    activeAgentId,
+    clickThrough,
+    dockCollapsed,
+    draggingAgentId,
+    effectiveRenderMode,
+    gateway.detail,
+    gateway.state,
+    gatewayEnabled,
+    hasHitboxFailures,
+    nativeUnifiedDock,
+  ]);
+
+  useEffect(() => {
     if (dockCollapsed) {
       clearAllHitboxes();
       return;
@@ -576,8 +737,137 @@ export function BorderDock() {
     refreshChromeHitboxes();
   }, [dockCollapsed, effectiveRenderMode, clearAllHitboxes, refreshChromeHitboxes]);
 
+  useEffect(() => {
+    const fallbackId = "__dock_head_fallbacks__";
+
+    if (!nativeUnifiedDock || dockCollapsed || clickThroughRef.current) {
+      clearBuddyHitboxes(fallbackId);
+      return;
+    }
+
+    const viewportWidth = window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    const boxes = visibleBuddies.map((buddy) =>
+      fallbackHitboxForPlacement(
+        placements[buddy.id] ?? defaultPlacements[buddy.id],
+        viewportWidth,
+        viewportHeight,
+      ),
+    );
+
+    reportHitboxes(fallbackId, boxes);
+    void bbLog("info", "registered fallback buddy head hitboxes", {
+      count: boxes.length,
+      boxes,
+    });
+  }, [
+    clearBuddyHitboxes,
+    dockCollapsed,
+    headForceKey,
+    nativeUnifiedDock,
+    placements,
+    reportHitboxes,
+    visibleBuddies,
+    clickThrough,
+  ]);
+
+  useEffect(() => {
+    const captureId = "__debug_full_input_capture__";
+
+    if (!nativeUnifiedDock || dockCollapsed || clickThroughRef.current || !fullInputCapture) {
+      clearBuddyHitboxes(captureId);
+      return;
+    }
+
+    const box = {
+      x: 0,
+      y: 0,
+      w: Math.max(1, window.innerWidth),
+      h: Math.max(1, window.innerHeight),
+    };
+
+    reportHitboxes(captureId, [box]);
+    void bbLog("warn", "debug full input capture enabled", { box });
+  }, [
+    clearBuddyHitboxes,
+    clickThrough,
+    dockCollapsed,
+    fullInputCapture,
+    nativeUnifiedDock,
+    reportHitboxes,
+  ]);
+
+  const markOverlayDragActive = useCallback(() => {
+    overlayDragActiveRef.current = true;
+
+    if (overlayDragEndTimerRef.current) {
+      window.clearTimeout(overlayDragEndTimerRef.current);
+    }
+  }, []);
+
+  const markOverlayDragEnded = useCallback(() => {
+    if (overlayDragEndTimerRef.current) {
+      window.clearTimeout(overlayDragEndTimerRef.current);
+    }
+
+    overlayDragEndTimerRef.current = window.setTimeout(() => {
+      overlayDragActiveRef.current = false;
+      refreshChromeHitboxes();
+    }, 280);
+  }, [refreshChromeHitboxes]);
+
+  const recallBuddiesToBorder = useCallback(async () => {
+    dragRef.current = null;
+    setDraggingAgentId(null);
+    setActiveAgentId(DEFAULT_BORDER_BUDDY_ID);
+    setClickThroughMode(false);
+
+    setDockSettings((current) => ({
+      ...current,
+      collapsed: false,
+      renderMode: "head+bubble",
+    }));
+
+    const nextPlacements = { ...defaultPlacements };
+    setPlacements(nextPlacements);
+    placementsRef.current = nextPlacements;
+
+    if (nativeUnifiedDock) {
+      try {
+        const nextLayout = await invoke<DockLayout>("configure_border_dock", {
+          multiMonitor,
+        });
+        setLayout(nextLayout);
+      } catch {
+        // Keep recalled placements even if the native window reset fails.
+      }
+    }
+
+    if (!dockCollapsed && !clickThroughRef.current) {
+      refreshChromeHitboxes();
+    }
+
+    if (nativeUnifiedDock) {
+      // Force immediate re-measure of all heads after recall in border mode.
+      setHeadForceKey((k) => k + 1);
+      void bbLog("info", "border recall: forcing head hitbox re-measure");
+      // Extra visibility for tomorrow's debug session.
+      void bbLog("info", "border recall complete - heads should now be reporting via the hotspots + headForceKey");
+    }
+
+    void bbLog("info", "recalled buddies to border", {
+      hermes: nextPlacements.hermes,
+    });
+
+    return nextPlacements;
+  }, [dockCollapsed, multiMonitor, nativeUnifiedDock, refreshChromeHitboxes]);
+
   const performSelfHeal = useCallback(
     async (options?: { panic?: boolean; routine?: boolean }) => {
+      if (overlayDragActiveRef.current) {
+        return createHealReport([]);
+      }
+
       const actions: DockHealAction[] = [];
 
       if (
@@ -604,6 +894,9 @@ export function BorderDock() {
           }));
           actions.push("expanded-dock");
         }
+
+        await recallBuddiesToBorder();
+        actions.push("recalled-buddies", "restored-overlay");
       }
 
       const shouldResetPointer =
@@ -643,15 +936,38 @@ export function BorderDock() {
       draggingAgentId,
       hasHitboxFailures,
       nativeUnifiedDock,
+      recallBuddiesToBorder,
       refreshChromeHitboxes,
     ],
   );
 
   function setClickThroughMode(enabled: boolean) {
+    if (nativeUnifiedDock && enabled) {
+      // Emergency "Force Pass" for border mode debugging/recovery.
+      // When the user cannot click buddies at all, this clears the per-buddy
+      // hitboxes (heads + any panels) so the entire overlay becomes input-transparent
+      // (clicks go through to the desktop). The "Catch" / Heal path will restore them.
+      // This is intentionally allowed now because "Pass not working" was blocking recovery.
+      clickThroughRef.current = true;
+      setClickThrough(true);
+      setFullInputCapture(false);
+      clearAllHitboxes();
+      void bbLog("warn", "emergency pass-through (hitboxes cleared) in native border mode — clicks should now reach the desktop", {
+        reason: "user-forced-for-recovery",
+      });
+      // Do not auto-heal here; let the user explicitly Heal or Catch to bring buddies back.
+      return;
+    }
+
     clickThroughRef.current = enabled;
     setClickThrough(enabled);
+    if (enabled) {
+      setFullInputCapture(false);
+    }
+    void bbLog(enabled ? "warn" : "info", "click-through", { enabled });
 
     if (nativeUnifiedDock) {
+      void invoke("reset_dock_input").catch(() => setDockInputEnabled(true));
       if (enabled) {
         clearAllHitboxes();
       } else {
@@ -664,16 +980,57 @@ export function BorderDock() {
   }
 
   useEffect(() => {
-    async function registerDockShortcuts() {
-      try {
-        await register(PASS_THROUGH_SHORTCUT, (event) => {
-          if (event.state === "Pressed") {
-            setClickThroughMode(!clickThroughRef.current);
-          }
+    if (!nativeUnifiedDock) {
+      return;
+    }
+
+    let cancelled = false;
+
+    void (async () => {
+      await recallBuddiesToBorder();
+      if (!cancelled) {
+        void bbLog("info", "startup test-ready", {
+          renderMode: "head+bubble",
+          collapsed: false,
+          clickThrough: false,
         });
-      } catch {
-        // The visible Pass button still works when the global shortcut is unavailable.
       }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [nativeUnifiedDock, recallBuddiesToBorder]);
+
+  // In native border mode, periodically force all visible head hitboxes to be
+  // re-measured and re-reported. This is the most reliable way to keep the
+  // minimal clickable regions for the buddies on the edge alive when no chat
+  // surface is open. The individual hotspots depend on headForceKey in their
+  // measurement effect.
+  useEffect(() => {
+    if (!nativeUnifiedDock || dockCollapsed) {
+      return;
+    }
+
+    const id = window.setInterval(() => {
+      setHeadForceKey((k) => k + 1);
+      // Also nudge a flush in case only chrome changed.
+      refreshChromeHitboxes();
+    }, 650);
+
+    // Initial force shortly after mount.
+    const initial = window.setTimeout(() => setHeadForceKey((k) => k + 1), 120);
+
+    return () => {
+      clearInterval(id);
+      clearTimeout(initial);
+    };
+  }, [nativeUnifiedDock, dockCollapsed, refreshChromeHitboxes]);
+
+  useEffect(() => {
+    async function registerDockShortcuts() {
+      // Pass-through shortcut disabled during first-connection testing — Ctrl+Alt+B
+      // was turning click-through on and making Hermes feel "crashed".
 
       if (!unifiedDock) {
         return;
@@ -706,7 +1063,6 @@ export function BorderDock() {
     registerDockShortcuts();
 
     return () => {
-      unregister(PASS_THROUGH_SHORTCUT).catch(() => {});
       unregister(DOCK_COLLAPSE_SHORTCUT).catch(() => {});
       unregister(DOCK_RECOVER_SHORTCUT).catch(() => {});
       setDockInputEnabled(true);
@@ -722,6 +1078,18 @@ export function BorderDock() {
       return;
     }
 
+    let unlistenMoved: (() => void) | null = null;
+
+    getCurrentWindow()
+      .onMoved(() => {
+        markOverlayDragActive();
+        markOverlayDragEnded();
+      })
+      .then((unlisten) => {
+        unlistenMoved = unlisten;
+      })
+      .catch(() => {});
+
     const intervalId = window.setInterval(() => {
       performSelfHeal({ routine: true });
     }, SELF_HEAL_INTERVAL_MS);
@@ -735,10 +1103,17 @@ export function BorderDock() {
     window.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
+      unlistenMoved?.();
+
+      if (overlayDragEndTimerRef.current) {
+        window.clearTimeout(overlayDragEndTimerRef.current);
+      }
+
+      overlayDragActiveRef.current = false;
       window.clearInterval(intervalId);
       window.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, [nativeUnifiedDock, performSelfHeal]);
+  }, [markOverlayDragActive, markOverlayDragEnded, nativeUnifiedDock, performSelfHeal]);
 
   useEffect(() => {
     if (!unifiedDock || dockCollapsed) {
@@ -857,8 +1232,11 @@ export function BorderDock() {
       if (idleTimerRef.current) {
         window.clearTimeout(idleTimerRef.current);
       }
+      // Drop any armed (but not yet started) buddy press gesture on unmount.
+      pendingDragCleanupRef.current?.();
     };
   }, []);
+
 
   useEffect(() => {
     if (!perBuddyWindow || draggingAgentId || !idle) {
@@ -917,48 +1295,102 @@ export function BorderDock() {
       return;
     }
 
-    event.preventDefault();
-    event.stopPropagation();
-
-    try {
-      event.currentTarget.setPointerCapture(event.pointerId);
-    } catch {
-      // Window-level listeners keep dragging reliable on desktop webviews.
-    }
-
-    const pointerX = event.clientX - stageRect.left;
-    const pointerY = event.clientY - stageRect.top;
+    // IMPORTANT: do NOT preventDefault here. A plain press/release must keep
+    // emitting the button's `click` event so the buddy can be activated and the
+    // chat/connection surface opened. We only promote the gesture to a drag once
+    // the pointer travels past DRAG_ACTIVATION_THRESHOLD. This is the fix for
+    // "I can't click my first border buddy to test the Hermes connection" — the
+    // previous code dragged (and popped the buddy off the border) on every tap.
+    const pointerId = event.pointerId;
+    const startClientX = event.clientX;
+    const startClientY = event.clientY;
+    const captureTarget = event.currentTarget;
     const currentPlacement = placements[buddy.id] ?? defaultPlacements[buddy.id];
-    const freePlacement =
-      currentPlacement.state === "free"
-        ? currentPlacement
-        : getFreePlacement(buddy.edge, pointerX, pointerY, stageRect);
+    let dragStarted = false;
 
-    if (perBuddyWindow) {
-      dragRef.current = null;
+    const cleanup = () => {
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleEnd);
+      window.removeEventListener("pointercancel", handleEnd);
+      if (pendingDragCleanupRef.current === cleanup) {
+        pendingDragCleanupRef.current = null;
+      }
+    };
+
+    const beginDrag = () => {
+      dragStarted = true;
+      markActivity();
+
+      const pointerX = startClientX - stageRect.left;
+      const pointerY = startClientY - stageRect.top;
+      const freePlacement =
+        currentPlacement.state === "free"
+          ? currentPlacement
+          : getFreePlacement(buddy.edge, pointerX, pointerY, stageRect);
+
+      try {
+        captureTarget.setPointerCapture(pointerId);
+      } catch {
+        // Window-level listeners keep dragging reliable on desktop webviews.
+      }
+
+      if (perBuddyWindow) {
+        dragRef.current = null;
+        setActiveAgentId(buddy.id);
+        setDraggingAgentId(buddy.id);
+        setPlacements((current) => ({
+          ...current,
+          [buddy.id]: centerFreePlacement(freePlacement.edge, stageRect),
+        }));
+        startNativeBuddyDrag(buddy.id, freePlacement.edge, windowBuddyBubbleVisible);
+        return;
+      }
+
+      dragRef.current = {
+        agentId: buddy.id,
+        offsetX: pointerX - freePlacement.x,
+        offsetY: pointerY - freePlacement.y,
+      };
+
       setActiveAgentId(buddy.id);
       setDraggingAgentId(buddy.id);
       setPlacements((current) => ({
         ...current,
-        [buddy.id]: centerFreePlacement(freePlacement.edge, stageRect),
+        [buddy.id]: freePlacement,
       }));
-      startNativeBuddyDrag(buddy.id, freePlacement.edge, windowBuddyBubbleVisible);
-      return;
-    }
-
-    dragRef.current = {
-      agentId: buddy.id,
-      offsetX: pointerX - freePlacement.x,
-      offsetY: pointerY - freePlacement.y,
     };
 
-    setActiveAgentId(buddy.id);
-    setDraggingAgentId(buddy.id);
-    setPlacements((current) => ({
-      ...current,
-      [buddy.id]: freePlacement,
-    }));
+    function handleMove(moveEvent: PointerEvent) {
+      if (moveEvent.pointerId !== pointerId || dragStarted) {
+        return;
+      }
+
+      const dx = moveEvent.clientX - startClientX;
+      const dy = moveEvent.clientY - startClientY;
+
+      if (Math.hypot(dx, dy) >= DRAG_ACTIVATION_THRESHOLD) {
+        cleanup();
+        beginDrag();
+      }
+    }
+
+    function handleEnd(endEvent: PointerEvent) {
+      if (endEvent.pointerId !== pointerId) {
+        return;
+      }
+
+      cleanup();
+      // If no drag was started this was a tap — the button's onClick handles activation.
+    }
+
+    // Replace any stale pending gesture before arming a new one.
+    pendingDragCleanupRef.current?.();
+    pendingDragCleanupRef.current = cleanup;
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleEnd);
+    window.addEventListener("pointercancel", handleEnd);
   }
+
 
   function moveBuddy(event: ReactPointerEvent<HTMLElement>) {
     markActivity();
@@ -1036,19 +1468,19 @@ export function BorderDock() {
     });
   }
 
-  async function dragOverlayWindow() {
-    try {
-      await getCurrentWindow().startDragging();
-    } catch {
-      // Browser previews do not have a native window to drag.
-    }
+  function beginOverlayWindowDrag() {
+    // Native move is handled by data-tauri-drag-region on the Move control.
+    // We only pause hitbox/self-heal updates while the compositor is dragging.
+    markOverlayDragActive();
   }
 
-  async function resizeOverlayWindow(direction: ResizeDirection) {
+  function beginOverlayWindowResize(direction: ResizeDirection) {
+    markOverlayDragActive();
+
     try {
-      await getCurrentWindow().startResizeDragging(direction);
+      void getCurrentWindow().startResizeDragging(direction);
     } catch {
-      // Browser previews do not have a native window to resize.
+      markOverlayDragEnded();
     }
   }
 
@@ -1071,6 +1503,36 @@ export function BorderDock() {
     });
   }
 
+  // Undock a buddy into the free interactive surface (composer + settings).
+  // This is the non-drag path to "open the buddy to chat": clicking the ambient
+  // speech bubble pops the buddy into the center as a free, fully interactive
+  // floating surface. Dragging the head past the threshold does the same thing.
+  function popBuddyOut(buddyId: string) {
+    markActivity();
+    setClickThroughMode(false);
+    setActiveAgentId(buddyId);
+
+    const stageRect = stageRef.current?.getBoundingClientRect();
+    if (!stageRect) {
+      return;
+    }
+
+    const currentPlacement = placements[buddyId] ?? defaultPlacements[buddyId];
+    if (currentPlacement.state === "free") {
+      return;
+    }
+
+    setPlacements((current) => ({
+      ...current,
+      [buddyId]: centerFreePlacement(currentPlacement.edge, stageRect),
+    }));
+
+    if (perBuddyWindow) {
+      startNativeBuddyDrag(buddyId, currentPlacement.edge, windowBuddyBubbleVisible);
+    }
+  }
+
+
   if (resolvingWindowBuddy || hiddenNativeWindow) {
     return null;
   }
@@ -1090,7 +1552,29 @@ export function BorderDock() {
       aria-label="Border Buddies dock"
       onPointerEnter={markActivity}
       onPointerMove={markActivity}
+      onPointerDownCapture={(event) => {
+        if (!nativeUnifiedDock) {
+          return;
+        }
+
+        const target = event.target instanceof HTMLElement ? event.target : null;
+        void bbLog("info", "dock pointer down", {
+          x: Math.round(event.clientX),
+          y: Math.round(event.clientY),
+          target: target?.className || target?.tagName || "unknown",
+          buddy: target?.closest("[data-buddy]")?.getAttribute("data-buddy") ?? null,
+          fullInputCapture,
+        });
+      }}
     >
+      {clickThrough ? (
+        <div className="dock-pass-banner" ref={passBannerRef} role="status">
+          <span>Pass-through on — Hermes is not clickable.</span>
+          <button type="button" onClick={() => setClickThroughMode(false)}>
+            Catch (resume clicks)
+          </button>
+        </div>
+      ) : null}
       <div
         className="dock-stage"
         data-monitor-count={layout.activeMonitorIds.length}
@@ -1113,46 +1597,86 @@ export function BorderDock() {
                 renderMode: cycleDockRenderMode(current.renderMode),
               }))
             }
-            onDragWindow={dragOverlayWindow}
-            onResizeWindow={() => resizeOverlayWindow("SouthEast")}
+            onBeginOverlayDrag={beginOverlayWindowDrag}
+            onBeginOverlayResize={() => beginOverlayWindowResize("SouthEast")}
+            onRecall={() => void recallBuddiesToBorder()}
             onRecover={() => performSelfHeal({ panic: true })}
+            passThroughAvailable={passThroughAvailable}
             onToggleClickThrough={() => setClickThroughMode(!clickThroughRef.current)}
+            fullInputCapture={fullInputCapture}
+            onToggleFullInputCapture={() => {
+              setClickThroughMode(false);
+              setFullInputCapture((enabled) => !enabled);
+            }}
             healReport={healReport}
             renderMode={effectiveRenderMode}
+            nativeUnifiedDock={nativeUnifiedDock}
           />
         ) : null}
         {!dockCollapsed
-          ? visibleBuddies.map((buddy) => (
-              <BuddyHotspot
-                buddy={buddy}
-                active={buddy.id === activeAgentId}
-                collapsed={dockCollapsed}
-                dragging={buddy.id === draggingAgentId}
-                key={buddy.id}
-                onDragEnd={finishBuddyDrag}
-                onDragMove={moveBuddy}
-                onDragStart={(event) => startBuddyDrag(buddy, event)}
-                onActivate={() => setActiveAgentId(buddy.id)}
-                onDeactivate={() => {
-                  if (activeAgentId === buddy.id) {
-                    setActiveAgentId("");
+          ? visibleBuddies.map((buddy) => {
+              const profile = BUDDY_PROFILES[buddy.id];
+              const hasGateway = profile ? buddyHasGateway(profile) : false;
+
+              return (
+                <BuddyHotspot
+                  buddy={{
+                    ...buddy,
+                    message: buddyMessages[buddy.id] ?? buddy.message,
+                  }}
+                  active={buddy.id === activeAgentId}
+                  collapsed={dockCollapsed}
+                  dragging={buddy.id === draggingAgentId}
+                  gatewayAutoConnect={gatewaySettings.autoConnect}
+                  gatewayBusy={hasGateway ? gateway.busy : false}
+                  gatewayDetail={hasGateway ? gateway.detail : null}
+                  gatewayState={hasGateway ? gateway.state : "idle"}
+                  gatewayUrl={gatewaySettings.url}
+                  hasGateway={hasGateway}
+                  key={buddy.id}
+                  onDragEnd={finishBuddyDrag}
+                  onDragMove={moveBuddy}
+                  onDragStart={(event) => startBuddyDrag(buddy, event)}
+                  onActivate={() => {
+                    setClickThroughMode(false);
+                    setActiveAgentId(buddy.id);
+                  }}
+                  onDeactivate={() => {
+                    if (activeAgentId === buddy.id) {
+                      setActiveAgentId("");
+                    }
+                  }}
+                  onGatewayConnect={gateway.connect}
+                  onGatewayDisconnect={gateway.disconnect}
+                  onGatewaySettingsChange={setGatewaySettings}
+                  onManualTuck={() => tuckBuddy(buddy.id)}
+                  onRequestInteract={() => popBuddyOut(buddy.id)}
+                  onClearHitboxes={() => clearBuddyHitboxes(buddy.id)}
+                  onReportHitboxes={(boxes) => reportHitboxes(buddy.id, boxes)}
+                  headForceKey={headForceKey}
+
+                  onSendChat={(text) => {
+                    const sent = gateway.sendChat(buddy.id, text);
+                    void bbLog(sent ? "info" : "warn", "gateway sendChat", {
+                      buddyId: buddy.id,
+                      sent,
+                      gatewayState: gateway.state,
+                    });
+                    return sent;
+                  }}
+                  perBuddyWindow={perBuddyWindow}
+                  placement={placements[buddy.id] ?? defaultPlacements[buddy.id]}
+                  renderMode={effectiveRenderMode}
+                  settings={buddySettings[buddy.id] ?? defaultBuddySettings[buddy.id]}
+                  onSettingsChange={(settings) =>
+                    setBuddySettings((current) => ({
+                      ...current,
+                      [buddy.id]: normalizeBuddySettings(BUDDY_PROFILES[buddy.id], settings),
+                    }))
                   }
-                }}
-                onManualTuck={() => tuckBuddy(buddy.id)}
-                onClearHitboxes={() => clearBuddyHitboxes(buddy.id)}
-                onReportHitboxes={(boxes) => reportHitboxes(buddy.id, boxes)}
-                perBuddyWindow={perBuddyWindow}
-                placement={placements[buddy.id] ?? defaultPlacements[buddy.id]}
-                renderMode={effectiveRenderMode}
-                settings={buddySettings[buddy.id] ?? defaultBuddySettings[buddy.id]}
-                onSettingsChange={(settings) =>
-                  setBuddySettings((current) => ({
-                    ...current,
-                    [buddy.id]: normalizeBuddySettings(BUDDY_PROFILES[buddy.id], settings),
-                  }))
-                }
-              />
-            ))
+                />
+              );
+            })
           : null}
       </div>
     </main>
@@ -1191,11 +1715,16 @@ function DockChrome({
   healReport,
   onCollapseToggle,
   onCycleRenderMode,
-  onDragWindow,
+  onBeginOverlayDrag,
+  onBeginOverlayResize,
+  onRecall,
   onRecover,
-  onResizeWindow,
+  passThroughAvailable,
   onToggleClickThrough,
+  fullInputCapture,
+  onToggleFullInputCapture,
   renderMode,
+  nativeUnifiedDock,
 }: {
   clickThrough: boolean;
   collapsed: boolean;
@@ -1203,11 +1732,16 @@ function DockChrome({
   healReport: DockHealReport | null;
   onCollapseToggle: () => void;
   onCycleRenderMode: () => void;
-  onDragWindow: () => void;
+  onBeginOverlayDrag: () => void;
+  onBeginOverlayResize: () => void;
+  onRecall: () => void;
   onRecover: () => void;
-  onResizeWindow: () => void;
+  passThroughAvailable: boolean;
   onToggleClickThrough: () => void;
+  fullInputCapture: boolean;
+  onToggleFullInputCapture: () => void;
   renderMode: DockRenderMode;
+  nativeUnifiedDock?: boolean;
 }) {
   const recentHeal =
     healReport && Date.now() - healReport.at < 20_000 ? healReport.actions.join(", ") : null;
@@ -1229,7 +1763,7 @@ function DockChrome({
               ? "Click-through on"
               : recentHeal
                 ? "Self-heal check complete"
-                : "Ctrl+Alt+B pass · Ctrl+Alt+H hide · Ctrl+Alt+Shift+R recover"}
+                : "Hermes on right edge · Recall if escaped"}
           </span>
           <button
             className="dock-control dock-control--mode"
@@ -1241,11 +1775,9 @@ function DockChrome({
           </button>
           <button
             className="dock-control dock-control--move"
+            data-tauri-drag-region
             type="button"
-            onPointerDown={(event) => {
-              event.preventDefault();
-              onDragWindow();
-            }}
+            onPointerDown={onBeginOverlayDrag}
             title="Move overlay window"
           >
             Move
@@ -1255,7 +1787,7 @@ function DockChrome({
             type="button"
             onPointerDown={(event) => {
               event.preventDefault();
-              onResizeWindow();
+              onBeginOverlayResize();
             }}
             title="Resize overlay window"
           >
@@ -1264,11 +1796,45 @@ function DockChrome({
           <button
             className="dock-control dock-control--pass"
             type="button"
+            // We deliberately allow the Pass button in native border mode now.
+            // It acts as "Force Pass (emergency)" — clears all buddy hitboxes so the
+            // overlay no longer intercepts clicks (full passthrough to desktop).
+            // This is the escape hatch when you cannot click any buddies.
+            // "Catch" or the Heal button will restore the head/panel regions.
+            disabled={false}
             onClick={onToggleClickThrough}
-            title="Toggle click-through mode"
+            title={
+              nativeUnifiedDock
+                ? clickThrough
+                  ? "Catch — restore the buddy head and panel click regions"
+                  : "Force Pass (emergency) — clear hitboxes. Clicks will go through to the desktop until you Heal or Catch."
+                : "Toggle click-through mode"
+            }
           >
-            {clickThrough ? "Catch" : "Pass"}
+            {nativeUnifiedDock
+              ? clickThrough
+                ? "Catch"
+                : "Force Pass"
+              : passThroughAvailable
+              ? clickThrough
+                ? "Catch"
+                : "Pass"
+              : "Pass off"}
           </button>
+          {nativeUnifiedDock ? (
+            <button
+              className="dock-control dock-control--recover"
+              type="button"
+              onClick={onToggleFullInputCapture}
+              title={
+                fullInputCapture
+                  ? "Return pointer ownership to the desktop"
+                  : "Take pointer ownership to interact with buddies"
+              }
+            >
+              {fullInputCapture ? "Desktop" : "Interact"}
+            </button>
+          ) : null}
           <button
             className="dock-control dock-control--collapse"
             type="button"
@@ -1276,6 +1842,14 @@ function DockChrome({
             title="Collapse dock and reclaim screen (Ctrl+Alt+H)"
           >
             Hide
+          </button>
+          <button
+            className="dock-control dock-control--recall"
+            type="button"
+            onClick={onRecall}
+            title="Recall escaped buddies to their border slots and restore full-screen overlay"
+          >
+            Recall
           </button>
           <button
             className="dock-control dock-control--recover"
@@ -1296,38 +1870,63 @@ function BuddyHotspot({
   buddy,
   collapsed,
   dragging,
+  gatewayAutoConnect,
+  gatewayBusy,
+  gatewayDetail,
+  gatewayState,
+  gatewayUrl,
+  hasGateway,
   onClearHitboxes,
   onDragEnd,
   onDragMove,
   onDragStart,
   onActivate,
   onDeactivate,
+  onGatewayConnect,
+  onGatewayDisconnect,
+  onGatewaySettingsChange,
   onReportHitboxes,
+  onRequestInteract,
+  onSendChat,
   perBuddyWindow,
   placement,
   onManualTuck,
   renderMode,
   settings,
   onSettingsChange,
+  headForceKey,
 }: {
   active: boolean;
   buddy: DockBuddy;
   collapsed: boolean;
   dragging: boolean;
+  gatewayAutoConnect: boolean;
+  gatewayBusy: boolean;
+  gatewayDetail: string | null;
+  gatewayState: GatewayConnectionState;
+  gatewayUrl: string;
+  hasGateway: boolean;
   onClearHitboxes: () => void;
   onDragEnd: () => void;
   onDragMove: (event: ReactPointerEvent<HTMLElement>) => void;
   onDragStart: (event: ReactPointerEvent<HTMLElement>) => void;
   onActivate: () => void;
   onDeactivate: () => void;
+  onGatewayConnect: () => void;
+  onGatewayDisconnect: () => void;
+  onGatewaySettingsChange: (settings: GatewaySettings) => void;
   onReportHitboxes: (boxes: Hitbox[]) => void;
+  onRequestInteract: () => void;
+  onSendChat: (text: string) => boolean;
   perBuddyWindow: boolean;
   placement: AgentPlacement;
   onManualTuck: () => void;
   renderMode: DockRenderMode;
   settings: BuddySettings;
   onSettingsChange: (settings: BuddySettings) => void;
+  headForceKey?: number;
 }) {
+
   const edge = placement.edge;
   const style = {
     "--agent-color": buddy.color,
@@ -1343,18 +1942,36 @@ function BuddyHotspot({
   }
 
   const headRef = useRef<HTMLButtonElement>(null);
-  const bubbleRef = useRef<HTMLDivElement>(null);
+  const surfaceRef = useRef<BuddySurfaceHandle>(null);
   const { setHitboxes } = useBuddyHitbox();
-  const [settingsOpen, setSettingsOpen] = useState(false);
 
-  const showHead = renderMode !== "bubble";
-  const showBubble =
-    renderMode !== "head" && active && buddy.message && placement.state === "tucked";
-  const isBubbleVisible = showBubble;
+  // Interaction model: the buddy is either docked on the border (ambient,
+  // bubble-only) or undocked/free (interactive composer + settings). The full
+  // chat surface — and its larger, more fragile hitboxes — only exists in the
+  // free state, which keeps the native border overlay tiny and stable.
+  const isFree = placement.state === "free";
+  // When free we always show the body figure as the drag handle. When tucked we
+  // honor the dock render mode (head / head+bubble / bubble).
+  const showHead = isFree || renderMode !== "bubble";
+  // Free => interactive surface always. Tucked on border => ambient bubble by default,
+  // but when the user activates (clicks head / opens chat) we allow the full interactive
+  // composer + panel. This is required to have a usable "Hermes on the border" test
+  // without forcing an undock for every interaction.
+  //
+  // See docs/FIX_LIST.md — the "Hermes buddy chat input not clickable in native unified border mode"
+  // entry and the Opus gateway-gated-input fix. Previously surfaceInteractive was strictly
+  // isFree, which meant no composer hitboxes (and thus no clickable textarea) while tucked
+  // on the native border-dock, even after the disabled={busy} change.
+  const showSurface = isFree || (renderMode !== "head" && active);
+  const surfaceInteractive = isFree || active;
+  const isSurfaceVisible = showSurface;
+
   const freeX = placement.state === "free" ? placement.x : null;
   const freeY = placement.state === "free" ? placement.y : null;
 
-  useLayoutEffect(() => {
+  // Depend on headForceKey so the parent can periodically force re-measure of heads
+  // in native border mode (even for non-active tucked buddies).
+  const measureAndReportHitboxes = useCallback(() => {
     if (collapsed) {
       onClearHitboxes();
       return;
@@ -1362,43 +1979,38 @@ function BuddyHotspot({
 
     const boxes: Hitbox[] = [];
 
-    if (settingsOpen && isBubbleVisible && bubbleRef.current) {
-      const r = bubbleRef.current.getBoundingClientRect();
-      const settingsBoxes = [
-        {
-          x: Math.max(0, Math.round(r.left) - 8),
-          y: Math.max(0, Math.round(r.top) - 8),
-          w: Math.min(window.innerWidth, Math.round(r.width) + 16),
-          h: Math.min(window.innerHeight, Math.round(r.height) + 16),
-        },
-      ];
-
-      if (perBuddyWindow) {
-        setHitboxes(settingsBoxes);
-      } else {
-        onReportHitboxes(settingsBoxes);
-      }
-      return;
-    }
-
     if (showHead && headRef.current) {
       const r = headRef.current.getBoundingClientRect();
+      // Add a bit of padding to the head hitbox to make it easier to click in border mode.
+      // The visual head (SVG etc.) may be slightly smaller than the button bounds.
+      const pad = 4;
       boxes.push({
-        x: Math.round(r.left),
-        y: Math.round(r.top),
-        w: Math.round(r.width),
-        h: Math.round(r.height),
+        x: Math.round(r.left - pad),
+        y: Math.round(r.top - pad),
+        w: Math.round(r.width + pad * 2),
+        h: Math.round(r.height + pad * 2),
       });
+
+      if (!isSurfaceVisible) {
+        // Diagnostic: log the head-only rect being reported for tucked border buddies.
+        // This will appear in the bb-ui logs so we can see what is being sent for the heads.
+        // The padded version is what actually goes into the boxes sent to set_input_hitboxes.
+        const sentX = Math.round(r.left - pad);
+        const sentY = Math.round(r.top - pad);
+        const sentW = Math.round(r.width + pad * 2);
+        const sentH = Math.round(r.height + pad * 2);
+        void bbLog("info", "reporting head hitbox (border mode)", {
+          buddy: buddy.id,
+          edge,
+          state: placement.state,
+          raw: { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) },
+          sent: { x: sentX, y: sentY, w: sentW, h: sentH },
+        });
+      }
     }
 
-    if (isBubbleVisible && bubbleRef.current) {
-      const r = bubbleRef.current.getBoundingClientRect();
-      boxes.push({
-        x: Math.round(r.left),
-        y: Math.round(r.top),
-        w: Math.round(r.width),
-        h: Math.round(r.height),
-      });
+    if (isSurfaceVisible && surfaceRef.current) {
+      boxes.push(...surfaceRef.current.measureHitboxes());
     }
 
     if (perBuddyWindow) {
@@ -1408,20 +2020,47 @@ function BuddyHotspot({
     }
   }, [
     collapsed,
-    isBubbleVisible,
     onClearHitboxes,
     onReportHitboxes,
     perBuddyWindow,
-    placement.state,
+    setHitboxes,
+  ]);
+
+  useLayoutEffect(() => {
+    measureAndReportHitboxes();
+  }, [
     freeX,
     freeY,
-    settingsOpen,
-    setHitboxes,
+    gatewayBusy,
+    gatewayDetail,
+    gatewayState,
+    headForceKey,
+    isSurfaceVisible,
+    measureAndReportHitboxes,
+    placement.state,
     showHead,
   ]);
 
+  // Harden: while the chat surface is open, keep re-reporting hitboxes on a
+  // short cadence. Layout effects can miss late paints (fonts, history growth,
+  // settings open/close) and leave the native input shape stale so the composer
+  // stops accepting clicks. This guarantees the clickable region tracks the DOM
+  // for the whole "open chat → Set → type → send" first-connection sequence.
+  useEffect(() => {
+    if (!isSurfaceVisible) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      measureAndReportHitboxes();
+    }, 600);
+
+    return () => window.clearInterval(intervalId);
+  }, [isSurfaceVisible, measureAndReportHitboxes]);
+
   return (
     <section
+
       className={[
         "agent-hotspot",
         `agent-hotspot--${placement.state}`,
@@ -1448,16 +2087,31 @@ function BuddyHotspot({
       onPointerCancel={onDragEnd}
       onDoubleClick={onManualTuck}
     >
-      {isBubbleVisible ? (
-        <SpeechBubble
+      {isSurfaceVisible ? (
+        <BuddySurface
+          ref={surfaceRef}
           buddy={buddy}
+          dockSlot={placement.state === "tucked" ? placement.slot : 0.5}
           edge={edge}
+          gatewayAutoConnect={gatewayAutoConnect}
+          gatewayBusy={gatewayBusy}
+          gatewayDetail={gatewayDetail}
+          gatewayState={gatewayState}
+          gatewayUrl={gatewayUrl}
+          hasGateway={hasGateway}
+          interactive={surfaceInteractive}
+          message={buddy.message ?? ""}
+          onGatewayConnect={onGatewayConnect}
+          onGatewayDisconnect={onGatewayDisconnect}
+          onGatewaySettingsChange={onGatewaySettingsChange}
+          onLayoutChange={measureAndReportHitboxes}
+          onRequestInteract={onRequestInteract}
+          onRequestDock={onManualTuck}
+          onSendChat={onSendChat}
           onSettingsChange={onSettingsChange}
-          onSettingsToggle={() => setSettingsOpen((open) => !open)}
-          ref={bubbleRef}
           settings={settings}
-          settingsOpen={settingsOpen}
         />
+
       ) : null}
       {showHead ? (
         <button
@@ -1479,146 +2133,6 @@ function BuddyHotspot({
     </section>
   );
 }
-
-const SpeechBubble = forwardRef<
-  HTMLDivElement,
-  {
-    buddy: DockBuddy;
-    edge: Edge;
-    settings: BuddySettings;
-    settingsOpen: boolean;
-    onSettingsToggle: () => void;
-    onSettingsChange: (settings: BuddySettings) => void;
-  }
->(
-  ({ buddy, edge, settings, settingsOpen, onSettingsToggle, onSettingsChange }, ref) => {
-    const [draft, setDraft] = useState("");
-    const profile = BUDDY_PROFILES[buddy.id];
-    const providerLabel = BUDDY_PROVIDER_LABELS[settings.provider];
-    const memoryLabel = BUDDY_MEMORY_LABELS[settings.memoryMode];
-    const statusText = settings.allowAction
-      ? "Action requests still require policy receipts."
-      : "Action authority is off.";
-
-    function updateSettings(patch: Partial<BuddySettings>) {
-      onSettingsChange({
-        ...settings,
-        ...patch,
-      });
-    }
-
-    function handleSubmit(event: FormEvent<HTMLFormElement>) {
-      event.preventDefault();
-      setDraft("");
-    }
-
-    function handleProviderChange(event: ChangeEvent<HTMLSelectElement>) {
-      updateSettings({ provider: event.target.value as BuddyProvider });
-    }
-
-    function handleMemoryModeChange(event: ChangeEvent<HTMLSelectElement>) {
-      updateSettings({ memoryMode: event.target.value as BuddyMemoryMode });
-    }
-
-    return (
-      <div
-        ref={ref}
-        className={`speech-bubble speech-bubble--${edge}`}
-        role="region"
-        aria-label={`${buddy.shortName} buddy controls`}
-      >
-        <div className="speech-bubble__header">
-          <strong>{buddy.shortName}</strong>
-          <span className="speech-bubble__owner">{providerLabel}</span>
-          <button
-            type="button"
-            className="speech-bubble__icon-button"
-            aria-expanded={settingsOpen}
-            aria-label={`${buddy.shortName} settings`}
-            title={`${buddy.shortName} settings`}
-            onClick={onSettingsToggle}
-          >
-            Set
-          </button>
-        </div>
-        <p className="speech-bubble__message">{buddy.message}</p>
-        <form className="speech-bubble__composer" onSubmit={handleSubmit}>
-          <input
-            type="text"
-            value={draft}
-            onChange={(event) => setDraft(event.target.value)}
-            placeholder={`Ask ${buddy.shortName}`}
-            aria-label={`Ask ${buddy.shortName}`}
-          />
-          <button type="submit" title="Record intent" aria-label="Record intent">
-            Go
-          </button>
-        </form>
-        <div className="speech-bubble__meta">
-          <button
-            type="button"
-            className="speech-bubble__provider"
-            onClick={onSettingsToggle}
-            title="Open connection settings"
-          >
-            {settings.modelLabel}
-          </button>
-          <span>{memoryLabel}</span>
-        </div>
-        {settingsOpen ? (
-          <div className="speech-bubble__settings" aria-label={`${buddy.shortName} settings`}>
-            <label>
-              <span>Platform</span>
-              <select value={settings.provider} onChange={handleProviderChange}>
-                {Object.entries(BUDDY_PROVIDER_LABELS).map(([value, label]) => (
-                  <option key={value} value={value}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label>
-              <span>Model</span>
-              <input
-                type="text"
-                value={settings.modelLabel}
-                onChange={(event) => updateSettings({ modelLabel: event.target.value })}
-              />
-            </label>
-            <label>
-              <span>Memory</span>
-              <select value={settings.memoryMode} onChange={handleMemoryModeChange}>
-                {Object.entries(BUDDY_MEMORY_LABELS).map(([value, label]) => (
-                  <option key={value} value={value}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="speech-bubble__check">
-              <span>Agent action</span>
-              <input
-                type="checkbox"
-                checked={settings.allowAction}
-                onChange={(event) => updateSettings({ allowAction: event.target.checked })}
-              />
-            </label>
-            <label className="speech-bubble__check">
-              <span>External share</span>
-              <input
-                type="checkbox"
-                checked={settings.allowExternalShare}
-                onChange={(event) => updateSettings({ allowExternalShare: event.target.checked })}
-              />
-            </label>
-            <p>{profile.identity.ownerLabel} connection: {settings.connectionLabel}</p>
-          </div>
-        ) : null}
-        <p className="speech-bubble__status">{statusText}</p>
-      </div>
-    );
-  }
-);
 
 function BuddyFigure({ buddyId, state }: { buddyId: string; state: AgentPlacement["state"] }) {
   if (buddyId === "hermes") {
@@ -1909,6 +2423,53 @@ function centerFreePlacement(edge: Edge, stageRect: DOMRect): FreeAgentPlacement
       stageRect.height - FREE_AGENT_SIZE - FREE_AGENT_MARGIN,
     ),
   };
+}
+
+function fallbackHitboxForPlacement(placement: AgentPlacement, viewportWidth: number, viewportHeight: number): Hitbox {
+  if (placement.state === "free") {
+    return {
+      x: Math.round(placement.x),
+      y: Math.round(placement.y),
+      w: FREE_AGENT_SIZE,
+      h: FREE_AGENT_SIZE,
+    };
+  }
+
+  const size = DOCKED_HEAD_HITBOX_SIZE;
+  const half = size / 2;
+  const slotX = placement.slot * viewportWidth;
+  const slotY = placement.slot * viewportHeight;
+
+  switch (placement.edge) {
+    case "left":
+      return {
+        x: -DOCKED_HEAD_EDGE_OVERLAP,
+        y: Math.round(slotY - half),
+        w: size,
+        h: size,
+      };
+    case "right":
+      return {
+        x: Math.round(viewportWidth - size + DOCKED_HEAD_EDGE_OVERLAP),
+        y: Math.round(slotY - half),
+        w: size,
+        h: size,
+      };
+    case "top":
+      return {
+        x: Math.round(slotX - half),
+        y: -DOCKED_HEAD_EDGE_OVERLAP,
+        w: size,
+        h: size,
+      };
+    case "bottom":
+      return {
+        x: Math.round(slotX - half),
+        y: Math.round(viewportHeight - size + DOCKED_HEAD_EDGE_OVERLAP),
+        w: size,
+        h: size,
+      };
+  }
 }
 
 function getSnapEdge(placement: FreeAgentPlacement, stageRect: DOMRect) {

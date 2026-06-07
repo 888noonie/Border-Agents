@@ -22,9 +22,23 @@ const GRADE_LABELS = {
 export function TrustWorkbenchPreview() {
   const results = useMemo(() => runHermesMemoryDemo(), []);
   const [purpose, setPurpose] = useState<BuiltInPurpose>("agent_action");
+  const [open, setOpen] = useState(true);
   const active = results.find((result) => result.purpose === purpose) ?? results[0];
   const nexus = buildNexusPanelData({ frame: active.frame, prompt: active.prompt });
   const veritas = buildVeritasPanelData({ frame: active.frame, prompt: active.prompt });
+
+  if (!open) {
+    return (
+      <button
+        className="trust-preview-launcher"
+        type="button"
+        onClick={() => setOpen(true)}
+        aria-label="Open Trust Workbench preview"
+      >
+        Trust Workbench
+      </button>
+    );
+  }
 
   return (
     <aside className="trust-preview" aria-label="Trust Workbench preview">
@@ -33,9 +47,20 @@ export function TrustWorkbenchPreview() {
           <p className="trust-preview__eyebrow">Trust Workbench</p>
           <h1>Memory grading preview</h1>
         </div>
-        <span className={`trust-preview__badge trust-preview__badge--${nexus.trustBadgeState}`}>
-          {GRADE_LABELS[nexus.trustBadgeState]}
-        </span>
+        <div className="trust-preview__header-actions">
+          <span className={`trust-preview__badge trust-preview__badge--${nexus.trustBadgeState}`}>
+            {GRADE_LABELS[nexus.trustBadgeState]}
+          </span>
+          <button
+            className="trust-preview__icon-button"
+            type="button"
+            onClick={() => setOpen(false)}
+            aria-label="Minimize Trust Workbench preview"
+            title="Minimize"
+          >
+            -
+          </button>
+        </div>
       </div>
 
       <div className="trust-preview__purpose-tabs" aria-label="Purpose">

@@ -20,6 +20,7 @@ import { BuddyPanel, type BuddyChatLine } from "./BuddyPanel";
 import { BuddySettingsDialog } from "./BuddySettingsDialog";
 import { BuddyUiBubble } from "./BuddyUiBubble";
 import { useUiBubble } from "./useUiBubble";
+import { TrustWorkbenchPanel } from "../trust-workbench/TrustWorkbenchPanel";
 import "./buddy-surface.css";
 
 export type BuddyDisplayMode = "compact" | "full";
@@ -175,6 +176,7 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
   const gatewayOnline = hasGateway && gatewayState === "connected";
   const bubbleSide = edge === "right" ? "left" : "right";
   const bubbleVertical = edge === "top" || dockSlot < 0.22 ? "below" : "above";
+  const trustWorkbenchMode = buddy.id === "fox" ? "nexus" : buddy.id === "owl" ? "veritas" : null;
 
   // Close any transient overlays automatically when the buddy re-docks so they
   // can never leave a stale hitbox behind on the border.
@@ -521,6 +523,15 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
               hasGateway={hasGateway}
               gatewayState={gatewayState}
               history={history}
+              panelContent={
+                trustWorkbenchMode ? (
+                  <TrustWorkbenchPanel
+                    mode={trustWorkbenchMode}
+                    title={trustWorkbenchMode === "nexus" ? "Nexus context grades" : "Veritas receipt checks"}
+                    compact
+                  />
+                ) : null
+              }
               onDraftChange={setDraft}
               onSubmit={handleSubmit}
               onPrimaryAction={() => undefined}

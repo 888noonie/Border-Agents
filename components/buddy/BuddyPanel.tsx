@@ -1,4 +1,4 @@
-import { useRef, type FormEvent } from "react";
+import { useRef, type FormEvent, type ReactNode } from "react";
 import type { GatewayConnectionState } from "../../src/gatewayProtocol";
 import { connectionLabelForState } from "../../src/useBuddyGateway";
 import type { BuddyDisplayMode } from "./BuddySurface";
@@ -19,6 +19,7 @@ type BuddyPanelProps = {
   hasGateway: boolean;
   gatewayState: GatewayConnectionState;
   history: BuddyChatLine[];
+  panelContent?: ReactNode;
   onDraftChange: (value: string) => void;
   onSubmit: () => void;
   onPrimaryAction: () => void;
@@ -38,6 +39,7 @@ export function BuddyPanel({
   hasGateway,
   gatewayState,
   history,
+  panelContent,
   onDraftChange,
   onSubmit,
   onPrimaryAction,
@@ -95,6 +97,12 @@ export function BuddyPanel({
               </div>
             ))
           )}
+        </div>
+      ) : null}
+
+      {isFull && panelContent ? (
+        <div className="buddy-panel__content" aria-label={`${buddyName} panel content`}>
+          {panelContent}
         </div>
       ) : null}
 

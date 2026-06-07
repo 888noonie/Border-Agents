@@ -22,6 +22,9 @@ The first deterministic governance slice is now in place:
 - Receipt summary view model for Nexus/Veritas wiring
 - Nexus/Veritas panel data contracts for v0.2 scaffolding
 - Browser-only Trust Workbench preview for Nexus/Veritas data
+- Shared TrustWorkbenchPanel for browser and buddy surfaces
+- Nexus buddy panel preview with retrieval grades, source list, and colored blocked counter
+- Veritas buddy panel preview with warning counter, evidence-ready items, and receipt row expansion
 - JSON Schemas for `MemoryPacket` and `PurposePolicy`
 - Hermes mock memory demo
 - CLI output for same-memory/different-purpose demo
@@ -32,7 +35,9 @@ The first deterministic governance slice is now in place:
 
 The product proof still needs UI integration and deeper hardening:
 
-- Nexus + Veritas buddy panel wiring for frames and receipts
+- Trust Workbench action behavior: verify, open source, export receipt, use trusted only
+- Receipt viewer with full derivation details
+- UI tests for workbench section collapse and receipt expansion
 - More edge-case policy tests as the primitive evolves
 
 **Read the non-negotiable laws:** [AGENTS.md](AGENTS.md#non-negotiable-laws)
@@ -68,7 +73,7 @@ See: [SPEC_MEMORY_GRADING.md](docs/SPEC_MEMORY_GRADING.md)
 1. **Quick check**: `npm run dev` (browser preview) or `bash scripts/bb-start.sh` (full overlay)
 2. **Review**: [SPEC_MEMORY_GRADING.md](docs/SPEC_MEMORY_GRADING.md) — understand the grading model
 3. **Review**: `src/core/` implementation and `src/core/__tests__/`
-4. **Demo**: Run `npm run demo:trace`, then wire receipt summaries into Nexus/Veritas preview
+4. **Demo**: Run `npm run demo:trace`, then open Nexus/Veritas buddy panels to inspect the shared Trust Workbench data
 5. **Commit**: Keep future governance changes small and test-backed
 
 ## Translation Rule Reminder

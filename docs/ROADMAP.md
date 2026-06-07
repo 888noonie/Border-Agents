@@ -50,13 +50,15 @@ Delivered / scaffolded:
 - NexusPanelData view model: grade buckets, prompt summary, trust badge state, source list
 - VeritasPanelData view model: receipt groups, warnings, evidence-ready items
 - Browser-only Trust Workbench preview with minimize/reopen toggle
+- Shared TrustWorkbenchPanel used by browser preview and buddy panels
+- Nexus buddy panel preview: retrieval grades, blocked counter, prompt summary, source list
+- Veritas buddy panel preview: warning counter, warnings, evidence-ready items, receipt row expansion
+- Collapsible workbench sections with colored counters for compact buddy panels
 
 Next deliverables:
 
-- Nexus buddy panel: retrieval grades and source list
-- Veritas buddy panel: receipt warnings and evidence-ready items
 - Action buttons: verify, open source, export receipt, use trusted only
-- Receipt viewer
+- Receipt viewer with full derivation details
 - Tests for panel interactions and receipt expansion
 
 ---

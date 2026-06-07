@@ -14,6 +14,36 @@
   pointer-events: auto;
 }
 
+.trust-panel {
+  background: #fafcff;
+  color: #172033;
+}
+
+.trust-panel--compact {
+  border: 1px solid rgb(25 38 58 / 0.12);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #ffffff;
+}
+
+.trust-panel--compact .trust-preview__header,
+.trust-panel--compact .trust-preview__section,
+.trust-panel--compact .trust-preview__purpose-tabs {
+  padding: 0.7rem;
+}
+
+.trust-panel--compact .trust-preview__purpose-tabs {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.trust-panel--compact .trust-preview__metrics {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.trust-panel--compact .trust-preview__metrics .trust-preview__metric:last-child:nth-child(odd) {
+  grid-column: 1 / -1;
+}
+
 .trust-preview-launcher {
   position: fixed;
   top: 4.5rem;
@@ -54,7 +84,21 @@
   gap: 0.4rem;
 }
 
+.trust-preview__floating-actions {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  z-index: 1;
+}
+
+.trust-preview .trust-panel__header {
+  padding-right: 3.2rem;
+}
+
 .trust-preview__eyebrow,
+.trust-panel h1,
+.trust-panel h2,
+.trust-panel h3,
 .trust-preview h1,
 .trust-preview h2,
 .trust-preview h3 {
@@ -67,12 +111,19 @@
   font-weight: 760;
 }
 
+.trust-panel h1,
 .trust-preview h1 {
   margin-top: 0.2rem;
   font-size: 1.05rem;
   line-height: 1.2;
 }
 
+.trust-panel--compact h1 {
+  font-size: 1rem;
+}
+
+.trust-panel h2,
+.trust-panel h3,
 .trust-preview h2,
 .trust-preview h3 {
   font-size: 0.86rem;
@@ -114,27 +165,33 @@
 }
 
 .trust-preview__badge--trusted,
-.trust-preview__metric--trusted strong {
+.trust-preview__metric--trusted strong,
+.trust-preview__counter--trusted {
   color: #0b6b4f;
 }
 
 .trust-preview__badge--limited,
-.trust-preview__metric--limited strong {
+.trust-preview__metric--limited strong,
+.trust-preview__counter--limited {
   color: #6f5600;
 }
 
 .trust-preview__badge--reference_only,
-.trust-preview__metric--reference_only strong {
+.trust-preview__metric--reference_only strong,
+.trust-preview__counter--reference_only {
   color: #315c92;
 }
 
 .trust-preview__badge--blocked,
-.trust-preview__metric--blocked strong {
+.trust-preview__metric--blocked strong,
+.trust-preview__counter--blocked,
+.trust-preview__counter--warning {
   color: #9d2f2f;
 }
 
 .trust-preview__badge--quarantined,
-.trust-preview__metric--quarantined strong {
+.trust-preview__metric--quarantined strong,
+.trust-preview__counter--quarantined {
   color: #693a96;
 }
 
@@ -185,6 +242,76 @@
   margin-top: 0.85rem;
 }
 
+.trust-preview__section-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  width: 100%;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+
+.trust-preview__section-toggle:hover,
+.trust-preview__section-toggle:focus-visible {
+  outline: 0;
+}
+
+.trust-preview__section-toggle:focus-visible .trust-preview__section-title {
+  color: #193c62;
+}
+
+.trust-preview__section-title {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.35rem;
+  color: #172033;
+  font-size: 0.86rem;
+  font-weight: 820;
+  line-height: 1.2;
+}
+
+.trust-preview__chevron {
+  display: inline-grid;
+  width: 1rem;
+  height: 1rem;
+  place-items: center;
+  color: #64748b;
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+.trust-preview__section-counters {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.35rem;
+  color: #607086;
+  font-size: 0.7rem;
+  font-weight: 760;
+}
+
+.trust-preview__counter {
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  padding: 0.16rem 0.42rem;
+  background: #ffffff;
+  font-size: 0.68rem;
+  font-weight: 840;
+  white-space: nowrap;
+}
+
+.trust-preview__section-toggle + div {
+  margin-top: 0.65rem;
+}
+
 .trust-preview__metrics {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
@@ -203,7 +330,11 @@
 .trust-preview__prompt span,
 .trust-preview__source span,
 .trust-preview__row span,
-.trust-preview__row small {
+.trust-preview__row small,
+.trust-preview__row-button span,
+.trust-preview__row-button small,
+.trust-preview__receipt-detail span,
+.trust-preview__receipt-detail small {
   display: block;
   min-width: 0;
   overflow-wrap: anywhere;
@@ -223,7 +354,8 @@
 
 .trust-preview__prompt,
 .trust-preview__source,
-.trust-preview__row {
+.trust-preview__row,
+.trust-preview__row-button {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 0.5rem;
@@ -239,7 +371,8 @@
 
 .trust-preview__prompt strong,
 .trust-preview__source strong,
-.trust-preview__row strong {
+.trust-preview__row strong,
+.trust-preview__row-button strong {
   font-size: 0.72rem;
 }
 
@@ -256,7 +389,32 @@
   grid-template-columns: 7.5rem minmax(0, 1fr);
 }
 
+.trust-preview__row-button {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid rgb(25 38 58 / 0.08);
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  grid-template-columns: 7.5rem minmax(0, 1fr);
+}
+
+.trust-preview__row-button:hover,
+.trust-preview__row-button:focus-visible {
+  background: #f4f8fd;
+  outline: 0;
+}
+
 .trust-preview__row small {
+  grid-column: 2;
+  color: #65758b;
+  font-size: 0.68rem;
+}
+
+.trust-preview__row-button small {
   grid-column: 2;
   color: #65758b;
   font-size: 0.68rem;
@@ -266,8 +424,47 @@
   grid-template-columns: minmax(0, 1fr) auto auto;
 }
 
-.trust-preview__row--evidence small {
+.trust-preview__row--evidence small,
+.trust-preview__row-button--evidence small {
   grid-column: auto;
+}
+
+.trust-preview__row-button--evidence {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.trust-preview__receipt-detail {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 0.45rem;
+  border-bottom: 1px solid rgb(25 38 58 / 0.08);
+  padding: 0.45rem 0;
+  color: #4d5e74;
+  font-size: 0.68rem;
+}
+
+.trust-preview__receipt-detail small {
+  grid-column: 1 / -1;
+  color: #65758b;
+}
+
+.trust-panel__actions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.35rem;
+  border-top: 1px solid rgb(25 38 58 / 0.1);
+  padding: 0.7rem;
+}
+
+.trust-panel__actions button {
+  min-height: 1.95rem;
+  border: 1px solid rgb(25 38 58 / 0.12);
+  border-radius: 7px;
+  background: #f1f5f9;
+  color: #66758a;
+  font: inherit;
+  font-size: 0.68rem;
+  font-weight: 760;
 }
 
 .trust-preview__empty {

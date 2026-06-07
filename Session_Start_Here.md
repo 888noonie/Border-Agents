@@ -20,14 +20,14 @@ The first deterministic governance slice is now in place:
 - `PromptRenderer`
 - `GradeReceipt` derivation trail
 - Hermes mock memory demo
+- CLI output for same-memory/different-purpose demo
 - Vitest coverage for required governance rules
 
 ## What's Still Missing (P0 Follow-Up)
 
-The product proof still needs UI/demo integration and deeper hardening:
+The product proof still needs UI integration and deeper hardening:
 
 - Nexus + Veritas panel wiring for frames and receipts
-- CLI/demo output for the Hermes memory scenario
 - More edge-case policy tests as the primitive evolves
 
 **Read the non-negotiable laws:** [AGENTS.md](AGENTS.md#non-negotiable-laws)
@@ -43,7 +43,7 @@ See: [SPEC_MEMORY_GRADING.md](docs/SPEC_MEMORY_GRADING.md)
 
 ## Known Gaps (Still True)
 
-- No automated tests yet (critical for governance decisions)
+- Core automated tests exist; UI/demo integration still needs coverage
 - `tauri.conf.json` has `"csp": null` (needs review before trusted content)
 - Tauri capabilities broad (document the threat model)
 - Browser extension uses `innerHTML` (acceptable for now; guard when memory flows there)
@@ -63,7 +63,7 @@ See: [SPEC_MEMORY_GRADING.md](docs/SPEC_MEMORY_GRADING.md)
 1. **Quick check**: `npm run dev` (browser preview) or `bash scripts/bb-start.sh` (full overlay)
 2. **Review**: [SPEC_MEMORY_GRADING.md](docs/SPEC_MEMORY_GRADING.md) — understand the grading model
 3. **Review**: `src/core/` implementation and `src/core/__tests__/`
-4. **Demo**: Wire Hermes mock memory output into CLI or Nexus/Veritas preview
+4. **Demo**: Run `npm run demo:memory`, then wire the output into Nexus/Veritas preview
 5. **Commit**: Keep future governance changes small and test-backed
 
 ## Translation Rule Reminder

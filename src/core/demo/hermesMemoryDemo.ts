@@ -60,6 +60,13 @@ export const hermesRetrievedMemories: RetrievedMemory[] = [
     permissions: { requires_verification_before_assertion: true },
     labels: ["unverified"],
   }),
+  demoMemory({
+    id: "review_required",
+    text: "Review-required note: this memory mentions sensitive workflow details and must be inspected before use.",
+    claimType: "observed_fact",
+    sensitivity: "confidential",
+    labels: ["quarantined"],
+  }),
 ];
 
 export function runHermesMemoryDemo(now = NOW) {

@@ -33,6 +33,7 @@ import {
   type GatewaySettings,
 } from "../src/gatewaySettings";
 import { connectionLabelForState, useBuddyGateway } from "../src/useBuddyGateway";
+import { TrustWorkbenchPreview } from "./trust-workbench/TrustWorkbenchPreview";
 import { BuddySurface, type BuddySurfaceHandle } from "./buddy/BuddySurface";
 import {
   createHealReport,
@@ -1576,6 +1577,7 @@ export function BorderDock() {
         data-monitor-count={layout.activeMonitorIds.length}
         ref={stageRef}
       >
+        {browserPreview ? <TrustWorkbenchPreview /> : null}
         {unifiedDock ? (
           <DockChrome
             clickThrough={clickThrough}

@@ -21,6 +21,7 @@ The first deterministic governance slice is now in place:
 - `GradeReceipt` derivation trail
 - Receipt summary view model for Nexus/Veritas wiring
 - Nexus/Veritas panel data contracts for v0.2 scaffolding
+- Browser-only Trust Workbench preview for Nexus/Veritas data
 - JSON Schemas for `MemoryPacket` and `PurposePolicy`
 - Hermes mock memory demo
 - CLI output for same-memory/different-purpose demo
@@ -31,7 +32,7 @@ The first deterministic governance slice is now in place:
 
 The product proof still needs UI integration and deeper hardening:
 
-- Nexus + Veritas panel wiring for frames and receipts
+- Nexus + Veritas buddy panel wiring for frames and receipts
 - More edge-case policy tests as the primitive evolves
 
 **Read the non-negotiable laws:** [AGENTS.md](AGENTS.md#non-negotiable-laws)

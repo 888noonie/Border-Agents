@@ -756,10 +756,6 @@ export function BorderDock() {
     );
 
     reportHitboxes(fallbackId, boxes);
-    void bbLog("info", "registered fallback buddy head hitboxes", {
-      count: boxes.length,
-      boxes,
-    });
   }, [
     clearBuddyHitboxes,
     dockCollapsed,
@@ -1991,22 +1987,6 @@ function BuddyHotspot({
         h: Math.round(r.height + pad * 2),
       });
 
-      if (!isSurfaceVisible) {
-        // Diagnostic: log the head-only rect being reported for tucked border buddies.
-        // This will appear in the bb-ui logs so we can see what is being sent for the heads.
-        // The padded version is what actually goes into the boxes sent to set_input_hitboxes.
-        const sentX = Math.round(r.left - pad);
-        const sentY = Math.round(r.top - pad);
-        const sentW = Math.round(r.width + pad * 2);
-        const sentH = Math.round(r.height + pad * 2);
-        void bbLog("info", "reporting head hitbox (border mode)", {
-          buddy: buddy.id,
-          edge,
-          state: placement.state,
-          raw: { x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) },
-          sent: { x: sentX, y: sentY, w: sentW, h: sentH },
-        });
-      }
     }
 
     if (isSurfaceVisible && surfaceRef.current) {

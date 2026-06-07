@@ -33,6 +33,12 @@ fn bb_events_timestamp() -> String {
     }
 }
 
+fn bb_env_flag_enabled(name: &str) -> bool {
+    std::env::var(name)
+        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on"))
+        .unwrap_or(false)
+}
+
 fn init_bb_diagnostics() {
     std::panic::set_hook(Box::new(|info| {
         bb_events_log(&format!(
@@ -389,7 +395,7 @@ fn set_input_hitboxes(window: WebviewWindow, boxes: Vec<Hitbox>) -> Result<(), S
         // Opt-in diagnostics for the Hermes first-connection clickability work.
         // Enable with `BB_LOG_HITBOXES=1` to confirm the clickable region the
         // dock is actually applying to the border-dock window.
-        if std::env::var("BB_LOG_HITBOXES").is_ok() {
+        if bb_env_flag_enabled("BB_LOG_HITBOXES") {
             bb_events_log(&format!(
                 "[rust {}] set_input_hitboxes window={} applied={}/{} scale={} boxes={:?}",
                 bb_events_timestamp(),

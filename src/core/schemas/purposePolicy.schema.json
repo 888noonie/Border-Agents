@@ -1,0 +1,93 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://border-agents.local/schemas/purposePolicy.schema.json",
+  "title": "PurposePolicy",
+  "description": "Deterministic authorization contract for grading retrieved memory for one declared purpose.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "risk",
+    "allow_grades_in_prompt",
+    "require_permissions",
+    "assertion_requires",
+    "action_requires",
+    "allow_sensitive",
+    "render_mode",
+    "require_current",
+    "requires_assertion_authority"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "risk": {
+      "type": "string",
+      "enum": ["low", "medium", "high"]
+    },
+    "allow_grades_in_prompt": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/grade"
+      },
+      "uniqueItems": true
+    },
+    "require_permissions": {
+      "$ref": "#/$defs/permissionList"
+    },
+    "assertion_requires": {
+      "$ref": "#/$defs/permissionList"
+    },
+    "action_requires": {
+      "$ref": "#/$defs/permissionList"
+    },
+    "allow_sensitive": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/sensitivity"
+      },
+      "uniqueItems": true
+    },
+    "render_mode": {
+      "$ref": "#/$defs/renderMode"
+    },
+    "require_current": {
+      "type": "boolean"
+    },
+    "requires_assertion_authority": {
+      "type": "boolean"
+    }
+  },
+  "$defs": {
+    "grade": {
+      "type": "string",
+      "enum": ["trusted", "limited", "reference_only", "blocked", "quarantined"]
+    },
+    "sensitivity": {
+      "type": "string",
+      "enum": ["public", "internal", "confidential", "restricted"]
+    },
+    "renderMode": {
+      "type": "string",
+      "enum": ["clean", "annotated", "strict"]
+    },
+    "permission": {
+      "type": "string",
+      "enum": [
+        "may_retrieve",
+        "may_quote",
+        "may_assert",
+        "may_use_for_action",
+        "requires_verification_before_assertion"
+      ]
+    },
+    "permissionList": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/permission"
+      },
+      "uniqueItems": true
+    }
+  }
+}

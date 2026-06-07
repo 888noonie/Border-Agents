@@ -19,6 +19,7 @@ The first deterministic governance slice is now in place:
 - `SafeContextFrame` buckets
 - `PromptRenderer`
 - `GradeReceipt` derivation trail
+- JSON Schemas for `MemoryPacket` and `PurposePolicy`
 - Hermes mock memory demo
 - CLI output for same-memory/different-purpose demo
 - Vitest coverage for required governance rules

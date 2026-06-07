@@ -1,0 +1,181 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://border-agents.local/schemas/memoryPacket.schema.json",
+  "title": "MemoryPacket",
+  "description": "Deterministic metadata attached to a retrieved memory chunk before purpose-aware grading.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "packet_id",
+    "content_hash",
+    "source",
+    "claim_type",
+    "authority",
+    "sensitivity",
+    "valid_until",
+    "permissions",
+    "labels",
+    "policy",
+    "derivation",
+    "review"
+  ],
+  "properties": {
+    "packet_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "content_hash": {
+      "type": "string",
+      "pattern": "^sha256:.+"
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "created_at"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": ["repo_file", "chat_session", "user_note", "system_note", "external_document"]
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "claim_type": {
+      "type": "string",
+      "enum": [
+        "observed_fact",
+        "current_policy",
+        "historical_summary",
+        "preference",
+        "instruction",
+        "unverified_claim"
+      ]
+    },
+    "authority": {
+      "type": "string",
+      "enum": ["low", "medium", "high"]
+    },
+    "sensitivity": {
+      "type": "string",
+      "enum": ["public", "internal", "confidential", "restricted"]
+    },
+    "valid_until": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "may_retrieve",
+        "may_quote",
+        "may_assert",
+        "may_use_for_action",
+        "requires_verification_before_assertion"
+      ],
+      "properties": {
+        "may_retrieve": {
+          "type": "boolean"
+        },
+        "may_quote": {
+          "type": "boolean"
+        },
+        "may_assert": {
+          "type": "boolean"
+        },
+        "may_use_for_action": {
+          "type": "boolean"
+        },
+        "requires_verification_before_assertion": {
+          "type": "boolean"
+        }
+      }
+    },
+    "labels": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "derivation": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/derivationStep"
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "requires_review", "reviewed_by", "reviewed_at"],
+      "properties": {
+        "mode": {
+          "$ref": "#/$defs/renderMode"
+        },
+        "requires_review": {
+          "type": "boolean"
+        },
+        "reviewed_by": {
+          "type": ["string", "null"]
+        },
+        "reviewed_at": {
+          "type": ["string", "null"],
+          "format": "date-time"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "renderMode": {
+      "type": "string",
+      "enum": ["clean", "annotated", "strict"]
+    },
+    "derivationStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["field", "value", "source", "reason", "policy_rule"],
+      "properties": {
+        "field": {
+          "type": "string",
+          "minLength": 1
+        },
+        "value": true,
+        "source": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        },
+        "policy_rule": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

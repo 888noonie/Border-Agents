@@ -19,6 +19,7 @@ The first deterministic governance slice is now in place:
 - `SafeContextFrame` buckets
 - `PromptRenderer`
 - `GradeReceipt` derivation trail
+- Receipt summary view model for Nexus/Veritas wiring
 - JSON Schemas for `MemoryPacket` and `PurposePolicy`
 - Hermes mock memory demo
 - CLI output for same-memory/different-purpose demo

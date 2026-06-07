@@ -20,6 +20,7 @@ The first deterministic governance slice is now in place:
 - `PromptRenderer`
 - `GradeReceipt` derivation trail
 - Receipt summary view model for Nexus/Veritas wiring
+- Nexus/Veritas panel data contracts for v0.2 scaffolding
 - JSON Schemas for `MemoryPacket` and `PurposePolicy`
 - Hermes mock memory demo
 - CLI output for same-memory/different-purpose demo

@@ -23,6 +23,7 @@ The first deterministic governance slice is now in place:
 - JSON Schemas for `MemoryPacket` and `PurposePolicy`
 - Hermes mock memory demo
 - CLI output for same-memory/different-purpose demo
+- Governance trace reporter with `npm run demo:trace`
 - Vitest coverage for required governance rules
 
 ## What's Still Missing (P0 Follow-Up)
@@ -65,7 +66,7 @@ See: [SPEC_MEMORY_GRADING.md](docs/SPEC_MEMORY_GRADING.md)
 1. **Quick check**: `npm run dev` (browser preview) or `bash scripts/bb-start.sh` (full overlay)
 2. **Review**: [SPEC_MEMORY_GRADING.md](docs/SPEC_MEMORY_GRADING.md) — understand the grading model
 3. **Review**: `src/core/` implementation and `src/core/__tests__/`
-4. **Demo**: Run `npm run demo:memory`, then wire the output into Nexus/Veritas preview
+4. **Demo**: Run `npm run demo:trace`, then wire receipt summaries into Nexus/Veritas preview
 5. **Commit**: Keep future governance changes small and test-backed
 
 ## Translation Rule Reminder

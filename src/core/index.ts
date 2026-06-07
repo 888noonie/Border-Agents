@@ -1,4 +1,5 @@
 export * from "./grader";
+export * from "./governanceTrace";
 export * from "./policies";
 export * from "./promptRenderer";
 export * from "./receiptSummary";

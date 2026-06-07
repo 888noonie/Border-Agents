@@ -35,6 +35,7 @@ describe("TrustWorkbenchPanel", () => {
     const activeGoalButton = screen.getByRole("button", { name: /chunk_active_goal/i });
     expect(activeGoalButton).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("mem_pkt_active_goal")).toBeInTheDocument();
+    expect(screen.getByText("excluded from context")).toBeInTheDocument();
 
     const policyRules = screen.getByLabelText("Policy rules");
     expect(within(policyRules).getByText("Purpose requires explicit permission")).toBeInTheDocument();

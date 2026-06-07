@@ -502,6 +502,13 @@
   font-weight: 760;
 }
 
+.trust-panel__actions .trust-panel__action--primary {
+  border-color: #275c92;
+  background: #e9f3ff;
+  color: #193c62;
+  font-weight: 840;
+}
+
 .trust-preview__empty {
   border: 1px dashed rgb(25 38 58 / 0.18);
   border-radius: 7px;

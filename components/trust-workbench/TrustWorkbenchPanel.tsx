@@ -276,7 +276,7 @@ function ReceiptRow({
         <div className="trust-preview__receipt-detail">
           <span>{item.packetId}</span>
           <span>{GRADE_LABELS[item.grade]}</span>
-          <span>{item.promptStatus}</span>
+          <span>{promptStatusLabel(item.promptStatus)}</span>
           <small>{item.finalReason}</small>
           {item.policyRules.length > 0 ? (
             <ul className="trust-preview__policy-list" aria-label="Policy rules">
@@ -302,10 +302,16 @@ function policyRuleLabel(rule: string) {
   return POLICY_RULE_LABELS[rule] ?? rule;
 }
 
+function promptStatusLabel(status: VeritasPanelData["evidenceReady"][number]["promptStatus"]) {
+  if (status === "included") return "included in context";
+  if (status === "excluded") return "excluded from context";
+  return "context status unknown";
+}
+
 function WorkbenchPlaceholderActions() {
   return (
     <div className="trust-panel__actions" aria-label="Trust actions">
-      <button type="button" disabled>
+      <button className="trust-panel__action--primary" type="button" disabled>
         Verify
       </button>
       <button type="button" disabled>

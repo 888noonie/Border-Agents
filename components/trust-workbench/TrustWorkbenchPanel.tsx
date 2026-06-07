@@ -25,6 +25,22 @@ const GRADE_LABELS: Record<Grade, string> = {
   quarantined: "Quarantined",
 };
 
+const POLICY_RULE_LABELS: Record<string, string> = {
+  "grade.trusted": "Trusted by policy",
+  "grade.limited.sensitive": "Limited by sensitivity",
+  "grade.reference.requires_verification": "Needs verification before assertion",
+  "grade.reference.expired_current": "Expired for current-policy answers",
+  "grade.reference.untrusted_claim": "Reference only because authority is low",
+  "grade.blocked.required_permission": "Blocked by missing permission",
+  "grade.blocked.assertion_permission": "Blocked for assertion",
+  "grade.blocked.action_permission": "Blocked for action",
+  "grade.blocked.sensitivity": "Blocked by sensitivity policy",
+  "grade.quarantined.review_required": "Quarantined for review",
+  "purpose.require_current": "Purpose requires current material",
+  "purpose.require_permissions": "Purpose requires explicit permission",
+  "purpose.allow_sensitive": "Purpose limits sensitive material",
+};
+
 type TrustWorkbenchPanelMode = "full" | "nexus" | "veritas";
 
 type TrustWorkbenchPanelProps = {
@@ -43,6 +59,7 @@ export function TrustWorkbenchPanel({
   const active = results.find((result) => result.purpose === purpose) ?? results[0];
   const nexus = buildNexusPanelData({ frame: active.frame, prompt: active.prompt });
   const veritas = buildVeritasPanelData({ frame: active.frame, prompt: active.prompt });
+  const badge = workbenchBadgeForMode(mode, nexus, veritas);
 
   return (
     <div className={["trust-panel", compact ? "trust-panel--compact" : ""].join(" ")} aria-label="Trust Workbench">
@@ -51,8 +68,8 @@ export function TrustWorkbenchPanel({
           <p className="trust-preview__eyebrow">Trust Workbench</p>
           <h1>{title}</h1>
         </div>
-        <span className={`trust-preview__badge trust-preview__badge--${nexus.trustBadgeState}`}>
-          {GRADE_LABELS[nexus.trustBadgeState]}
+        <span className={`trust-preview__badge trust-preview__badge--${badge.grade}`}>
+          {badge.label}
         </span>
       </div>
 
@@ -74,6 +91,22 @@ export function TrustWorkbenchPanel({
       {mode !== "full" ? <WorkbenchPlaceholderActions /> : null}
     </div>
   );
+}
+
+function workbenchBadgeForMode(mode: TrustWorkbenchPanelMode, nexus: NexusPanelData, veritas: VeritasPanelData) {
+  if (mode === "veritas") {
+    return {
+      grade: veritas.warnings.length > 0 ? "blocked" : "trusted",
+      label: veritas.warnings.length > 0 ? `${veritas.warnings.length} receipt warnings` : "Receipts clean",
+    } satisfies { grade: Grade; label: string };
+  }
+
+  const subject = mode === "nexus" ? "Source" : "Frame";
+
+  return {
+    grade: nexus.trustBadgeState,
+    label: `${subject} ${GRADE_LABELS[nexus.trustBadgeState]}`,
+  };
 }
 
 function NexusPreview({ data }: { data: NexusPanelData }) {
@@ -101,7 +134,7 @@ function NexusPreview({ data }: { data: NexusPanelData }) {
         <span className="trust-preview__section-counters">
           <span>{data.retrievedCount} retrieved</span>
           <span className={`trust-preview__counter trust-preview__counter--${counterGrade}`}>
-            {counterValue} {counterGrade === "reference_only" ? "reference" : counterGrade}
+            {counterValue} {counterLabel(counterGrade)}
           </span>
         </span>
       </button>
@@ -135,6 +168,12 @@ function NexusPreview({ data }: { data: NexusPanelData }) {
       ) : null}
     </section>
   );
+}
+
+function counterLabel(grade: Grade) {
+  if (grade === "reference_only") return "reference";
+  if (grade === "quarantined") return "source quarantined";
+  return grade;
 }
 
 function VeritasPreview({ data }: { data: VeritasPanelData }) {
@@ -231,7 +270,7 @@ function ReceiptRow({
       >
         <span>{item.chunkId}</span>
         <strong>{evidence ? GRADE_LABELS[item.grade] : item.finalReason}</strong>
-        <small>{evidence ? item.promptStatus : item.policyRules.join(", ")}</small>
+        <small>{evidence ? item.promptStatus : readablePolicyRules(item.policyRules)}</small>
       </button>
       {expanded ? (
         <div className="trust-preview__receipt-detail">
@@ -239,10 +278,28 @@ function ReceiptRow({
           <span>{GRADE_LABELS[item.grade]}</span>
           <span>{item.promptStatus}</span>
           <small>{item.finalReason}</small>
+          {item.policyRules.length > 0 ? (
+            <ul className="trust-preview__policy-list" aria-label="Policy rules">
+              {item.policyRules.map((rule) => (
+                <li key={rule}>
+                  <span>{policyRuleLabel(rule)}</span>
+                  <code>{rule}</code>
+                </li>
+              ))}
+            </ul>
+          ) : null}
         </div>
       ) : null}
     </div>
   );
+}
+
+function readablePolicyRules(rules: string[]) {
+  return rules.map(policyRuleLabel).join(", ");
+}
+
+function policyRuleLabel(rule: string) {
+  return POLICY_RULE_LABELS[rule] ?? rule;
 }
 
 function WorkbenchPlaceholderActions() {

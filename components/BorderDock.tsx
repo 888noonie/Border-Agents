@@ -407,7 +407,7 @@ const buddies: DockBuddy[] = [
     edge: owlManifest.border_position as Edge,
     dockSlot: 0.24,
     color: owlManifest.color,
-    message: "One source is assertable.",
+    message: "1 of 5 sources passed receipt checks.",
     visible: "faint",
   },
   {

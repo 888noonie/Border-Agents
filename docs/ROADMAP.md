@@ -54,12 +54,12 @@ Delivered / scaffolded:
 - Nexus buddy panel preview: retrieval grades, blocked counter, prompt summary, source list
 - Veritas buddy panel preview: warning counter, warnings, evidence-ready items, receipt row expansion
 - Collapsible workbench sections with colored counters for compact buddy panels
+- Tests for workbench section collapse and receipt expansion
 
 Next deliverables:
 
 - Action buttons: verify, open source, export receipt, use trusted only
 - Receipt viewer with full derivation details
-- Tests for panel interactions and receipt expansion
 
 ---
 

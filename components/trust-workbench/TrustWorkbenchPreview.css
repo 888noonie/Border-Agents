@@ -20,10 +20,22 @@
 }
 
 .trust-panel--compact {
+  position: relative;
   border: 1px solid rgb(25 38 58 / 0.12);
   border-radius: 8px;
   overflow: hidden;
   background: #ffffff;
+}
+
+.trust-panel--compact::after {
+  position: sticky;
+  bottom: 0;
+  display: block;
+  height: 0.8rem;
+  margin-top: -0.8rem;
+  background: linear-gradient(rgb(255 255 255 / 0), #ffffff);
+  content: "";
+  pointer-events: none;
 }
 
 .trust-panel--compact .trust-preview__header,
@@ -446,6 +458,29 @@
 .trust-preview__receipt-detail small {
   grid-column: 1 / -1;
   color: #65758b;
+}
+
+.trust-preview__policy-list {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 0.24rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.trust-preview__policy-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.trust-preview__policy-list code {
+  color: #66758a;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.64rem;
+  overflow-wrap: anywhere;
 }
 
 .trust-panel__actions {

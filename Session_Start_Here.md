@@ -25,6 +25,7 @@ The first deterministic governance slice is now in place:
 - Shared TrustWorkbenchPanel for browser and buddy surfaces
 - Nexus buddy panel preview with retrieval grades, source list, and colored blocked counter
 - Veritas buddy panel preview with warning counter, evidence-ready items, and receipt row expansion
+- UI tests for workbench section collapse and receipt expansion
 - JSON Schemas for `MemoryPacket` and `PurposePolicy`
 - Hermes mock memory demo
 - CLI output for same-memory/different-purpose demo
@@ -37,7 +38,6 @@ The product proof still needs UI integration and deeper hardening:
 
 - Trust Workbench action behavior: verify, open source, export receipt, use trusted only
 - Receipt viewer with full derivation details
-- UI tests for workbench section collapse and receipt expansion
 - More edge-case policy tests as the primitive evolves
 
 **Read the non-negotiable laws:** [AGENTS.md](AGENTS.md#non-negotiable-laws)
@@ -54,6 +54,7 @@ See: [SPEC_MEMORY_GRADING.md](docs/SPEC_MEMORY_GRADING.md)
 ## Known Gaps (Still True)
 
 - Core automated tests exist; UI/demo integration still needs coverage
+- Hermes gateway outputs are governed by Border Agents receipts; upstream model/provider constraints are not yet part of the trust boundary
 - `tauri.conf.json` has `"csp": null` (needs review before trusted content)
 - Tauri capabilities broad (document the threat model)
 - Browser extension uses `innerHTML` (acceptable for now; guard when memory flows there)

@@ -9,6 +9,7 @@
     "desktop:stop": "bash scripts/bb-stop.sh",
     "desktop:build": "tauri build",
     "build": "tsc && vite build",
+    "test": "vitest run",
     "preview": "vite preview --host 127.0.0.1 --port 1420",
     "gateway:dev": "node scripts/gateway-dev.mjs",
     "report": "bash scripts/bb-report.sh",

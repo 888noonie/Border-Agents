@@ -1,7 +1,7 @@
 # Session Start Here
 
 **Date:** 2026-06-07  
-**Status:** ✅ UX proof real and working | ⏳ Core governance primitives still needed  
+**Status:** ✅ UX proof real and working | ✅ First governance-core slice implemented  
 
 ## What's Proven
 
@@ -9,15 +9,26 @@
 - **Backend scaffold**: Tauri overlay, vite dev, gateway communication layer in place
 - **Repo hygiene**: `.gitignore` expanded; `.env.example`, `package-lock.json`, `Cargo.lock` all present; build scripts stable
 
-## What's Still Missing (P0)
+## Governance Core Progress
 
-The product proof requires core governance types with tests:
+The first deterministic governance slice is now in place:
 
 - `MemoryPacket` schema
-- `PurposePolicy` schema  
+- `PurposePolicy` schema
 - `MemoryGrader` logic
-- `SafeContextFrame` rendering
+- `SafeContextFrame` buckets
+- `PromptRenderer`
 - `GradeReceipt` derivation trail
+- Hermes mock memory demo
+- Vitest coverage for required governance rules
+
+## What's Still Missing (P0 Follow-Up)
+
+The product proof still needs UI/demo integration and deeper hardening:
+
+- Nexus + Veritas panel wiring for frames and receipts
+- CLI/demo output for the Hermes memory scenario
+- More edge-case policy tests as the primitive evolves
 
 **Read the non-negotiable laws:** [AGENTS.md](AGENTS.md#non-negotiable-laws)
 
@@ -26,7 +37,7 @@ The product proof requires core governance types with tests:
 **NOT more buddy chrome.**
 
 **First core commit target:**  
-`src/core/types.ts` (schemas + interfaces) + test scaffold
+`src/core/` governance primitives + test scaffold
 
 See: [SPEC_MEMORY_GRADING.md](docs/SPEC_MEMORY_GRADING.md)
 
@@ -51,9 +62,9 @@ See: [SPEC_MEMORY_GRADING.md](docs/SPEC_MEMORY_GRADING.md)
 
 1. **Quick check**: `npm run dev` (browser preview) or `bash scripts/bb-start.sh` (full overlay)
 2. **Review**: [SPEC_MEMORY_GRADING.md](docs/SPEC_MEMORY_GRADING.md) — understand the grading model
-3. **Code**: Sketch `src/core/types.ts` with `MemoryPacket`, `PurposePolicy`, `SafeContextFrame`
-4. **Test**: Set up `src/core/__tests__/` scaffold with minimum viable test suite
-5. **Commit**: Once types and test structure are in place, submit for review
+3. **Review**: `src/core/` implementation and `src/core/__tests__/`
+4. **Demo**: Wire Hermes mock memory output into CLI or Nexus/Veritas preview
+5. **Commit**: Keep future governance changes small and test-backed
 
 ## Translation Rule Reminder
 

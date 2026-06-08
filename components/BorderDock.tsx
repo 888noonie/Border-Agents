@@ -381,6 +381,25 @@ const DEFAULT_BORDER_BUDDY_ID = "hermes";
 const PASS_THROUGH_SHORTCUT = "CommandOrControl+Alt+B";
 const DOCK_COLLAPSE_SHORTCUT = "CommandOrControl+Alt+H";
 const FULL_RENDER_MODE: DockRenderMode = "head+bubble";
+
+/**
+ * Hermes dock ticker content.
+ * These represent "outstanding" information / announcements surfaced on the right edge.
+ * For now demo data; will be wired to real governance state (pending interventions,
+ * receipt warnings, graded memory counts, update announcements, etc.).
+ */
+const HERMES_TICKER_MESSAGES = [
+  "Hermes: Human Intervention Required (current task 82%)",
+  "Veritas: 4 receipt warnings",
+  "Nexus: 7 memory packets graded for current purpose",
+  "Forge: 1 action review pending",
+  "Adjust: chrome position + layout persisted",
+] as const;
+
+const HERMES_TICKER_SEGMENTS = [
+  HERMES_TICKER_MESSAGES.join("   •   "),
+  HERMES_TICKER_MESSAGES.join("   •   "),
+];
 const IDLE_FADE_DELAY = 5600;
 const IDLE_CLICK_THROUGH_PULSE = 900;
 const DOCK_SLOTS_BY_EDGE: Record<Edge, number[]> = {
@@ -1990,15 +2009,31 @@ function DockChrome({
                 </button>
               ))}
             </div>
-            <span className="dock-controls__hint">
-              {adjustOpen
-                ? "Dock tools open"
-                : clickThrough
-                  ? "Pass-through on"
-                  : recentHeal
-                    ? "Self-heal complete"
-                    : "Hermes on right edge"}
-            </span>
+            {/* Short transient state labels (only when relevant) */}
+            {(adjustOpen || clickThrough || recentHeal) && (
+              <span className="dock-controls__hint">
+                {adjustOpen
+                  ? "Dock tools open"
+                  : clickThrough
+                    ? "Pass-through on"
+                    : "Self-heal complete"}
+              </span>
+            )}
+
+            {/* Hermes on the Right Edge — persistent scrolling dock ticker for important outstanding information.
+                Examples: intervention requests, receipt warnings, graded memory status, future announcements.
+                Pauses on hover. Uses duplicated segments for seamless loop. */}
+            {!adjustOpen && !clickThrough && !recentHeal && (
+              <div className="dock-controls__ticker" aria-label="Hermes status and outstanding items ticker" role="status">
+                <div className="dock-ticker__track">
+                  {HERMES_TICKER_SEGMENTS.map((segment, i) => (
+                    <span key={i} className="dock-ticker__segment" aria-hidden={i > 0}>
+                      {segment}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
 
           {adjustOpen ? (

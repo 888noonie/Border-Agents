@@ -1,5 +1,5 @@
 import { GRADE_ORDER, summarizeFrameReceipts, type ReceiptSummaryItem } from "./receiptSummary";
-import type { Grade, PromptRenderResult, SafeContextFrame } from "./types";
+import type { DerivationStep, Grade, PromptRenderResult, SafeContextFrame } from "./types";
 
 export type TrustBadgeState = Grade;
 
@@ -30,12 +30,17 @@ export interface VeritasPanelData {
 }
 
 export interface VeritasReceiptItem {
+  receiptId: string;
   chunkId: string;
   packetId: string;
   grade: Grade;
   promptStatus: "included" | "excluded" | "unknown";
+  promptReason: string | null;
   finalReason: string;
   policyRules: string[];
+  ruleDetails: DerivationStep[];
+  sourceId: string | null;
+  sourceType: string | null;
 }
 
 export interface VeritasWarning extends VeritasReceiptItem {
@@ -155,11 +160,16 @@ function emptyReceiptGroups(): Record<Grade, VeritasReceiptItem[]> {
 
 function toVeritasReceiptItem(item: ReceiptSummaryItem): VeritasReceiptItem {
   return {
+    receiptId: item.receipt_id,
     chunkId: item.chunk_id,
     packetId: item.packet_id,
     grade: item.grade,
     promptStatus: item.prompt_status,
+    promptReason: item.prompt_reason,
     finalReason: item.final_reason,
     policyRules: item.policy_rules,
+    ruleDetails: item.rule_details,
+    sourceId: item.source_id,
+    sourceType: item.source_type,
   };
 }

@@ -45,6 +45,11 @@
   transform: translateX(-50%);
 }
 
+.dock-chrome--placed {
+  right: auto;
+  bottom: auto;
+}
+
 .dock-peek {
   border: 1px solid rgb(125 249 255 / 0.42);
   border-radius: 999px;
@@ -103,9 +108,8 @@
 
 
 .dock-controls {
-  display: flex;
-  gap: 6px;
-  align-items: center;
+  display: grid;
+  gap: 5px;
   padding: 5px;
   border: 1px solid rgb(125 249 255 / 0.28);
   border-radius: 999px;
@@ -116,6 +120,60 @@
   transition: opacity 160ms ease, background 160ms ease;
 }
 
+.dock-controls__main {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+
+.dock-mode-selector {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(3.2rem, 1fr));
+  gap: 3px;
+  padding: 3px;
+  border: 1px solid rgb(255 255 255 / 0.18);
+  border-radius: 999px;
+  background: rgb(255 255 255 / 0.16);
+}
+
+.dock-mode-selector__option {
+  min-height: 1.7rem;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  padding: 0 0.55rem;
+  color: #172033;
+  cursor: pointer;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 820;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.dock-mode-selector__option--work {
+  background: #dbeafe;
+}
+
+.dock-mode-selector__option--play {
+  background: #dcfce7;
+}
+
+.dock-mode-selector__option--adjust {
+  background: #f2ecff;
+}
+
+.dock-mode-selector__option--active {
+  border-color: rgb(8 17 31 / 0.42);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.7), 0 0 0 1px rgb(255 255 255 / 0.28);
+}
+
+.dock-mode-selector__option:hover,
+.dock-mode-selector__option:focus-visible {
+  border-color: rgb(39 92 146 / 0.7);
+  outline: 0;
+}
+
 .dock-controls:hover,
 .dock-controls:focus-within {
   background: rgb(8 17 31 / 0.72);
@@ -123,27 +181,58 @@
 }
 
 .dock-controls__hint {
-  max-width: 280px;
+  max-width: 150px;
   padding: 0 8px;
   color: rgb(255 255 255 / 0.84);
   font-size: 11px;
   font-weight: 720;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.dock-adjust-tray {
+  display: grid;
+  grid-template-columns: repeat(4, 2rem);
+  gap: 4px;
+  justify-content: end;
+  padding: 2px;
+}
+
 .dock-control {
-  min-width: 44px;
+  display: inline-grid;
+  width: 2rem;
+  min-width: 2rem;
+  height: 1.85rem;
+  min-height: 1.85rem;
+  place-items: center;
   border: 0;
   border-radius: 999px;
-  padding: 6px 10px;
+  padding: 0;
   background: rgb(255 255 255 / 0.9);
   color: #172033;
   cursor: grab;
   font: inherit;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 760;
   letter-spacing: 0;
   pointer-events: auto;
+  white-space: nowrap;
+}
+
+.dock-control:hover,
+.dock-control:focus-visible {
+  background: #fff;
+  outline: 0.14rem solid rgb(125 249 255 / 0.46);
+  outline-offset: 0.08rem;
+}
+
+.dock-control__icon {
+  display: block;
+  min-width: 1em;
+  font-size: 0.92rem;
+  line-height: 1;
+  text-align: center;
 }
 
 .dock-control--resize {
@@ -151,7 +240,10 @@
 }
 
 .dock-control--mode {
-  min-width: 3.6rem;
+  cursor: pointer;
+}
+
+.dock-control--reset {
   cursor: pointer;
 }
 
@@ -256,8 +348,8 @@
 }
 
 .border-dock--render-bubble .agent-hotspot--tucked:not(.agent-hotspot--active) {
-  opacity: 0;
-  pointer-events: none;
+  opacity: 1;
+  pointer-events: auto;
 }
 
 .border-dock--render-head .speech-bubble {

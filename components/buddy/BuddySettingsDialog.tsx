@@ -27,6 +27,7 @@ type BuddySettingsDialogProps = {
   gatewayDetail: string | null;
   gatewayUrl: string;
   gatewayAutoConnect: boolean;
+  preventOverflow?: boolean;
   dialogRef?: RefObject<HTMLDivElement | null>;
   onClose: () => void;
   onSave: (settings: BuddySettings, gatewaySettings: GatewaySettings) => void;
@@ -44,6 +45,7 @@ export function BuddySettingsDialog({
   gatewayDetail,
   gatewayUrl,
   gatewayAutoConnect,
+  preventOverflow = true,
   dialogRef,
   onClose,
   onSave,
@@ -112,7 +114,10 @@ export function BuddySettingsDialog({
     <div className="buddy-settings-layer" role="presentation">
       <div
         ref={cardRef}
-        className="buddy-dialog__card"
+        className={[
+          "buddy-dialog__card",
+          preventOverflow ? "buddy-dialog__card--prevent-overflow" : "",
+        ].join(" ")}
         role="dialog"
         aria-modal="false"
       >

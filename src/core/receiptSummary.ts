@@ -1,4 +1,5 @@
 import type { Grade, PromptRenderResult, RetrievedMemory, SafeContextFrame } from "./types";
+import type { DerivationStep } from "./types";
 
 export const GRADE_ORDER: Grade[] = ["trusted", "limited", "reference_only", "blocked", "quarantined"];
 
@@ -16,6 +17,7 @@ export interface ReceiptSummaryItem {
   source_type: string | null;
   prompt_status: PromptEntryStatus;
   prompt_reason: string | null;
+  rule_details: DerivationStep[];
 }
 
 export type ReceiptSummaryByGrade = Record<Grade, ReceiptSummaryItem[]>;
@@ -58,6 +60,7 @@ export function summarizeFrameReceipts(frame: SafeContextFrame, prompt?: PromptR
       source_type: memory?.packet.source.type ?? null,
       prompt_status: promptStatus?.status ?? "unknown",
       prompt_reason: promptStatus?.reason ?? null,
+      rule_details: receipt.rules,
     };
 
     byGrade[item.grade].push(item);

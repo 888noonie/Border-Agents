@@ -52,6 +52,17 @@ import {
   type DockRenderMode,
   type DockSettings,
 } from "../src/dockSettings";
+import {
+  DEFAULT_USER_MODE_STATE,
+  loadStoredUserModeState,
+  updateUserModeSettings,
+  USER_MODE_DESCRIPTIONS,
+  USER_MODE_LABELS,
+  USER_MODE_ORDER,
+  USER_MODE_STORAGE_KEY,
+  type UserMode,
+  type UserModeState,
+} from "../src/userModes";
 import "./BorderDock.css";
 
 export interface Hitbox {
@@ -330,6 +341,21 @@ type ActiveDrag = {
   offsetY: number;
 };
 
+type DockChromePlacement = {
+  x: number;
+  y: number;
+};
+
+type DockChromeDrag = {
+  startClientX: number;
+  startClientY: number;
+  startX: number;
+  startY: number;
+  width: number;
+  height: number;
+  pointerId: number;
+};
+
 const INITIAL_LAYOUT: DockLayout = {
   monitors: [],
   activeMonitorIds: ["browser-preview"],
@@ -349,6 +375,7 @@ const DRAG_ACTIVATION_THRESHOLD = 6;
 
 const PLACEMENT_STORAGE_KEY = "border-buddies:placements:v4";
 const SETTINGS_STORAGE_KEY = "border-buddies:settings:v2";
+const DOCK_CHROME_STORAGE_KEY = "border-agents:dock-chrome:v1";
 const HIDDEN_NATIVE_WINDOW_ID = "__native_hidden__";
 const DEFAULT_BORDER_BUDDY_ID = "hermes";
 const PASS_THROUGH_SHORTCUT = "CommandOrControl+Alt+B";
@@ -452,6 +479,7 @@ async function setDockInputEnabled(enabled: boolean) {
 
 export function BorderDock() {
   const stageRef = useRef<HTMLDivElement>(null);
+  const dockChromeNodeRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<ActiveDrag | null>(null);
   const pendingDragCleanupRef = useRef<(() => void) | null>(null);
   const clickThroughRef = useRef(false);
@@ -475,14 +503,20 @@ export function BorderDock() {
   const [placements, setPlacements] = useState<AgentPlacements>(() =>
     loadStoredPlacements(defaultPlacements),
   );
+  const [dockChromePlacement, setDockChromePlacement] = useState<DockChromePlacement | null>(() =>
+    loadStoredDockChromePlacement(),
+  );
   const [buddySettings, setBuddySettings] = useState<BuddySettingsMap>(() =>
     loadStoredBuddySettings(defaultBuddySettings),
   );
-  const [dockSettings, setDockSettings] = useState<DockSettings>(() =>
-    loadStoredDockSettings(DEFAULT_DOCK_SETTINGS),
+  const initialUserModeState = useMemo(loadInitialUserModeState, []);
+  const [userModeState, setUserModeState] = useState<UserModeState>(initialUserModeState);
+  const activeUserMode = userModeState.activeMode;
+  const [dockSettings, setDockSettings] = useState<DockSettings>(
+    initialUserModeState.modes[initialUserModeState.activeMode].dock,
   );
-  const [gatewaySettings, setGatewaySettings] = useState<GatewaySettings>(() =>
-    loadStoredGatewaySettings(DEFAULT_GATEWAY_SETTINGS),
+  const [gatewaySettings, setGatewaySettings] = useState<GatewaySettings>(
+    initialUserModeState.modes[initialUserModeState.activeMode].gateway,
   );
   const [buddyMessages, setBuddyMessages] = useState<Record<string, string>>(() =>
     Object.fromEntries(buddies.map((buddy) => [buddy.id, buddy.message ?? ""])),
@@ -501,6 +535,13 @@ export function BorderDock() {
     refreshChromeHitboxes,
     hasHitboxFailures,
   } = useDockHitboxRegistry(clickThroughRef, overlayDragActiveRef);
+  const setDockChromeNode = useCallback(
+    (node: HTMLDivElement | null) => {
+      dockChromeNodeRef.current = node;
+      controlsRef(node);
+    },
+    [controlsRef],
+  );
 
   const windowBuddy = useMemo(
     () => buddies.find((buddy) => buddy.id === windowBuddyId) ?? null,
@@ -662,16 +703,31 @@ export function BorderDock() {
   }, [placements]);
 
   useEffect(() => {
+    saveStoredDockChromePlacement(dockChromePlacement);
+    refreshChromeHitboxes();
+  }, [dockChromePlacement, refreshChromeHitboxes]);
+
+  useEffect(() => {
     localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(buddySettings));
   }, [buddySettings]);
 
   useEffect(() => {
     localStorage.setItem(DOCK_SETTINGS_STORAGE_KEY, JSON.stringify(dockSettings));
+    setUserModeState((current) =>
+      updateUserModeSettings(current, current.activeMode, { dock: dockSettings }),
+    );
   }, [dockSettings]);
 
   useEffect(() => {
     localStorage.setItem(GATEWAY_SETTINGS_STORAGE_KEY, JSON.stringify(gatewaySettings));
+    setUserModeState((current) =>
+      updateUserModeSettings(current, current.activeMode, { gateway: gatewaySettings }),
+    );
   }, [gatewaySettings]);
+
+  useEffect(() => {
+    localStorage.setItem(USER_MODE_STORAGE_KEY, JSON.stringify(userModeState));
+  }, [userModeState]);
 
   useEffect(() => {
     setBuddySettings((current) => {
@@ -1466,9 +1522,96 @@ export function BorderDock() {
   }
 
   function beginOverlayWindowDrag() {
-    // Native move is handled by data-tauri-drag-region on the Move control.
-    // We only pause hitbox/self-heal updates while the compositor is dragging.
+    // Pause hitbox/self-heal updates while an overlay-level move or resize is in flight.
     markOverlayDragActive();
+  }
+
+  function startDockChromeDrag(event: ReactPointerEvent<HTMLElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+    markActivity();
+    markOverlayDragActive();
+
+    const chromeRect = dockChromeNodeRef.current?.getBoundingClientRect();
+    if (!chromeRect) {
+      markOverlayDragEnded();
+      return;
+    }
+
+    const drag: DockChromeDrag = {
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startX: chromeRect.left,
+      startY: chromeRect.top,
+      width: chromeRect.width,
+      height: chromeRect.height,
+      pointerId: event.pointerId,
+    };
+    let latestPlacement = clampDockChromePlacement(
+      { x: drag.startX, y: drag.startY },
+      window.innerWidth,
+      window.innerHeight,
+      drag.width,
+      drag.height,
+    );
+
+    void bbLog("info", "dock chrome drag start", {
+      nativeUnifiedDock,
+      browserPreview,
+      x: Math.round(latestPlacement.x),
+      y: Math.round(latestPlacement.y),
+    });
+
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Window listeners keep the drag working in browser previews and webviews.
+    }
+
+    function handleMove(moveEvent: PointerEvent) {
+      if (moveEvent.pointerId !== drag.pointerId) {
+        return;
+      }
+
+      latestPlacement = clampDockChromePlacement(
+        {
+          x: drag.startX + moveEvent.clientX - drag.startClientX,
+          y: drag.startY + moveEvent.clientY - drag.startClientY,
+        },
+        window.innerWidth,
+        window.innerHeight,
+        drag.width,
+        drag.height,
+      );
+
+      setDockChromePlacement(latestPlacement);
+    }
+
+    function handleEnd(endEvent: PointerEvent) {
+      if (endEvent.pointerId !== drag.pointerId) {
+        return;
+      }
+
+      window.removeEventListener("pointermove", handleMove);
+      window.removeEventListener("pointerup", handleEnd);
+      window.removeEventListener("pointercancel", handleEnd);
+      void bbLog("info", "dock chrome drag end", {
+        nativeUnifiedDock,
+        browserPreview,
+        x: Math.round(latestPlacement.x),
+        y: Math.round(latestPlacement.y),
+      });
+      markOverlayDragEnded();
+    }
+
+    window.addEventListener("pointermove", handleMove);
+    window.addEventListener("pointerup", handleEnd);
+    window.addEventListener("pointercancel", handleEnd);
+  }
+
+  function resetDockChromePlacement() {
+    setDockChromePlacement(null);
+    refreshChromeHitboxes();
   }
 
   function beginOverlayWindowResize(direction: ResizeDirection) {
@@ -1529,6 +1672,27 @@ export function BorderDock() {
     }
   }
 
+  function switchUserMode(nextMode: UserMode) {
+    markActivity();
+
+    if (nextMode === activeUserMode) {
+      return;
+    }
+
+    const rememberedCurrent = updateUserModeSettings(userModeState, activeUserMode, {
+      dock: dockSettings,
+      gateway: gatewaySettings,
+    });
+    const nextSettings = rememberedCurrent.modes[nextMode];
+
+    setUserModeState({
+      ...rememberedCurrent,
+      activeMode: nextMode,
+    });
+    setDockSettings(nextSettings.dock);
+    setGatewaySettings(nextSettings.gateway);
+  }
+
 
   if (resolvingWindowBuddy || hiddenNativeWindow) {
     return null;
@@ -1580,9 +1744,11 @@ export function BorderDock() {
         {browserPreview ? <TrustWorkbenchPreview /> : null}
         {unifiedDock ? (
           <DockChrome
+            activeUserMode={activeUserMode}
             clickThrough={clickThrough}
             collapsed={dockCollapsed}
-            controlsRef={controlsRef}
+            controlsRef={setDockChromeNode}
+            chromePlacement={dockChromePlacement}
             onCollapseToggle={() =>
               setDockSettings((current) => ({
                 ...current,
@@ -1596,6 +1762,8 @@ export function BorderDock() {
               }))
             }
             onBeginOverlayDrag={beginOverlayWindowDrag}
+            onBeginChromeDrag={startDockChromeDrag}
+            onResetChromePlacement={resetDockChromePlacement}
             onBeginOverlayResize={() => beginOverlayWindowResize("SouthEast")}
             onRecall={() => void recallBuddiesToBorder()}
             onRecover={() => performSelfHeal({ panic: true })}
@@ -1607,6 +1775,7 @@ export function BorderDock() {
               setFullInputCapture((enabled) => !enabled);
             }}
             healReport={healReport}
+            onUserModeChange={switchUserMode}
             renderMode={effectiveRenderMode}
             nativeUnifiedDock={nativeUnifiedDock}
           />
@@ -1689,6 +1858,25 @@ async function setBuddyWindowInteractive(interactive: boolean) {
   }
 }
 
+function loadInitialUserModeState(): UserModeState {
+  let hasStoredUserMode = false;
+
+  try {
+    hasStoredUserMode = localStorage.getItem(USER_MODE_STORAGE_KEY) !== null;
+  } catch {
+    hasStoredUserMode = false;
+  }
+
+  if (hasStoredUserMode) {
+    return loadStoredUserModeState(DEFAULT_USER_MODE_STATE);
+  }
+
+  return updateUserModeSettings(DEFAULT_USER_MODE_STATE, DEFAULT_USER_MODE_STATE.activeMode, {
+    dock: loadStoredDockSettings(DEFAULT_DOCK_SETTINGS),
+    gateway: loadStoredGatewaySettings(DEFAULT_GATEWAY_SETTINGS),
+  });
+}
+
 async function startNativeBuddyDrag(buddyId: string, edge: Edge, bubbleVisible: boolean) {
   try {
     await invoke("configure_buddy_window", {
@@ -1707,44 +1895,71 @@ async function startNativeBuddyDrag(buddyId: string, edge: Edge, bubbleVisible: 
 }
 
 function DockChrome({
+  activeUserMode,
   clickThrough,
   collapsed,
+  chromePlacement,
   controlsRef,
   healReport,
   onCollapseToggle,
   onCycleRenderMode,
   onBeginOverlayDrag,
+  onBeginChromeDrag,
   onBeginOverlayResize,
+  onResetChromePlacement,
   onRecall,
   onRecover,
   passThroughAvailable,
   onToggleClickThrough,
   fullInputCapture,
   onToggleFullInputCapture,
+  onUserModeChange,
   renderMode,
   nativeUnifiedDock,
 }: {
+  activeUserMode: UserMode;
   clickThrough: boolean;
   collapsed: boolean;
+  chromePlacement: DockChromePlacement | null;
   controlsRef: (node: HTMLDivElement | null) => void;
   healReport: DockHealReport | null;
   onCollapseToggle: () => void;
   onCycleRenderMode: () => void;
   onBeginOverlayDrag: () => void;
+  onBeginChromeDrag: (event: ReactPointerEvent<HTMLElement>) => void;
   onBeginOverlayResize: () => void;
+  onResetChromePlacement: () => void;
   onRecall: () => void;
   onRecover: () => void;
   passThroughAvailable: boolean;
   onToggleClickThrough: () => void;
   fullInputCapture: boolean;
   onToggleFullInputCapture: () => void;
+  onUserModeChange: (mode: UserMode) => void;
   renderMode: DockRenderMode;
   nativeUnifiedDock?: boolean;
 }) {
   const recentHeal =
     healReport && Date.now() - healReport.at < 20_000 ? healReport.actions.join(", ") : null;
+  const adjustOpen = activeUserMode === "adjust";
+  const chromeStyle = chromePlacement
+    ? ({
+        left: `${chromePlacement.x}px`,
+        top: `${chromePlacement.y}px`,
+        transform: "none",
+      } satisfies CSSProperties)
+    : undefined;
+
   return (
-    <div className="dock-chrome" ref={controlsRef}>
+    <div
+      className={[
+        "dock-chrome",
+        chromePlacement ? "dock-chrome--placed" : "",
+        adjustOpen ? "dock-chrome--adjusting" : "",
+      ].join(" ")}
+      ref={controlsRef}
+      style={chromeStyle}
+    >
       {collapsed ? (
         <button
           className="dock-peek"
@@ -1756,111 +1971,159 @@ function DockChrome({
         </button>
       ) : (
         <div className="dock-controls" aria-label="Border Buddies window controls">
-          <span className="dock-controls__hint">
-            {clickThrough
-              ? "Click-through on"
-              : recentHeal
-                ? "Self-heal check complete"
-                : "Hermes on right edge · Recall if escaped"}
-          </span>
-          <button
-            className="dock-control dock-control--mode"
-            type="button"
-            onClick={onCycleRenderMode}
-            title="Cycle dock render mode"
-          >
-            {DOCK_RENDER_MODE_LABELS[renderMode]}
-          </button>
-          <button
-            className="dock-control dock-control--move"
-            data-tauri-drag-region
-            type="button"
-            onPointerDown={onBeginOverlayDrag}
-            title="Move overlay window"
-          >
-            Move
-          </button>
-          <button
-            className="dock-control dock-control--resize"
-            type="button"
-            onPointerDown={(event) => {
-              event.preventDefault();
-              onBeginOverlayResize();
-            }}
-            title="Resize overlay window"
-          >
-            Resize
-          </button>
-          <button
-            className="dock-control dock-control--pass"
-            type="button"
-            // We deliberately allow the Pass button in native border mode now.
-            // It acts as "Force Pass (emergency)" — clears all buddy hitboxes so the
-            // overlay no longer intercepts clicks (full passthrough to desktop).
-            // This is the escape hatch when you cannot click any buddies.
-            // "Catch" or the Heal button will restore the head/panel regions.
-            disabled={false}
-            onClick={onToggleClickThrough}
-            title={
-              nativeUnifiedDock
-                ? clickThrough
-                  ? "Catch — restore the buddy head and panel click regions"
-                  : "Force Pass (emergency) — clear hitboxes. Clicks will go through to the desktop until you Heal or Catch."
-                : "Toggle click-through mode"
-            }
-          >
-            {nativeUnifiedDock
-              ? clickThrough
-                ? "Catch"
-                : "Force Pass"
-              : passThroughAvailable
-              ? clickThrough
-                ? "Catch"
-                : "Pass"
-              : "Pass off"}
-          </button>
-          {nativeUnifiedDock ? (
-            <button
-              className="dock-control dock-control--recover"
-              type="button"
-              onClick={onToggleFullInputCapture}
-              title={
-                fullInputCapture
-                  ? "Return pointer ownership to the desktop"
-                  : "Take pointer ownership to interact with buddies"
-              }
-            >
-              {fullInputCapture ? "Desktop" : "Interact"}
-            </button>
+          <div className="dock-controls__main">
+            <div className="dock-mode-selector" aria-label="User mode">
+              {USER_MODE_ORDER.map((mode) => (
+                <button
+                  className={[
+                    "dock-mode-selector__option",
+                    `dock-mode-selector__option--${mode}`,
+                    activeUserMode === mode ? "dock-mode-selector__option--active" : "",
+                  ].join(" ")}
+                  key={mode}
+                  type="button"
+                  aria-pressed={activeUserMode === mode}
+                  onClick={() => onUserModeChange(mode)}
+                  title={USER_MODE_DESCRIPTIONS[mode]}
+                >
+                  {USER_MODE_LABELS[mode]}
+                </button>
+              ))}
+            </div>
+            <span className="dock-controls__hint">
+              {adjustOpen
+                ? "Dock tools open"
+                : clickThrough
+                  ? "Pass-through on"
+                  : recentHeal
+                    ? "Self-heal complete"
+                    : "Hermes on right edge"}
+            </span>
+          </div>
+
+          {adjustOpen ? (
+            <div className="dock-adjust-tray" aria-label="Dock adjustment controls">
+              <DockIconControl
+                className="dock-control--mode"
+                icon={renderModeIcon(renderMode)}
+                label={`Cycle dock render mode: ${DOCK_RENDER_MODE_LABELS[renderMode]}`}
+                onClick={onCycleRenderMode}
+              />
+              <DockIconControl
+                className="dock-control--move"
+                icon="↔"
+                label="Move dock controls"
+                onPointerDown={onBeginChromeDrag}
+              />
+              <DockIconControl
+                className="dock-control--reset"
+                icon="◎"
+                label="Centre dock controls"
+                onClick={onResetChromePlacement}
+              />
+              <DockIconControl
+                className="dock-control--resize"
+                icon="⛶"
+                label="Resize overlay window"
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  onBeginOverlayDrag();
+                  onBeginOverlayResize();
+                }}
+              />
+              <DockIconControl
+                className="dock-control--pass"
+                icon={clickThrough ? "↩" : "⇥"}
+                label={
+                  nativeUnifiedDock
+                    ? clickThrough
+                      ? "Catch: restore buddy click regions"
+                      : "Pass through to desktop"
+                    : passThroughAvailable
+                      ? clickThrough
+                        ? "Catch: resume dock clicks"
+                        : "Pass through"
+                      : "Pass-through unavailable"
+                }
+                onClick={onToggleClickThrough}
+              />
+              {nativeUnifiedDock ? (
+                <DockIconControl
+                  className="dock-control--input"
+                  icon={fullInputCapture ? "□" : "⌁"}
+                  label={
+                    fullInputCapture
+                      ? "Return pointer ownership to desktop"
+                      : "Take pointer ownership for buddy interaction"
+                  }
+                  onClick={onToggleFullInputCapture}
+                />
+              ) : null}
+              <DockIconControl
+                className="dock-control--collapse"
+                icon="−"
+                label="Hide dock"
+                onClick={onCollapseToggle}
+              />
+              <DockIconControl
+                className="dock-control--recall"
+                icon="⌖"
+                label="Fit buddies to border"
+                onClick={onRecall}
+              />
+              <DockIconControl
+                className="dock-control--recover"
+                icon="+"
+                label="Heal dock controls"
+                onClick={onRecover}
+              />
+            </div>
           ) : null}
-          <button
-            className="dock-control dock-control--collapse"
-            type="button"
-            onClick={onCollapseToggle}
-            title="Collapse dock and reclaim screen (Ctrl+Alt+H)"
-          >
-            Hide
-          </button>
-          <button
-            className="dock-control dock-control--recall"
-            type="button"
-            onClick={onRecall}
-            title="Recall escaped buddies to their border slots and restore full-screen overlay"
-          >
-            Recall
-          </button>
-          <button
-            className="dock-control dock-control--recover"
-            type="button"
-            onClick={onRecover}
-            title="Recover dock controls if the overlay feels stuck (Ctrl+Alt+Shift+R)"
-          >
-            Heal
-          </button>
         </div>
       )}
     </div>
   );
+}
+
+function DockIconControl({
+  className,
+  icon,
+  label,
+  onClick,
+  onPointerDown,
+}: {
+  className: string;
+  icon: string;
+  label: string;
+  onClick?: () => void;
+  onPointerDown?: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+}) {
+  return (
+    <button
+      className={["dock-control", className].join(" ")}
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={onClick}
+      onPointerDown={onPointerDown}
+    >
+      <span className="dock-control__icon" aria-hidden="true">
+        {icon}
+      </span>
+    </button>
+  );
+}
+
+function renderModeIcon(renderMode: DockRenderMode) {
+  if (renderMode === "head") {
+    return "●";
+  }
+
+  if (renderMode === "bubble") {
+    return "◌";
+  }
+
+  return "◐";
 }
 
 function BuddyHotspot({
@@ -1960,8 +2223,8 @@ function BuddyHotspot({
   // entry and the Opus gateway-gated-input fix. Previously surfaceInteractive was strictly
   // isFree, which meant no composer hitboxes (and thus no clickable textarea) while tucked
   // on the native border-dock, even after the disabled={busy} change.
-  const showSurface = isFree || (renderMode !== "head" && active);
-  const surfaceInteractive = isFree || active;
+  const showSurface = isFree || renderMode !== "head";
+  const surfaceInteractive = isFree;
   const isSurfaceVisible = showSurface;
 
   const freeX = placement.state === "free" ? placement.x : null;
@@ -2002,10 +2265,12 @@ function BuddyHotspot({
     }
   }, [
     collapsed,
+    isSurfaceVisible,
     onClearHitboxes,
     onReportHitboxes,
     perBuddyWindow,
     setHitboxes,
+    showHead,
   ]);
 
   useLayoutEffect(() => {
@@ -2363,6 +2628,65 @@ function isValidPlacement(placement: unknown): placement is AgentPlacement {
     typeof candidate.x === "number" &&
     typeof candidate.y === "number"
   );
+}
+
+function loadStoredDockChromePlacement(): DockChromePlacement | null {
+  try {
+    const storedValue = localStorage.getItem(DOCK_CHROME_STORAGE_KEY);
+    if (!storedValue) {
+      return null;
+    }
+
+    return normalizeDockChromePlacement(JSON.parse(storedValue));
+  } catch {
+    return null;
+  }
+}
+
+function saveStoredDockChromePlacement(placement: DockChromePlacement | null) {
+  try {
+    if (!placement) {
+      localStorage.removeItem(DOCK_CHROME_STORAGE_KEY);
+      return;
+    }
+
+    localStorage.setItem(DOCK_CHROME_STORAGE_KEY, JSON.stringify(placement));
+  } catch {
+    // Dock placement is convenience state; the top-centred fallback remains usable.
+  }
+}
+
+function normalizeDockChromePlacement(candidate: unknown): DockChromePlacement | null {
+  if (!candidate || typeof candidate !== "object") {
+    return null;
+  }
+
+  const placement = candidate as Partial<DockChromePlacement>;
+
+  if (typeof placement.x !== "number" || typeof placement.y !== "number") {
+    return null;
+  }
+
+  return clampDockChromePlacement(
+    { x: placement.x, y: placement.y },
+    typeof window === "undefined" ? 1280 : window.innerWidth,
+    typeof window === "undefined" ? 800 : window.innerHeight,
+  );
+}
+
+function clampDockChromePlacement(
+  placement: DockChromePlacement,
+  viewportWidth: number,
+  viewportHeight: number,
+  width = 120,
+  height = 40,
+): DockChromePlacement {
+  const margin = 8;
+
+  return {
+    x: clamp(placement.x, margin, Math.max(margin, viewportWidth - width - margin)),
+    y: clamp(placement.y, margin, Math.max(margin, viewportHeight - height - margin)),
+  };
 }
 
 function getFreePlacement(

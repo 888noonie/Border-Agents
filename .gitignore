@@ -28,3 +28,9 @@ Repo_Improvement_Report.md
 
 # Local phase/scaffold notes
 RoadMap.md
+
+# Playwright
+/playwright-report/
+/playwright/.cache/
+/test-results/
+*.playwright-trace.zip

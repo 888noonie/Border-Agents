@@ -60,6 +60,14 @@ export function TrustWorkbenchPanel({
   const nexus = buildNexusPanelData({ frame: active.frame, prompt: active.prompt });
   const veritas = buildVeritasPanelData({ frame: active.frame, prompt: active.prompt });
   const badge = workbenchBadgeForMode(mode, nexus, veritas);
+  const receipts = allReceiptItems(veritas);
+  const firstReceipt = veritas.warnings[0] ?? veritas.evidenceReady[0] ?? receipts[0];
+  const [selectedChunkId, setSelectedChunkId] = useState<string | null>(firstReceipt?.chunkId ?? null);
+  const selectedReceipt = selectedChunkId ? receipts.find((receipt) => receipt.chunkId === selectedChunkId) ?? null : null;
+
+  useEffect(() => {
+    setSelectedChunkId(firstReceipt?.chunkId ?? null);
+  }, [purpose, firstReceipt?.chunkId]);
 
   return (
     <div className={["trust-panel", compact ? "trust-panel--compact" : ""].join(" ")} aria-label="Trust Workbench">
@@ -87,10 +95,26 @@ export function TrustWorkbenchPanel({
       </div>
 
       {mode === "full" || mode === "nexus" ? <NexusPreview data={nexus} /> : null}
-      {mode === "full" || mode === "veritas" ? <VeritasPreview data={veritas} /> : null}
-      {mode !== "full" ? <WorkbenchPlaceholderActions /> : null}
+      {mode === "full" || mode === "veritas" ? (
+        <VeritasPreview data={veritas} selectedChunkId={selectedChunkId} onSelect={setSelectedChunkId} />
+      ) : null}
+      <WorkbenchActions
+        receipt={selectedReceipt}
+        trustedIncludedCount={active.prompt.included.filter((item) => item.grade === "trusted").length}
+        totalIncludedCount={active.prompt.included.length}
+      />
     </div>
   );
+}
+
+function allReceiptItems(data: VeritasPanelData) {
+  return [
+    ...data.receiptGroups.trusted,
+    ...data.receiptGroups.limited,
+    ...data.receiptGroups.reference_only,
+    ...data.receiptGroups.blocked,
+    ...data.receiptGroups.quarantined,
+  ];
 }
 
 function workbenchBadgeForMode(mode: TrustWorkbenchPanelMode, nexus: NexusPanelData, veritas: VeritasPanelData) {
@@ -176,18 +200,25 @@ function counterLabel(grade: Grade) {
   return grade;
 }
 
-function VeritasPreview({ data }: { data: VeritasPanelData }) {
+function VeritasPreview({
+  data,
+  selectedChunkId,
+  onSelect,
+}: {
+  data: VeritasPanelData;
+  selectedChunkId: string | null;
+  onSelect: (chunkId: string | null) => void;
+}) {
   const titleId = useId();
   const bodyId = useId();
   const [open, setOpen] = useState(true);
   const warnings = data.warnings.slice(0, 4);
   const evidence = data.evidenceReady.slice(0, 4);
   const firstReceipt = warnings[0] ?? evidence[0] ?? data.receiptGroups.trusted[0];
-  const [expandedChunkId, setExpandedChunkId] = useState<string | null>(firstReceipt?.chunkId ?? null);
 
   useEffect(() => {
-    setExpandedChunkId(firstReceipt?.chunkId ?? null);
-  }, [firstReceipt?.chunkId]);
+    onSelect(firstReceipt?.chunkId ?? null);
+  }, [firstReceipt?.chunkId, onSelect]);
 
   return (
     <section className="trust-preview__section trust-preview__disclosure" aria-labelledby={titleId}>
@@ -219,8 +250,8 @@ function VeritasPreview({ data }: { data: VeritasPanelData }) {
                 <ReceiptRow
                   item={warning}
                   key={warning.chunkId}
-                  expanded={expandedChunkId === warning.chunkId}
-                  onToggle={() => setExpandedChunkId(expandedChunkId === warning.chunkId ? null : warning.chunkId)}
+                  expanded={selectedChunkId === warning.chunkId}
+                  onToggle={() => onSelect(selectedChunkId === warning.chunkId ? null : warning.chunkId)}
                 />
               ))
             ) : (
@@ -237,9 +268,9 @@ function VeritasPreview({ data }: { data: VeritasPanelData }) {
               <ReceiptRow
                 item={item}
                 key={item.chunkId}
-                expanded={expandedChunkId === item.chunkId}
+                expanded={selectedChunkId === item.chunkId}
                 evidence
-                onToggle={() => setExpandedChunkId(expandedChunkId === item.chunkId ? null : item.chunkId)}
+                onToggle={() => onSelect(selectedChunkId === item.chunkId ? null : item.chunkId)}
               />
             ))}
           </div>
@@ -274,10 +305,12 @@ function ReceiptRow({
       </button>
       {expanded ? (
         <div className="trust-preview__receipt-detail">
+          <span>{item.receiptId}</span>
           <span>{item.packetId}</span>
           <span>{GRADE_LABELS[item.grade]}</span>
           <span>{promptStatusLabel(item.promptStatus)}</span>
           <small>{item.finalReason}</small>
+          {item.promptReason ? <small>Prompt: {item.promptReason}</small> : null}
           {item.policyRules.length > 0 ? (
             <ul className="trust-preview__policy-list" aria-label="Policy rules">
               {item.policyRules.map((rule) => (
@@ -308,21 +341,126 @@ function promptStatusLabel(status: VeritasPanelData["evidenceReady"][number]["pr
   return "context status unknown";
 }
 
-function WorkbenchPlaceholderActions() {
+type WorkbenchAction = "verify" | "source" | "export" | "trusted_only";
+
+function WorkbenchActions({
+  receipt,
+  trustedIncludedCount,
+  totalIncludedCount,
+}: {
+  receipt: VeritasPanelData["evidenceReady"][number] | null;
+  trustedIncludedCount: number;
+  totalIncludedCount: number;
+}) {
+  const [activeAction, setActiveAction] = useState<WorkbenchAction>("verify");
+  const exportPayload = receipt ? buildReceiptExportPayload(receipt) : null;
+
   return (
     <div className="trust-panel__actions" aria-label="Trust actions">
-      <button className="trust-panel__action--primary" type="button" disabled>
-        Verify
-      </button>
-      <button type="button" disabled>
-        Open source
-      </button>
-      <button type="button" disabled>
-        Export receipt
-      </button>
-      <button type="button" disabled>
-        Trusted only
-      </button>
+      <div className="trust-panel__action-buttons">
+        <button
+          className={activeAction === "verify" ? "trust-panel__action--primary" : ""}
+          type="button"
+          onClick={() => setActiveAction("verify")}
+        >
+          Verify
+        </button>
+        <button type="button" onClick={() => setActiveAction("source")}>
+          Open source
+        </button>
+        <button type="button" onClick={() => setActiveAction("export")}>
+          Export receipt
+        </button>
+        <button type="button" onClick={() => setActiveAction("trusted_only")}>
+          Trusted only
+        </button>
+      </div>
+
+      <div className="trust-panel__action-detail" aria-live="polite">
+        {activeAction === "verify" ? (
+          <ReceiptViewer receipt={receipt} />
+        ) : null}
+        {activeAction === "source" ? (
+          <ActionMessage
+            title="Selected source"
+            value={receipt?.sourceId ? `${receipt.sourceType}:${receipt.sourceId}` : "No source selected"}
+          />
+        ) : null}
+        {activeAction === "export" ? (
+          <div>
+            <ActionMessage title="Receipt export" value={exportPayload ? exportPayload.receiptId : "No receipt selected"} />
+            {exportPayload ? <pre>{JSON.stringify(exportPayload, null, 2)}</pre> : null}
+          </div>
+        ) : null}
+        {activeAction === "trusted_only" ? (
+          <ActionMessage
+            title="Trusted-only context"
+            value={`${trustedIncludedCount} of ${totalIncludedCount} prompt entries remain trusted`}
+          />
+        ) : null}
+      </div>
     </div>
   );
+}
+
+function ReceiptViewer({ receipt }: { receipt: VeritasPanelData["evidenceReady"][number] | null }) {
+  if (!receipt) {
+    return <ActionMessage title="Receipt detail" value="No receipt selected" />;
+  }
+
+  return (
+    <div className="trust-panel__receipt-viewer" aria-label="Receipt detail">
+      <div className="trust-panel__receipt-grid">
+        <span>Receipt</span>
+        <strong>{receipt.receiptId}</strong>
+        <span>Chunk</span>
+        <strong>{receipt.chunkId}</strong>
+        <span>Packet</span>
+        <strong>{receipt.packetId}</strong>
+        <span>Grade</span>
+        <strong>{GRADE_LABELS[receipt.grade]}</strong>
+        <span>Prompt</span>
+        <strong>{promptStatusLabel(receipt.promptStatus)}</strong>
+      </div>
+      <p>{receipt.finalReason}</p>
+      {receipt.ruleDetails.length > 0 ? (
+        <ol className="trust-panel__derivation-list" aria-label="Derivation steps">
+          {receipt.ruleDetails.map((rule, index) => (
+            <li key={`${rule.policy_rule}:${index}`}>
+              <span>{policyRuleLabel(rule.policy_rule)}</span>
+              <code>{rule.policy_rule}</code>
+              <small>{rule.reason}</small>
+            </li>
+          ))}
+        </ol>
+      ) : null}
+    </div>
+  );
+}
+
+function ActionMessage({ title, value }: { title: string; value: string }) {
+  return (
+    <div className="trust-panel__action-message">
+      <span>{title}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function buildReceiptExportPayload(receipt: VeritasPanelData["evidenceReady"][number]) {
+  return {
+    receiptId: receipt.receiptId,
+    chunkId: receipt.chunkId,
+    packetId: receipt.packetId,
+    grade: receipt.grade,
+    promptStatus: receipt.promptStatus,
+    promptReason: receipt.promptReason,
+    finalReason: receipt.finalReason,
+    policyRules: receipt.policyRules,
+    source: {
+      id: receipt.sourceId,
+      type: receipt.sourceType,
+    },
+    derivation: receipt.ruleDetails,
+  };
 }

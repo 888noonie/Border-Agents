@@ -54,12 +54,22 @@ Delivered / scaffolded:
 - Nexus buddy panel preview: retrieval grades, blocked counter, prompt summary, source list
 - Veritas buddy panel preview: warning counter, warnings, evidence-ready items, receipt row expansion
 - Collapsible workbench sections with colored counters for compact buddy panels
+- Trust Workbench action state: verify, selected source, receipt export preview, trusted-only context summary
+- Receipt detail viewer with receipt id, packet/chunk ids, grade, prompt status, final reason, and derivation steps
+- Remembered user mode selector: Work / Play / Private posture for dock, gateway, receipts, and future file review defaults
+- Refined speech bubble behavior: docked buddies show minimal status output; undocked buddies show tabbed controls
+- Persisted undocked speech bubble state: active tab, collapsed sections, center/full-height fit, and settings-overflow guard
 - Tests for workbench section collapse and receipt expansion
+- Tests for receipt detail actions and richer Veritas receipt data
+- Tests for user mode normalization and per-mode remembered settings
+- Tests for tabbed speech bubble and BuddySurface docked/undocked behavior
 
 Next deliverables:
 
-- Action buttons: verify, open source, export receipt, use trusted only
-- Receipt viewer with full derivation details
+- Real source opening handlers
+- Durable receipt export/download path
+- Dedicated receipt viewer layout for longer derivation trails
+- Wire file-system review surfaces to the active user mode posture
 
 ---
 

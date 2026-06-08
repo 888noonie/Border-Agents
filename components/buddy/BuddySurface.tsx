@@ -7,6 +7,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type ReactNode,
 } from "react";
 import {
   BUDDY_PROFILES,
@@ -19,7 +20,6 @@ import { BuddyActionMenu } from "./BuddyActionMenu";
 import { BuddyPanel, type BuddyChatLine } from "./BuddyPanel";
 import { BuddySettingsDialog } from "./BuddySettingsDialog";
 import { BuddyUiBubble } from "./BuddyUiBubble";
-import { useUiBubble } from "./useUiBubble";
 import { TrustWorkbenchPanel } from "../trust-workbench/TrustWorkbenchPanel";
 import "./buddy-surface.css";
 
@@ -42,6 +42,24 @@ type DockBuddy = {
   id: string;
   shortName: string;
   message?: string;
+};
+
+type BubbleTabId = "message" | "settings" | "gateway" | "dock";
+
+type BuddySurfaceUiState = {
+  activeTab: BubbleTabId;
+  expandedSections: Partial<Record<BubbleTabId, boolean>>;
+  alwaysCenterFit: boolean;
+  preventSettingsOverflow: boolean;
+};
+
+const BUDDY_SURFACE_UI_STORAGE_KEY = "border-agents:buddy-surface-ui:v1";
+
+const DEFAULT_BUDDY_SURFACE_UI: BuddySurfaceUiState = {
+  activeTab: "message",
+  expandedSections: {},
+  alwaysCenterFit: false,
+  preventSettingsOverflow: true,
 };
 
 type BuddySurfaceProps = {
@@ -161,6 +179,7 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
   const [history, setHistory] = useState<BuddyChatLine[]>([]);
   const [panelShift, setPanelShift] = useState({ x: 0, y: 0 });
+  const [surfaceUi, setSurfaceUi] = useState<BuddySurfaceUiState>(() => loadStoredBuddySurfaceUi(buddy.id));
   const lastMessageRef = useRef("");
   // A message typed while the gateway is still offline is parked here so it can
   // auto-send the moment the connection comes online (seamless first reply).
@@ -177,6 +196,7 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
   const bubbleSide = edge === "right" ? "left" : "right";
   const bubbleVertical = edge === "top" || dockSlot < 0.22 ? "below" : "above";
   const trustWorkbenchMode = buddy.id === "fox" ? "nexus" : buddy.id === "owl" ? "veritas" : null;
+  const bubbleTab = surfaceUi.activeTab;
 
   // Close any transient overlays automatically when the buddy re-docks so they
   // can never leave a stale hitbox behind on the border.
@@ -187,14 +207,24 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
     }
   }, [interactive]);
 
+  useEffect(() => {
+    setSurfaceUi(loadStoredBuddySurfaceUi(buddy.id));
+  }, [buddy.id]);
+
+  useEffect(() => {
+    saveStoredBuddySurfaceUi(buddy.id, surfaceUi);
+  }, [buddy.id, surfaceUi]);
+
   const statusBubbleText = useMemo(() => {
+    const trimmedMessage = message.trim();
+
     if (gatewayBusy) {
       return "Hermes is thinking…";
     }
 
     if (hasGateway) {
       if (gatewayOnline) {
-        return message.trim() || gatewayDetail || "Hermes is live on the border. Drag me out to chat.";
+        return trimmedMessage || gatewayDetail || "Hermes gateway ready.";
       }
 
       if (gatewayState === "connecting") {
@@ -202,13 +232,13 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
       }
 
       if (gatewayState === "error" || gatewayState === "disconnected") {
-        return gatewayDetail || "Drag me out to open settings and connect.";
+        return trimmedMessage || gatewayDetail || "Hermes gateway attention required.";
       }
 
-      return "Drag me off the border to chat and connect.";
+      return trimmedMessage || "Hermes gateway offline.";
     }
 
-    return message.trim() || `${buddy.shortName} is ready — drag me out to chat.`;
+    return trimmedMessage || `${buddy.shortName} ready.`;
   }, [
     buddy.shortName,
     gatewayBusy,
@@ -218,9 +248,6 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
     hasGateway,
     message,
   ]);
-
-  // The bubble is only visible (and animated) while docked/ambient.
-  const uiBubble = useUiBubble(statusBubbleText, !interactive, true);
 
   useEffect(() => {
     const trimmed = message.trim();
@@ -255,11 +282,17 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
       return;
     }
 
-    if (hasGateway && !gatewayOnline && !autoConnectAttemptedRef.current && gatewayState !== "connecting") {
+    if (
+      hasGateway &&
+      gatewayAutoConnect &&
+      !gatewayOnline &&
+      !autoConnectAttemptedRef.current &&
+      gatewayState !== "connecting"
+    ) {
       autoConnectAttemptedRef.current = true;
       onGatewayConnect();
     }
-  }, [interactive, hasGateway, gatewayOnline, gatewayState, onGatewayConnect]);
+  }, [gatewayAutoConnect, interactive, hasGateway, gatewayOnline, gatewayState, onGatewayConnect]);
 
   // Flush a message that was typed while offline the instant we connect.
   useEffect(() => {
@@ -299,7 +332,7 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
           return boxes;
         }
 
-        const panelBox = rectToHitbox(panelRef.current);
+        const panelBox = settingsOpen ? null : rectToHitbox(panelRef.current);
         const dialogBox = settingsOpen ? rectToHitbox(settingsDialogRef.current) : null;
         const menuBox = menuOpen ? rectToHitbox(actionMenuRef.current, 4) : null;
 
@@ -359,10 +392,12 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
         let x = 0;
         let y = 0;
 
-        if (rect.left < margin) {
-          x = margin - rect.left;
-        } else if (rect.right > window.innerWidth - margin) {
-          x = window.innerWidth - margin - rect.right;
+        if (edge === "top" || edge === "bottom") {
+          if (rect.left < margin) {
+            x = margin - rect.left;
+          } else if (rect.right > window.innerWidth - margin) {
+            x = window.innerWidth - margin - rect.right;
+          }
         }
 
         if (rect.top < margin) {
@@ -383,7 +418,7 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
         window.cancelAnimationFrame(innerFrame);
       }
     };
-  }, [displayMode, history.length, interactive, menuOpen, settingsOpen]);
+  }, [displayMode, edge, history.length, interactive, menuOpen, settingsOpen, surfaceUi.alwaysCenterFit]);
 
   useLayoutEffect(() => {
     if (!onLayoutChange) {
@@ -413,9 +448,7 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
     menuOpen,
     onLayoutChange,
     settingsOpen,
-    uiBubble.displayText,
-    uiBubble.mounted,
-    uiBubble.phase,
+    surfaceUi.alwaysCenterFit,
   ]);
 
   function forceLayoutRefresh() {
@@ -460,6 +493,26 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
     }
   }
 
+  function updateSurfaceUi(patch: Partial<BuddySurfaceUiState>) {
+    setSurfaceUi((current) => normalizeBuddySurfaceUi({ ...current, ...patch }));
+  }
+
+  function setActiveBubbleTab(tabId: string) {
+    if (isBubbleTabId(tabId)) {
+      updateSurfaceUi({ activeTab: tabId });
+    }
+  }
+
+  function toggleBubbleSection(tabId: BubbleTabId) {
+    setSurfaceUi((current) => normalizeBuddySurfaceUi({
+      ...current,
+      expandedSections: {
+        ...current.expandedSections,
+        [tabId]: !current.expandedSections[tabId],
+      },
+    }));
+  }
+
 
   const menuActions = [
     {
@@ -484,35 +537,27 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
     },
   ];
 
-  return (
-    <div
-      ref={clusterRef}
-      className={[
-        "buddy-cluster",
-        `buddy-cluster--${edge}`,
-        interactive ? "buddy-cluster--full" : "buddy-cluster--compact",
-      ].join(" ")}
-    >
-      {!interactive ? (
-        <BuddyUiBubble
-          text={uiBubble.displayText}
-          phase={uiBubble.phase}
-          mounted={uiBubble.mounted}
-          clickable={uiBubble.isClickable}
-          bubbleSide={bubbleSide}
-          bubbleVertical={bubbleVertical}
-          title="Open chat — undock buddy"
-          onActivate={onRequestInteract}
-        />
-      ) : (
-        <>
-          <div
-            ref={panelRef}
-            className="buddy-cluster__panel-wrap"
-            style={{
-              "--buddy-panel-shift-x": `${panelShift.x}px`,
-              "--buddy-panel-shift-y": `${panelShift.y}px`,
-            } as CSSProperties}
+  const bubbleTabs = useMemo(() => {
+    const gatewayLabel = hasGateway
+      ? gatewayOnline
+        ? "Gateway connected"
+        : gatewayState === "connecting"
+          ? "Gateway connecting"
+          : "Gateway offline"
+      : "No gateway for this buddy";
+
+    return [
+      {
+        id: "message",
+        label: "Message",
+        icon: "●",
+        tone: "message" as const,
+        content: (
+          <BubbleSection
+            expanded={surfaceUi.expandedSections.message === true}
+            summary={statusBubbleText}
+            title="Latest output"
+            onToggle={() => toggleBubbleSection("message")}
           >
             <BuddyPanel
               buddyName={buddy.shortName}
@@ -545,6 +590,154 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
                 forceLayoutRefresh();
               }}
               onCollapse={() => onRequestDock?.()}
+            />
+          </BubbleSection>
+        ),
+      },
+      {
+        id: "settings",
+        label: "Settings",
+        icon: "⚙",
+        tone: "settings" as const,
+        content: (
+          <BubbleSection
+            expanded={surfaceUi.expandedSections.settings === true}
+            summary={`${settings.modelLabel} · ${settings.memoryMode.replace("_", " ")}`}
+            title="Model & gateway settings"
+            onToggle={() => toggleBubbleSection("settings")}
+          >
+            <BubbleAction
+              title="Settings"
+              detail={`${settings.modelLabel} · ${settings.memoryMode.replace("_", " ")}`}
+              actionLabel="Open settings"
+              onAction={() => {
+                setSettingsOpen(true);
+                forceLayoutRefresh();
+              }}
+            />
+            <BubbleToggle
+              checked={surfaceUi.alwaysCenterFit}
+              label="Always centre and fit full height"
+              onChange={(checked) => updateSurfaceUi({ alwaysCenterFit: checked })}
+            />
+            <BubbleToggle
+              checked={surfaceUi.preventSettingsOverflow}
+              label="Keep settings inside border"
+              onChange={(checked) => updateSurfaceUi({ preventSettingsOverflow: checked })}
+            />
+          </BubbleSection>
+        ),
+      },
+      {
+        id: "gateway",
+        label: "Gateway",
+        icon: "◎",
+        tone: "gateway" as const,
+        content: (
+          <BubbleSection
+            expanded={surfaceUi.expandedSections.gateway === true}
+            summary={gatewayDetail ?? gatewayUrl}
+            title={gatewayLabel}
+            onToggle={() => toggleBubbleSection("gateway")}
+          >
+            <BubbleAction
+              title={gatewayLabel}
+              detail={gatewayDetail ?? gatewayUrl}
+              actionLabel={gatewayOnline ? "Disconnect gateway" : "Connect gateway"}
+              disabled={!hasGateway || gatewayState === "connecting"}
+              onAction={gatewayOnline ? onGatewayDisconnect : onGatewayConnect}
+            />
+          </BubbleSection>
+        ),
+      },
+      {
+        id: "dock",
+        label: "Dock",
+        icon: "⤓",
+        tone: "dock" as const,
+        content: (
+          <BubbleSection
+            expanded={surfaceUi.expandedSections.dock === true}
+            summary="Use this when the panel should return to the border."
+            title="Dock control"
+            onToggle={() => toggleBubbleSection("dock")}
+          >
+            <BubbleAction
+              title="Dock to border"
+              detail="Collapse this buddy back to a small speech output."
+              actionLabel="Dock to border"
+              onAction={onRequestDock}
+            />
+          </BubbleSection>
+        ),
+      },
+    ];
+  }, [
+    gatewayDetail,
+    gatewayOnline,
+    gatewayState,
+    gatewayUrl,
+    hasGateway,
+    onGatewayConnect,
+    onGatewayDisconnect,
+    onRequestDock,
+    buddy.shortName,
+    displayMode,
+    draft,
+    gatewayBusy,
+    history,
+    trustWorkbenchMode,
+    settings.memoryMode,
+    settings.modelLabel,
+    statusBubbleText,
+    surfaceUi,
+  ]);
+
+  return (
+    <div
+      ref={clusterRef}
+      className={[
+        "buddy-cluster",
+        `buddy-cluster--${edge}`,
+        interactive ? "buddy-cluster--full" : "buddy-cluster--compact",
+      ].join(" ")}
+    >
+      {!interactive ? (
+        <BuddyUiBubble
+          text={statusBubbleText}
+          phase="visible"
+          mounted
+          clickable
+          bubbleSide={bubbleSide}
+          bubbleVertical={bubbleVertical}
+          title="Open chat — undock buddy"
+          onActivate={onRequestInteract}
+        />
+      ) : (
+        <>
+          <div
+            ref={panelRef}
+            className={[
+              "buddy-cluster__panel-wrap",
+              surfaceUi.alwaysCenterFit ? "buddy-cluster__panel-wrap--center-fit" : "",
+              settingsOpen ? "buddy-cluster__panel-wrap--settings-open" : "",
+            ].join(" ")}
+            style={{
+              "--buddy-panel-shift-x": `${panelShift.x}px`,
+              "--buddy-panel-shift-y": `${panelShift.y}px`,
+            } as CSSProperties}
+          >
+            <BuddyUiBubble
+              text={statusBubbleText}
+              phase="visible"
+              mounted
+              clickable={false}
+              bubbleSide={bubbleSide}
+              bubbleVertical={bubbleVertical}
+              inline
+              tabs={bubbleTabs}
+              activeTab={bubbleTab}
+              onTabChange={setActiveBubbleTab}
             />
           </div>
 
@@ -588,6 +781,7 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
             gatewayDetail={gatewayDetail}
             gatewayUrl={gatewayUrl}
             gatewayAutoConnect={gatewayAutoConnect}
+            preventOverflow={surfaceUi.preventSettingsOverflow}
             dialogRef={settingsDialogRef}
             onClose={() => {
               setSettingsOpen(false);
@@ -605,6 +799,141 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
     </div>
   );
 });
+
+function BubbleAction({
+  title,
+  detail,
+  actionLabel,
+  disabled = false,
+  onAction,
+}: {
+  title: string;
+  detail: string;
+  actionLabel: string;
+  disabled?: boolean;
+  onAction?: () => void;
+}) {
+  return (
+    <div className="buddy-ui-bubble__action">
+      <strong>{title}</strong>
+      <span>{detail}</span>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onAction?.();
+        }}
+      >
+        {actionLabel}
+      </button>
+    </div>
+  );
+}
+
+function BubbleSection({
+  children,
+  expanded,
+  summary,
+  title,
+  onToggle,
+}: {
+  children: ReactNode;
+  expanded: boolean;
+  summary: string;
+  title: string;
+  onToggle: () => void;
+}) {
+  return (
+    <section className="buddy-ui-bubble__section">
+      <button
+        className="buddy-ui-bubble__section-toggle"
+        type="button"
+        aria-expanded={expanded}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onToggle();
+        }}
+      >
+        <span>{title}</span>
+        <small>{summary}</small>
+      </button>
+      {expanded ? <div className="buddy-ui-bubble__section-body">{children}</div> : null}
+    </section>
+  );
+}
+
+function BubbleToggle({
+  checked,
+  label,
+  onChange,
+}: {
+  checked: boolean;
+  label: string;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="buddy-ui-bubble__toggle">
+      <span>{label}</span>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+        onClick={(event) => event.stopPropagation()}
+      />
+    </label>
+  );
+}
+
+function loadStoredBuddySurfaceUi(buddyId: string): BuddySurfaceUiState {
+  try {
+    const raw = localStorage.getItem(BUDDY_SURFACE_UI_STORAGE_KEY);
+    if (!raw) {
+      return DEFAULT_BUDDY_SURFACE_UI;
+    }
+
+    const stored = JSON.parse(raw) as Partial<Record<string, Partial<BuddySurfaceUiState>>>;
+    return normalizeBuddySurfaceUi(stored[buddyId]);
+  } catch {
+    return DEFAULT_BUDDY_SURFACE_UI;
+  }
+}
+
+function saveStoredBuddySurfaceUi(buddyId: string, state: BuddySurfaceUiState) {
+  try {
+    const raw = localStorage.getItem(BUDDY_SURFACE_UI_STORAGE_KEY);
+    const stored = raw ? JSON.parse(raw) as Record<string, BuddySurfaceUiState> : {};
+    stored[buddyId] = normalizeBuddySurfaceUi(state);
+    localStorage.setItem(BUDDY_SURFACE_UI_STORAGE_KEY, JSON.stringify(stored));
+  } catch {
+    // Persisting UI posture is best-effort. The visual defaults remain safe.
+  }
+}
+
+function normalizeBuddySurfaceUi(candidate: Partial<BuddySurfaceUiState> | null | undefined): BuddySurfaceUiState {
+  const activeTab = isBubbleTabId(candidate?.activeTab) ? candidate.activeTab : DEFAULT_BUDDY_SURFACE_UI.activeTab;
+  const expandedCandidate = candidate?.expandedSections && typeof candidate.expandedSections === "object"
+    ? candidate.expandedSections
+    : {};
+
+  return {
+    activeTab,
+    expandedSections: {
+      message: expandedCandidate.message === true,
+      settings: expandedCandidate.settings === true,
+      gateway: expandedCandidate.gateway === true,
+      dock: expandedCandidate.dock === true,
+    },
+    alwaysCenterFit: candidate?.alwaysCenterFit === true,
+    preventSettingsOverflow: candidate?.preventSettingsOverflow !== false,
+  };
+}
+
+function isBubbleTabId(value: unknown): value is BubbleTabId {
+  return value === "message" || value === "settings" || value === "gateway" || value === "dock";
+}
 
 export function buddySurfaceStatusLabel(
   hasGateway: boolean,

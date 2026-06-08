@@ -58,16 +58,22 @@ describe("Trust Workbench panel data", () => {
       policyRules: ["purpose.allow_sensitive", "grade.blocked.sensitivity"],
       warningType: "blocked",
     });
-    expect(veritas.evidenceReady).toEqual([
-      {
+    expect(veritas.evidenceReady).toHaveLength(1);
+    expect(veritas.evidenceReady[0]).toMatchObject({
         chunkId: "chunk_external_note",
         packetId: "mem_pkt_external_note",
         grade: "trusted",
         promptStatus: "included",
+        promptReason: null,
         finalReason: "packet is authorized for the active purpose",
         policyRules: ["grade.trusted.permissions", "grade.trusted"],
-      },
-    ]);
+        sourceId: "hermes/external_note",
+        sourceType: "chat_session",
+      });
+    expect(veritas.evidenceReady[0].receiptId).toBe(
+      "grade:external_share:chunk_external_note:2026-06-07T12:00:00Z",
+    );
+    expect(veritas.evidenceReady[0].ruleDetails).toHaveLength(2);
   });
 
   test("marks constrained prompt entries as evidence ready for annotated policy display", () => {

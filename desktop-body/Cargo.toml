@@ -1,0 +1,12 @@
+[package]
+name = "bb-desktop-body"
+version = "0.1.0"
+edition = "2021"
+description = "Border Agents desktop presence body — wlr-layer-shell spike (build-order step 2)"
+
+[[bin]]
+name = "bb-desktop-body"
+path = "src/main.rs"
+
+[dependencies]
+smithay-client-toolkit = "0.19"

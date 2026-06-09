@@ -286,19 +286,25 @@ impl App {
     /// motion we read — the runaway that surface-local coordinates caused.
     fn reposition(&mut self) {
         if let Some(layer) = self.layer.as_ref() {
-            let left = self.margin_left.max(0.0) as i32;
-            let top = self.margin_top.max(0.0) as i32;
-            layer.set_margin(top, 0, 0, left);
+            // Margins may be negative — that tucks the (mostly-transparent) surface
+            // partly off an edge while keeping the buddy itself on-screen.
+            layer.set_margin(self.margin_top as i32, 0, 0, self.margin_left as i32);
             layer.commit();
         }
     }
 
-    /// Keep the buddy on-screen so a fast drag can never lose it off an edge.
+    /// Keep the buddy *head* fully on-screen — not just the surface edge — so it can
+    /// never slide off (the head sits centered inside a wider, mostly-transparent
+    /// surface). Margins are allowed to go negative to reach the left/top edges.
     fn clamp_margins(&mut self) {
-        let keep = 56.0; // always leave at least this many px of the surface visible
+        let head = render::head_rect();
         let (sw, sh) = self.screen.unwrap_or((f64::MAX, f64::MAX));
-        self.margin_left = self.margin_left.clamp(0.0, (sw - keep).max(0.0));
-        self.margin_top = self.margin_top.clamp(0.0, (sh - keep).max(0.0));
+        let min_left = -(head.x as f64);
+        let max_left = (sw - (head.x + head.w) as f64).max(min_left);
+        let min_top = -(head.y as f64);
+        let max_top = (sh - (head.y + head.h) as f64).max(min_top);
+        self.margin_left = self.margin_left.clamp(min_left, max_left);
+        self.margin_top = self.margin_top.clamp(min_top, max_top);
     }
 
     /// Input region = only the parts that should catch the pointer; everywhere else

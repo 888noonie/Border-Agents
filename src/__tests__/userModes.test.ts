@@ -35,10 +35,10 @@ describe("user mode state", () => {
 
   test("updates one mode without changing the other remembered modes", () => {
     const state = updateUserModeSettings(DEFAULT_USER_MODE_STATE, "play", {
-      dock: { collapsed: true, renderMode: "bubble" },
+      dock: { collapsed: true, renderMode: "bubble", fullscreen: false },
     });
 
-    expect(state.modes.play.dock).toEqual({ collapsed: true, renderMode: "bubble" });
+    expect(state.modes.play.dock).toEqual({ collapsed: true, renderMode: "bubble", fullscreen: false });
     expect(state.modes.work.dock).toEqual(DEFAULT_USER_MODE_STATE.modes.work.dock);
     expect(state.modes.adjust.gateway.autoConnect).toBe(true);
   });
@@ -48,14 +48,14 @@ describe("user mode state", () => {
       activeMode: "private",
       modes: {
         private: {
-          dock: { collapsed: true, renderMode: "bubble" },
+          dock: { collapsed: true, renderMode: "bubble", fullscreen: false },
           gateway: { url: "ws://localhost:19000", autoConnect: false },
         },
       },
     });
 
     expect(state.activeMode).toBe("adjust");
-    expect(state.modes.adjust.dock).toEqual({ collapsed: true, renderMode: "bubble" });
+    expect(state.modes.adjust.dock).toEqual({ collapsed: true, renderMode: "bubble", fullscreen: false });
     expect(state.modes.adjust.gateway).toEqual({ url: "ws://localhost:19000", autoConnect: false });
   });
 });

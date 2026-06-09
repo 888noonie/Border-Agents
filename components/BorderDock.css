@@ -73,6 +73,36 @@
   outline-offset: 0.15rem;
 }
 
+.dock-onboarding {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+  padding: 8px 16px;
+  border: 1px solid rgb(125 249 255 / 0.28);
+  border-radius: 999px;
+  background: rgb(8 17 31 / 0.72);
+  color: white;
+  font-size: 11px;
+  font-weight: 600;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  pointer-events: auto;
+  white-space: nowrap;
+}
+
+.dock-onboarding button {
+  background: none;
+  border: none;
+  color: rgb(255 255 255 / 0.6);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.dock-onboarding button:hover {
+  color: white;
+}
+
 .border-dock--idle .agent-hotspot {
   opacity: 0.46;
 }
@@ -90,14 +120,60 @@
 .border-dock--idle .speech-bubble {
   opacity: 0.52;
 }
-
 .dock-stage {
   position: absolute;
   inset: 0;
   background: transparent;
   pointer-events: none;
   transform: translateZ(0);
-  will-change: contents;
+}
+
+.dock-permanent-pills {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 8px;
+  z-index: 1000;
+  pointer-events: auto;
+}
+
+.dock-pill-button {
+  background: rgb(8 17 31 / 0.65);
+  border: 1px solid rgb(255 255 255 / 0.15);
+  border-radius: 999px;
+  padding: 6px 16px;
+  color: rgb(255 255 255 / 0.8);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+  transition: all 160ms ease;
+  backdrop-filter: blur(8px);
+}
+
+.dock-pill-button:hover {
+  background: rgb(8 17 31 / 0.85);
+  border-color: rgb(255 255 255 / 0.3);
+  color: white;
+  transform: translateY(-1px);
+}
+
+.dock-pill-button--active {
+  background: rgb(125 249 255 / 0.15);
+  border-color: rgb(125 249 255 / 0.6);
+  color: rgb(125 249 255);
+  box-shadow: 0 0 12px rgb(125 249 255 / 0.2);
+}
+
+.dock-pill-button--active:hover {
+  background: rgb(125 249 255 / 0.25);
+  border-color: rgb(125 249 255 / 0.8);
+  color: rgb(160 255 255);
 }
 
 .border-dock--preview .dock-stage {
@@ -163,6 +239,10 @@
   background: #f2ecff;
 }
 
+.dock-mode-selector__option--interact {
+  background: #ffe4e6;
+}
+
 .dock-mode-selector__option--active {
   border-color: rgb(8 17 31 / 0.42);
   box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.7), 0 0 0 1px rgb(255 255 255 / 0.28);
@@ -175,7 +255,9 @@
 }
 
 .dock-controls:hover,
-.dock-controls:focus-within {
+.dock-controls:focus-within,
+.dock-chrome--adjusting .dock-controls,
+.dock-chrome--pinned .dock-controls {
   background: rgb(8 17 31 / 0.72);
   opacity: 1;
 }
@@ -307,6 +389,11 @@
   cursor: pointer;
 }
 
+.dock-control--fullscreen {
+  cursor: pointer;
+  background: rgb(220 220 255 / 0.92);
+}
+
 .dock-control--reset {
   cursor: pointer;
 }
@@ -435,12 +522,14 @@
 }
 
 .agent-hotspot--active {
-  opacity: 1;
+  opacity: 1 !important;
+  filter: none !important;
 }
 
 .agent-hotspot--faint.agent-hotspot--active,
 .agent-hotspot--faint.agent-hotspot--dragging {
-  opacity: 0.76;
+  opacity: 1 !important;
+  filter: none !important;
 }
 
 .agent-hotspot--dragging {

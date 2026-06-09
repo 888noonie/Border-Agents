@@ -3,6 +3,13 @@ export type DockRenderMode = "head" | "bubble" | "head+bubble";
 export type DockSettings = {
   collapsed: boolean;
   renderMode: DockRenderMode;
+  fullscreen: boolean;
+  windowBounds?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+  };
 };
 
 export const DOCK_SETTINGS_STORAGE_KEY = "border-buddies:dock:v2";
@@ -16,6 +23,7 @@ export const DOCK_RENDER_MODE_LABELS: Record<DockRenderMode, string> = {
 export const DEFAULT_DOCK_SETTINGS: DockSettings = {
   collapsed: false,
   renderMode: "head+bubble",
+  fullscreen: true,
 };
 
 const RENDER_MODES: DockRenderMode[] = ["head", "bubble", "head+bubble"];
@@ -27,6 +35,8 @@ export function normalizeDockSettings(candidate: Partial<DockSettings> | null | 
   return {
     collapsed: candidate?.collapsed === true,
     renderMode: validMode,
+    fullscreen: candidate?.fullscreen ?? DEFAULT_DOCK_SETTINGS.fullscreen,
+    windowBounds: candidate?.windowBounds,
   };
 }
 

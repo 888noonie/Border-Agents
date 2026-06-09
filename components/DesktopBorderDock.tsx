@@ -365,7 +365,7 @@ const INITIAL_LAYOUT: DockLayout = {
 
 const FREE_AGENT_SIZE = 118;
 const FREE_AGENT_MARGIN = 16;
-const SNAP_DISTANCE = 96;
+const SNAP_DISTANCE = 32;
 const DOCKED_HEAD_HITBOX_SIZE = 96;
 const DOCKED_HEAD_EDGE_OVERLAP = 18;
 // A press only becomes a drag after the pointer travels this far. Below the
@@ -496,7 +496,7 @@ async function setDockInputEnabled(enabled: boolean) {
   }
 }
 
-export function BorderDock() {
+export function DesktopBorderDock() {
   const stageRef = useRef<HTMLDivElement>(null);
   const dockChromeNodeRef = useRef<HTMLDivElement | null>(null);
   const dragRef = useRef<ActiveDrag | null>(null);
@@ -504,6 +504,7 @@ export function BorderDock() {
   const clickThroughRef = useRef(false);
 
   const idleTimerRef = useRef<number | null>(null);
+  const boundsStabilizationTimerRef = useRef<number | null>(null);
   const nativeMoveSnapTimerRef = useRef<number | null>(null);
   const initialWindowBuddyId = useMemo(getCurrentBuddyIdFromUrl, []);
   const [windowBuddyId, setWindowBuddyId] = useState<string | null | undefined>(
@@ -519,6 +520,7 @@ export function BorderDock() {
   // head regions alive even when no chat surface is open.
   const [headForceKey, setHeadForceKey] = useState(0);
   const [idle, setIdle] = useState(false);
+  const [dockPinned, setDockPinned] = useState(false);
   const [placements, setPlacements] = useState<AgentPlacements>(() =>
     loadStoredPlacements(defaultPlacements),
   );
@@ -537,9 +539,7 @@ export function BorderDock() {
   const [gatewaySettings, setGatewaySettings] = useState<GatewaySettings>(
     initialUserModeState.modes[initialUserModeState.activeMode].gateway,
   );
-  const [buddyMessages, setBuddyMessages] = useState<Record<string, string>>(() =>
-    Object.fromEntries(buddies.map((buddy) => [buddy.id, buddy.message ?? ""])),
-  );
+  const [buddyMessages, setBuddyMessages] = useState<Record<string, string>>({});
   const placementsRef = useRef<AgentPlacements>(placements);
   const dragStartedAtRef = useRef<number | null>(null);
   const overlayDragActiveRef = useRef(false);
@@ -689,6 +689,7 @@ export function BorderDock() {
 
         const nextLayout = await invoke<DockLayout>("configure_border_dock", {
           multiMonitor,
+          customBounds: dockSettings.fullscreen ? undefined : dockSettings.windowBounds,
         });
 
         if (mounted) {
@@ -715,7 +716,16 @@ export function BorderDock() {
     windowBuddyPlacement?.edge,
     windowBuddyPlacement?.state,
     windowBuddyBubbleVisible,
+    dockSettings.windowBounds,
   ]);
+
+  useEffect(() => {
+    if (browserPreview) {
+      return;
+    }
+
+    void getCurrentWindow().setFullscreen(dockSettings.fullscreen).catch(() => {});
+  }, [browserPreview, dockSettings.fullscreen]);
 
   useEffect(() => {
     localStorage.setItem(PLACEMENT_STORAGE_KEY, JSON.stringify(placements));
@@ -747,6 +757,77 @@ export function BorderDock() {
   useEffect(() => {
     localStorage.setItem(USER_MODE_STORAGE_KEY, JSON.stringify(userModeState));
   }, [userModeState]);
+
+  useEffect(() => {
+    if (!nativeUnifiedDock || dockSettings.fullscreen) {
+      return;
+    }
+
+    let unlistenResized: (() => void) | null = null;
+    let unlistenMoved: (() => void) | null = null;
+
+    const win = getCurrentWindow();
+
+    win
+      .onResized(async () => {
+        const size = await win.innerSize();
+        const pos = await win.outerPosition();
+        setDockSettings((current) => ({
+          ...current,
+          windowBounds: {
+            x: pos.x,
+            y: pos.y,
+            width: size.width,
+            height: size.height,
+          },
+        }));
+
+        if (boundsStabilizationTimerRef.current !== null) {
+          window.clearTimeout(boundsStabilizationTimerRef.current);
+        }
+        boundsStabilizationTimerRef.current = window.setTimeout(() => {
+          setFullInputCapture(true);
+          setClickThroughMode(false);
+        }, 500);
+      })
+      .then((unlisten) => {
+        unlistenResized = unlisten;
+      });
+
+    win
+      .onMoved(async () => {
+        const size = await win.innerSize();
+        const pos = await win.outerPosition();
+        setDockSettings((current) => ({
+          ...current,
+          windowBounds: {
+            x: pos.x,
+            y: pos.y,
+            width: size.width,
+            height: size.height,
+          },
+        }));
+
+        if (boundsStabilizationTimerRef.current !== null) {
+          window.clearTimeout(boundsStabilizationTimerRef.current);
+        }
+        boundsStabilizationTimerRef.current = window.setTimeout(() => {
+          setFullInputCapture(true);
+          setClickThroughMode(false);
+        }, 500);
+      })
+      .then((unlisten) => {
+        unlistenMoved = unlisten;
+      });
+
+    return () => {
+      unlistenResized?.();
+      unlistenMoved?.();
+      if (boundsStabilizationTimerRef.current !== null) {
+        window.clearTimeout(boundsStabilizationTimerRef.current);
+      }
+    };
+  }, [nativeUnifiedDock, dockSettings.fullscreen]);
 
   useEffect(() => {
     setBuddySettings((current) => {
@@ -908,6 +989,7 @@ export function BorderDock() {
       try {
         const nextLayout = await invoke<DockLayout>("configure_border_dock", {
           multiMonitor,
+          customBounds: dockSettings.fullscreen ? undefined : dockSettings.windowBounds,
         });
         setLayout(nextLayout);
       } catch {
@@ -1725,7 +1807,7 @@ export function BorderDock() {
         browserPreview ? "border-dock--preview" : "",
         unifiedDock ? `border-dock--render-${effectiveRenderMode.replace("+", "-plus-")}` : "",
         dockCollapsed ? "border-dock--collapsed" : "",
-        idle ? "border-dock--idle" : "",
+        idle && !fullInputCapture && !dockPinned ? "border-dock--idle" : "",
         clickThrough ? "border-dock--click-through" : "",
       ].join(" ")}
       data-window-buddy={windowBuddy?.id ?? "dock"}
@@ -1760,6 +1842,35 @@ export function BorderDock() {
         data-monitor-count={layout.activeMonitorIds.length}
         ref={stageRef}
       >
+        {nativeUnifiedDock && (
+          <div className="dock-permanent-pills">
+            <button
+              className={["dock-pill-button", !fullInputCapture ? "dock-pill-button--active" : ""].join(" ")}
+              type="button"
+              onClick={() => {
+                setClickThroughMode(false);
+                setFullInputCapture((enabled) => !enabled);
+              }}
+              title={fullInputCapture ? "Return pointer ownership to desktop" : "Take pointer ownership for buddy interaction"}
+            >
+              {fullInputCapture ? "Desktop" : "Interact"}
+            </button>
+            <button
+              className={["dock-pill-button", dockCollapsed ? "dock-pill-button--dimmed" : ""].join(" ")}
+              type="button"
+              onClick={() => {
+                setDockSettings((current) => ({
+                  ...current,
+                  collapsed: !current.collapsed,
+                }));
+                markActivity();
+              }}
+              title={dockCollapsed ? "Show dock" : "Hide dock"}
+            >
+              Dock
+            </button>
+          </div>
+        )}
         {browserPreview ? <TrustWorkbenchPreview /> : null}
         {unifiedDock ? (
           <DockChrome
@@ -1768,6 +1879,7 @@ export function BorderDock() {
             collapsed={dockCollapsed}
             controlsRef={setDockChromeNode}
             chromePlacement={dockChromePlacement}
+            dockPinned={dockPinned}
             onCollapseToggle={() =>
               setDockSettings((current) => ({
                 ...current,
@@ -1778,6 +1890,13 @@ export function BorderDock() {
               setDockSettings((current) => ({
                 ...current,
                 renderMode: cycleDockRenderMode(current.renderMode),
+              }))
+            }
+            fullscreen={dockSettings.fullscreen}
+            onToggleFullscreen={() =>
+              setDockSettings((current) => ({
+                ...current,
+                fullscreen: !current.fullscreen,
               }))
             }
             onBeginOverlayDrag={beginOverlayWindowDrag}
@@ -1935,6 +2054,9 @@ function DockChrome({
   onUserModeChange,
   renderMode,
   nativeUnifiedDock,
+  fullscreen,
+  onToggleFullscreen,
+  dockPinned,
 }: {
   activeUserMode: UserMode;
   clickThrough: boolean;
@@ -1957,6 +2079,9 @@ function DockChrome({
   onUserModeChange: (mode: UserMode) => void;
   renderMode: DockRenderMode;
   nativeUnifiedDock?: boolean;
+  fullscreen: boolean;
+  onToggleFullscreen: () => void;
+  dockPinned: boolean;
 }) {
   const recentHeal =
     healReport && Date.now() - healReport.at < 20_000 ? healReport.actions.join(", ") : null;
@@ -1978,6 +2103,12 @@ function DockChrome({
       ].join(" ")}
       ref={controlsRef}
       style={chromeStyle}
+      onPointerDown={(event) => {
+        const target = event.target as HTMLElement;
+        if (!target.closest("button, .dock-controls__ticker, .dock-mode-selector, .dock-adjust-tray")) {
+          onBeginChromeDrag(event);
+        }
+      }}
     >
       {collapsed ? (
         <button
@@ -2002,12 +2133,30 @@ function DockChrome({
                   key={mode}
                   type="button"
                   aria-pressed={activeUserMode === mode}
-                  onClick={() => onUserModeChange(mode)}
+                  onClick={() => onUserModeChange(activeUserMode === mode ? "work" : mode)}
                   title={USER_MODE_DESCRIPTIONS[mode]}
                 >
                   {USER_MODE_LABELS[mode]}
                 </button>
               ))}
+              {nativeUnifiedDock ? (
+                <button
+                  className={[
+                    "dock-mode-selector__option",
+                    "dock-mode-selector__option--interact",
+                    !fullInputCapture ? "dock-mode-selector__option--active" : "",
+                  ].join(" ")}
+                  type="button"
+                  onClick={onToggleFullInputCapture}
+                  title={
+                    fullInputCapture
+                      ? "Return pointer ownership to desktop"
+                      : "Take pointer ownership for buddy interaction"
+                  }
+                >
+                  {fullInputCapture ? "Desktop" : "Interact"}
+                </button>
+              ) : null}
             </div>
             {/* Short transient state labels (only when relevant) */}
             {(adjustOpen || clickThrough || recentHeal) && (
@@ -2043,6 +2192,12 @@ function DockChrome({
                 icon={renderModeIcon(renderMode)}
                 label={`Cycle dock render mode: ${DOCK_RENDER_MODE_LABELS[renderMode]}`}
                 onClick={onCycleRenderMode}
+              />
+              <DockIconControl
+                className="dock-control--fullscreen"
+                icon={fullscreen ? "◱" : "⛶"}
+                label={fullscreen ? "Exit fullscreen" : "Enter fullscreen"}
+                onClick={onToggleFullscreen}
               />
               <DockIconControl
                 className="dock-control--move"
@@ -2082,18 +2237,6 @@ function DockChrome({
                 }
                 onClick={onToggleClickThrough}
               />
-              {nativeUnifiedDock ? (
-                <DockIconControl
-                  className="dock-control--input"
-                  icon={fullInputCapture ? "□" : "⌁"}
-                  label={
-                    fullInputCapture
-                      ? "Return pointer ownership to desktop"
-                      : "Take pointer ownership for buddy interaction"
-                  }
-                  onClick={onToggleFullInputCapture}
-                />
-              ) : null}
               <DockIconControl
                 className="dock-control--collapse"
                 icon="−"

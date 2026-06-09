@@ -80,7 +80,7 @@ struct MonitorFrame {
     primary: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DockBounds {
     x: i32,
@@ -235,11 +235,16 @@ fn configure_border_dock(
     app: AppHandle,
     window: WebviewWindow,
     multi_monitor: Option<bool>,
+    custom_bounds: Option<DockBounds>,
 ) -> Result<DockLayout, String> {
     let use_multi_monitor = multi_monitor.unwrap_or(false);
     let monitors = collect_monitors(&app)?;
     let selected_monitors = select_monitors(&monitors, use_multi_monitor);
-    let bounds = calculate_bounds(&selected_monitors)?;
+    let bounds = if let Some(cb) = custom_bounds {
+        cb
+    } else {
+        calculate_bounds(&selected_monitors)?
+    };
 
     window
         .set_always_on_top(true)
@@ -710,7 +715,7 @@ fn nearest_dock_zone(
     position: &PhysicalPosition<i32>,
     size: &PhysicalSize<u32>,
 ) -> Option<DockZone> {
-    const SNAP_DISTANCE: i32 = 96;
+    const SNAP_DISTANCE: i32 = 32;
 
     let distances = [
         ("left", position.x - monitor.x),

@@ -55,6 +55,7 @@ export const DEFAULT_USER_MODE_STATE: UserModeState = {
       dock: {
         collapsed: false,
         renderMode: "head+bubble",
+        fullscreen: true,
       },
       gateway: DEFAULT_GATEWAY_SETTINGS,
       receiptDetail: "compact",
@@ -64,6 +65,7 @@ export const DEFAULT_USER_MODE_STATE: UserModeState = {
       dock: {
         collapsed: false,
         renderMode: "head+bubble",
+        fullscreen: true,
       },
       gateway: DEFAULT_GATEWAY_SETTINGS,
       receiptDetail: "verbose",

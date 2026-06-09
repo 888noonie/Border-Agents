@@ -34,3 +34,6 @@ RoadMap.md
 /playwright/.cache/
 /test-results/
 *.playwright-trace.zip
+
+# Local platform connection plan (living artifact)
+Universal_Platform_Connection_Plan.md

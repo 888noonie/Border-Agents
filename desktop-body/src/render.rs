@@ -137,9 +137,16 @@ impl Sprite {
         Sprite { font: load_font() }
     }
 
-    /// Render the body into a premultiplied-BGRA `wl_shm` canvas.
-    pub fn paint(&self, canvas: &mut [u8], view: &BodyView) {
-        let mut pixmap = Pixmap::new(SURFACE_W, SURFACE_H).expect("pixmap");
+    /// Render the body into a premultiplied-BGRA `wl_shm` canvas of size `w`×`h`.
+    ///
+    /// The pixmap matches the actual buffer size (which the compositor may shrink
+    /// as the surface slides off an edge) so the row stride always matches the
+    /// canvas — otherwise copying fixed-width rows into a narrower buffer shears the
+    /// image. Drawing uses fixed surface-local coordinates and simply clips.
+    pub fn paint(&self, canvas: &mut [u8], w: u32, h: u32, view: &BodyView) {
+        let Some(mut pixmap) = Pixmap::new(w, h) else {
+            return;
+        };
 
         let bob = (view.t * std::f32::consts::TAU / 3.6).sin() * 4.0;
         // A ~150ms blink every 4s.

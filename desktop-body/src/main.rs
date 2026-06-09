@@ -273,7 +273,7 @@ impl App {
 
         let buffer = match pool.create_buffer(w as i32, h as i32, stride, wl_shm::Format::Argb8888) {
             Ok((buffer, canvas)) => {
-                self.sprite.paint(canvas, &view);
+                self.sprite.paint(canvas, w, h, &view);
                 buffer
             }
             Err(err) => {
@@ -461,11 +461,15 @@ impl LayerShellHandler for App {
         configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
-        if configure.new_size.0 != 0 {
-            self.width = configure.new_size.0;
+        let (nw, nh) = configure.new_size;
+        if nw != 0 && nh != 0 && (nw != self.width || nh != self.height) {
+            eprintln!("[bb-desktop-body] surface resized by compositor to {nw}x{nh}");
         }
-        if configure.new_size.1 != 0 {
-            self.height = configure.new_size.1;
+        if nw != 0 {
+            self.width = nw;
+        }
+        if nh != 0 {
+            self.height = nh;
         }
         let first = !self.configured;
         self.configured = true;

@@ -1,0 +1,112 @@
+import { describe, expect, test } from "vitest";
+import {
+  PRESENCE_PROTOCOL,
+  PRESENCE_PROTOCOL_VERSION,
+  PRESENCE_TO_BODY_KINDS,
+  PRESENCE_TO_SOUL_KINDS,
+  isPresenceEnvelope,
+  parsePresenceMessage,
+  presence,
+  presenceDirection,
+  type PresenceMessage,
+  type PresencePosition,
+} from "../presenceProtocol";
+
+const FREE: PresencePosition = { mode: "free", space: "viewport", x: 120, y: 64 };
+const ANCHORED: PresencePosition = { mode: "anchored", edge: "right", offset: { x: 0, y: 0 } };
+
+/** Simulate the wire: serialize, then parse back as an untrusted peer would. */
+function overTheWire(message: PresenceMessage): PresenceMessage | null {
+  return parsePresenceMessage(JSON.parse(JSON.stringify(message)));
+}
+
+describe("presence protocol envelope", () => {
+  test("every factory stamps protocol, version, buddy, and timestamp", () => {
+    const message = presence.say("hermes", "hello", { ts: 1000 });
+    expect(message).toMatchObject({
+      protocol: PRESENCE_PROTOCOL,
+      v: PRESENCE_PROTOCOL_VERSION,
+      kind: "say",
+      buddy: "hermes",
+      ts: 1000,
+      text: "hello",
+    });
+  });
+
+  test("direction is derived from kind, and the two families are disjoint", () => {
+    for (const kind of PRESENCE_TO_BODY_KINDS) {
+      expect(presenceDirection(kind)).toBe("to-body");
+    }
+    for (const kind of PRESENCE_TO_SOUL_KINDS) {
+      expect(presenceDirection(kind)).toBe("to-soul");
+    }
+    const overlap = PRESENCE_TO_BODY_KINDS.filter((kind) =>
+      (PRESENCE_TO_SOUL_KINDS as readonly string[]).includes(kind),
+    );
+    expect(overlap).toEqual([]);
+  });
+
+  test("isPresenceEnvelope separates presence messages from gateway messages", () => {
+    expect(isPresenceEnvelope(presence.summoned("hermes"))).toBe(true);
+    expect(isPresenceEnvelope({ type: "chat", buddy: "hermes", text: "hi" })).toBe(false);
+    expect(isPresenceEnvelope(null)).toBe(false);
+  });
+});
+
+describe("presence protocol round-trips", () => {
+  const cases: PresenceMessage[] = [
+    presence.moveTo("hermes", FREE, { transitionMs: 180, ts: 1 }),
+    presence.moveTo("hermes", ANCHORED, { ts: 2 }),
+    presence.express("hermes", "thinking", { intensity: 0.7, ts: 3 }),
+    presence.say("hermes", "On it.", { replyTo: "req-1", ts: 4 }),
+    presence.attention("hermes", "user", { ts: 5 }),
+    presence.attention("hermes", { point: { x: 10, y: 20 }, space: "screen" }, { ts: 6 }),
+    presence.hydrate("hermes", { position: ANCHORED, emotion: "neutral", speech: "hi" }, { ts: 7 }),
+    presence.clicked("hermes", { button: "primary", at: FREE, ts: 8 }),
+    presence.grabbed("hermes", FREE, { ts: 9 }),
+    presence.dragged("hermes", FREE, { ts: 10 }),
+    presence.dropped("hermes", ANCHORED, { onTarget: "trash", ts: 11 }),
+    presence.summoned("hermes", { ts: 12 }),
+    presence.dismissed("hermes", { ts: 13 }),
+  ];
+
+  test.each(cases)("survives JSON serialization: $kind", (message) => {
+    expect(overTheWire(message)).toEqual(parsePresenceMessage(message));
+    expect(overTheWire(message)?.kind).toBe(message.kind);
+  });
+});
+
+describe("presence protocol parsing rejects malformed input", () => {
+  test("rejects wrong protocol or version", () => {
+    expect(parsePresenceMessage({ protocol: "gateway", v: 0, kind: "say", buddy: "h", ts: 1, text: "x" })).toBeNull();
+    expect(parsePresenceMessage({ protocol: PRESENCE_PROTOCOL, v: 1, kind: "say", buddy: "h", ts: 1, text: "x" })).toBeNull();
+  });
+
+  test("rejects unknown kinds and non-presence shapes", () => {
+    expect(parsePresenceMessage({ protocol: PRESENCE_PROTOCOL, v: 0, kind: "teleport", buddy: "h", ts: 1 })).toBeNull();
+    expect(parsePresenceMessage({ type: "chat", buddy: "h", text: "hi" })).toBeNull();
+    expect(parsePresenceMessage(null)).toBeNull();
+    expect(parsePresenceMessage("nope")).toBeNull();
+  });
+
+  test("rejects missing buddy or timestamp", () => {
+    expect(parsePresenceMessage({ protocol: PRESENCE_PROTOCOL, v: 0, kind: "summoned", buddy: "", ts: 1 })).toBeNull();
+    expect(parsePresenceMessage({ protocol: PRESENCE_PROTOCOL, v: 0, kind: "summoned", buddy: "h" })).toBeNull();
+  });
+
+  test("rejects payloads with the wrong shape for their kind", () => {
+    // move_to without a valid position
+    expect(parsePresenceMessage({ protocol: PRESENCE_PROTOCOL, v: 0, kind: "move_to", buddy: "h", ts: 1, position: { mode: "free", x: 1 } })).toBeNull();
+    // express with an unknown emotion
+    expect(parsePresenceMessage({ protocol: PRESENCE_PROTOCOL, v: 0, kind: "express", buddy: "h", ts: 1, emotion: "smug" })).toBeNull();
+    // grabbed without a position
+    expect(parsePresenceMessage({ protocol: PRESENCE_PROTOCOL, v: 0, kind: "grabbed", buddy: "h", ts: 1 })).toBeNull();
+    // anchored position missing an offset coordinate
+    expect(parsePresenceMessage({ protocol: PRESENCE_PROTOCOL, v: 0, kind: "move_to", buddy: "h", ts: 1, position: { mode: "anchored", edge: "right", offset: { x: 0 } } })).toBeNull();
+  });
+
+  test("accepts valid optional fields and minimal payloads", () => {
+    expect(parsePresenceMessage(presence.clicked("hermes", { ts: 1 }))).not.toBeNull();
+    expect(parsePresenceMessage(presence.hydrate("hermes", {}, { ts: 1 }))).not.toBeNull();
+  });
+});

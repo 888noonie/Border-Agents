@@ -112,6 +112,45 @@ async function askHermes(text) {
   return reply.trim();
 }
 
+const PRESENCE_PROTOCOL = "presence";
+const PRESENCE_VERSION = 0;
+
+function presenceEnvelope(kind, buddy, payload) {
+  return JSON.stringify({
+    protocol: PRESENCE_PROTOCOL,
+    v: PRESENCE_VERSION,
+    kind,
+    buddy,
+    ts: Date.now(),
+    ...payload,
+  });
+}
+
+// Dev-only "soul": react to body interaction events with presence cues so both
+// directions of the protocol can be exercised against the browser body that
+// already works. A real soul replaces this with the LLM presence-tool loop.
+function handlePresenceInteraction(socket, message) {
+  const buddy = String(message.buddy);
+
+  switch (message.kind) {
+    case "summoned":
+      socket.send(presenceEnvelope("express", buddy, { emotion: "happy" }));
+      socket.send(presenceEnvelope("say", buddy, { text: "You called?" }));
+      return;
+    case "grabbed":
+      socket.send(presenceEnvelope("express", buddy, { emotion: "alert" }));
+      return;
+    case "dropped":
+      socket.send(presenceEnvelope("express", buddy, { emotion: "neutral" }));
+      return;
+    case "dismissed":
+      socket.send(presenceEnvelope("express", buddy, { emotion: "sleepy" }));
+      return;
+    default:
+      return;
+  }
+}
+
 function buildGatewayPrompt(message) {
   const userText = String(message?.text ?? "").trim();
   const context = typeof message?.context === "string" ? message.context.trim() : "";
@@ -183,6 +222,11 @@ wss.on("connection", (socket, request) => {
 
     const source = message?.source ? String(message.source) : "unknown";
     log("message", { source, ...message });
+
+    if (message?.protocol === PRESENCE_PROTOCOL && message?.kind && message?.buddy) {
+      handlePresenceInteraction(socket, message);
+      return;
+    }
 
     if (message?.type === "hello") {
       socket.send(

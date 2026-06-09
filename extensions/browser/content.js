@@ -18,6 +18,7 @@
   const hermes = window.BorderBuddiesHermes;
   const profileRuntime = window.BorderBuddiesProfiles;
   const profile = profileRuntime?.profiles?.hermes;
+  const presence = window.BorderBuddiesPresence;
 
   if (!hermes || !profileRuntime || !profile) {
     return;
@@ -35,6 +36,8 @@
     pendingChat: "",
     websocket: null,
     suppressClickUntil: 0,
+    emotion: "neutral",
+    attention: "user",
   };
 
   chrome.storage?.local?.get([SETTINGS_KEY, STORAGE_KEY], (stored) => {
@@ -255,6 +258,7 @@
       state.placement = freePlacement;
       state.bubbleVisible = false;
       render();
+      emitPresence(presence?.grabbed("hermes", presencePosition()));
     });
 
     button.addEventListener("pointermove", (event) => {
@@ -270,6 +274,7 @@
         y: clamp(pointer.y - state.dragging.offsetY, MARGIN, window.innerHeight - FREE_SIZE - MARGIN),
       };
       render();
+      emitPresence(presence?.dragged("hermes", presencePosition()));
     });
 
     button.addEventListener("pointerup", finishDrag);
@@ -284,6 +289,10 @@
         state.bubbleVisible = !state.bubbleVisible;
         hermes.config.message = hermes.nextLine();
         render();
+        emitPresence(presence?.clicked("hermes", { button: "primary", at: presencePosition() }));
+        emitPresence(
+          state.bubbleVisible ? presence?.summoned("hermes") : presence?.dismissed("hermes"),
+        );
       }
     });
 
@@ -305,12 +314,14 @@
 
       if (edge) {
         tuckBuddy(edge);
+        emitPresence(presence?.dropped("hermes", presencePosition()));
         return;
       }
     }
 
     persistPlacement();
     render();
+    emitPresence(presence?.dropped("hermes", presencePosition()));
   }
 
   function tuckBuddy(edge) {
@@ -398,6 +409,14 @@
       socket.addEventListener("message", (event) => {
         const message = safeJson(event.data);
 
+        if (presence?.isEnvelope(message)) {
+          const parsed = presence.parse(message);
+          if (parsed && parsed.buddy === "hermes") {
+            applyPresenceMessage(parsed);
+          }
+          return;
+        }
+
         if (message?.type === "status") {
           state.gatewayStatus = message.message || "Desktop gateway connected.";
           render();
@@ -473,6 +492,66 @@
       }),
     );
     render();
+  }
+
+  function emitPresence(message) {
+    if (!message || !presence) {
+      return;
+    }
+
+    if (state.websocket?.readyState === WebSocket.OPEN) {
+      state.websocket.send(JSON.stringify(message));
+    }
+  }
+
+  function presencePosition() {
+    return presence ? presence.placementToPosition(state.placement) : null;
+  }
+
+  function applyPresenceMessage(message) {
+    switch (message.kind) {
+      case "say":
+        hermes.config.message = String(message.text);
+        state.gatewayBusy = false;
+        state.bubbleVisible = true;
+        render();
+        return true;
+      case "express":
+        state.emotion = message.emotion;
+        render();
+        return true;
+      case "move_to": {
+        const next = presence.positionToPlacement(message.position, state.placement.edge);
+        if (next) {
+          state.placement = normalizePlacement(next);
+          persistPlacement(false);
+          render();
+        }
+        return true;
+      }
+      case "attention":
+        state.attention = message.focus;
+        return true;
+      case "hydrate":
+        if (message.position) {
+          const next = presence.positionToPlacement(message.position, state.placement.edge);
+          if (next) {
+            state.placement = normalizePlacement(next);
+            persistPlacement(false);
+          }
+        }
+        if (message.emotion) {
+          state.emotion = message.emotion;
+        }
+        if (typeof message.speech === "string") {
+          hermes.config.message = message.speech;
+          state.bubbleVisible = true;
+        }
+        render();
+        return true;
+      default:
+        return false;
+    }
   }
 
   function persistPlacement(sendSocket = true) {

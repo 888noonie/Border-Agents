@@ -35,6 +35,7 @@ dependencies = [
  "fontdue",
  "smithay-client-toolkit",
  "tiny-skia",
+ "wayland-protocols",
 ]
 
 [[package]]

@@ -14,3 +14,4 @@ calloop = "0.13"
 calloop-wayland-source = "0.3"
 tiny-skia = "0.11"
 fontdue = "0.9"
+wayland-protocols = { version = "0.32", features = ["client", "unstable"] }

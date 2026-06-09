@@ -49,7 +49,11 @@ use smithay_client_toolkit::{
 use smithay_client_toolkit::reexports::client::{
     globals::registry_queue_init,
     protocol::{wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
-    Connection, QueueHandle,
+    Connection, Dispatch, Proxy, QueueHandle,
+};
+use wayland_protocols::wp::relative_pointer::zv1::client::{
+    zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1,
+    zwp_relative_pointer_v1::{Event as RelativePointerEvent, ZwpRelativePointerV1},
 };
 
 const CLICK_SLOP: f64 = 5.0;
@@ -68,6 +72,15 @@ fn main() {
     let layer_shell = LayerShell::bind(&globals, &qh)
         .expect("wlr-layer-shell unavailable — compositor does not implement zwlr_layer_shell_v1");
     let shm = Shm::bind(&globals, &qh).expect("wl_shm unavailable");
+    // Raw pointer deltas for dragging — independent of the surface frame, so moving
+    // the surface can't feed back into the motion we read. Optional: if absent we
+    // simply can't drag (rather than dragging unstably).
+    let relative_manager = globals
+        .bind::<ZwpRelativePointerManagerV1, _, _>(&qh, 1..=1, ())
+        .ok();
+    if relative_manager.is_none() {
+        eprintln!("[bb-desktop-body] wp_relative_pointer unavailable — dragging disabled");
+    }
 
     let mut app = App {
         registry_state: RegistryState::new(&globals),
@@ -79,8 +92,11 @@ fn main() {
         conn: conn.clone(),
         layer: None,
         pointer: None,
+        relative_manager,
+        relative_pointer: None,
         sprite: Sprite::new(),
         loop_signal: None,
+        screen: None,
         width: render::SURFACE_W,
         height: render::SURFACE_H,
         margin_left: env_i32("BB_MARGIN_LEFT", 48) as f64,
@@ -99,6 +115,13 @@ fn main() {
     event_queue.roundtrip(&mut app).expect("initial roundtrip failed");
 
     let output = pick_output(&app);
+    // Remember the target output's size so a drag can be clamped on-screen.
+    app.screen = output
+        .clone()
+        .or_else(|| app.output_state.outputs().next())
+        .and_then(|o| app.output_state.info(&o))
+        .and_then(|i| i.logical_size)
+        .map(|(w, h)| (w as f64, h as f64));
     let surface = app.compositor.create_surface(&qh);
     let layer = layer_shell.create_layer_surface(
         &qh,
@@ -154,10 +177,9 @@ fn main() {
 }
 
 struct PressState {
-    grab_x: f64,
-    grab_y: f64,
     target: PressTarget,
-    moved: bool,
+    /// Accumulated physical pointer travel since press — distinguishes click from drag.
+    dist: f64,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -177,8 +199,11 @@ struct App {
     conn: Connection,
     layer: Option<LayerSurface>,
     pointer: Option<wl_pointer::WlPointer>,
+    relative_manager: Option<ZwpRelativePointerManagerV1>,
+    relative_pointer: Option<ZwpRelativePointerV1>,
     sprite: Sprite,
     loop_signal: Option<LoopSignal>,
+    screen: Option<(f64, f64)>,
     width: u32,
     height: u32,
     margin_left: f64,
@@ -256,9 +281,9 @@ impl App {
     }
 
     /// Reposition by rewriting anchor margins — a compositor texture move, never a
-    /// repaint, so ghosting cannot occur. Adds (pointer - grab) to the live margin
-    /// each motion; the frame shifts under the pointer after each commit, so this
-    /// tracks the cursor without drift.
+    /// repaint, so ghosting cannot occur. Driven by raw `wp_relative_pointer` deltas
+    /// (physical pointer motion), so moving the surface never feeds back into the
+    /// motion we read — the runaway that surface-local coordinates caused.
     fn reposition(&mut self) {
         if let Some(layer) = self.layer.as_ref() {
             let left = self.margin_left.max(0.0) as i32;
@@ -266,6 +291,14 @@ impl App {
             layer.set_margin(top, 0, 0, left);
             layer.commit();
         }
+    }
+
+    /// Keep the buddy on-screen so a fast drag can never lose it off an edge.
+    fn clamp_margins(&mut self) {
+        let keep = 56.0; // always leave at least this many px of the surface visible
+        let (sw, sh) = self.screen.unwrap_or((f64::MAX, f64::MAX));
+        self.margin_left = self.margin_left.clamp(0.0, (sw - keep).max(0.0));
+        self.margin_top = self.margin_top.clamp(0.0, (sh - keep).max(0.0));
     }
 
     /// Input region = only the parts that should catch the pointer; everywhere else
@@ -340,21 +373,21 @@ impl App {
             PressTarget::Outside
         };
 
-        self.press = Some(PressState { grab_x: x, grab_y: y, target, moved: false });
+        self.press = Some(PressState { target, dist: 0.0 });
         if target == PressTarget::Head {
             self.drag = true;
         }
     }
 
-    fn on_motion(&mut self, x: f64, y: f64) {
+    /// Physical pointer delta from `wp_relative_pointer`. Apply it straight to the
+    /// margins while dragging — no surface-frame feedback, no runaway.
+    fn on_drag_delta(&mut self, dx: f64, dy: f64) {
         let Some(press) = self.press.as_mut() else { return };
-        if !press.moved && (x - press.grab_x).hypot(y - press.grab_y) > CLICK_SLOP {
-            press.moved = true;
-        }
+        press.dist += dx.abs() + dy.abs();
         if self.drag {
-            let (gx, gy) = (press.grab_x, press.grab_y);
-            self.margin_left += x - gx;
-            self.margin_top += y - gy;
+            self.margin_left += dx;
+            self.margin_top += dy;
+            self.clamp_margins();
             self.reposition();
         }
     }
@@ -362,7 +395,7 @@ impl App {
     fn on_release(&mut self) {
         let Some(press) = self.press.take() else { return };
         self.drag = false;
-        if press.moved {
+        if press.dist > CLICK_SLOP {
             return; // it was a drag, not a click
         }
         match press.target {
@@ -437,7 +470,13 @@ impl SeatHandler for App {
     fn new_capability(&mut self, _c: &Connection, qh: &QueueHandle<Self>, seat: wl_seat::WlSeat, capability: Capability) {
         if capability == Capability::Pointer && self.pointer.is_none() {
             match self.seat_state.get_pointer(qh, &seat) {
-                Ok(pointer) => self.pointer = Some(pointer),
+                Ok(pointer) => {
+                    if let Some(manager) = &self.relative_manager {
+                        self.relative_pointer =
+                            Some(manager.get_relative_pointer(&pointer, qh, ()));
+                    }
+                    self.pointer = Some(pointer);
+                }
                 Err(err) => eprintln!("[bb-desktop-body] could not get pointer: {err}"),
             }
         }
@@ -470,8 +509,9 @@ impl PointerHandler for App {
             let (px, py) = event.position;
             match event.kind {
                 PointerEventKind::Press { .. } => self.on_press(px, py),
-                PointerEventKind::Motion { .. } => self.on_motion(px, py),
                 PointerEventKind::Release { .. } => self.on_release(),
+                // Dragging is driven by wp_relative_pointer deltas, not these
+                // surface-local positions (which move with the surface frame).
                 _ => {}
             }
         }
@@ -498,6 +538,33 @@ impl ProvidesRegistryState for App {
         &mut self.registry_state
     }
     registry_handlers![OutputState, SeatState];
+}
+
+impl Dispatch<ZwpRelativePointerManagerV1, ()> for App {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwpRelativePointerManagerV1,
+        _event: <ZwpRelativePointerManagerV1 as Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<ZwpRelativePointerV1, ()> for App {
+    fn event(
+        state: &mut Self,
+        _proxy: &ZwpRelativePointerV1,
+        event: <ZwpRelativePointerV1 as Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        if let RelativePointerEvent::RelativeMotion { dx, dy, .. } = event {
+            state.on_drag_delta(dx, dy);
+        }
+    }
 }
 
 delegate_compositor!(App);

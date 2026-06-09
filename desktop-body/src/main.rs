@@ -1,31 +1,31 @@
-//! Border Agents desktop presence body — wlr-layer-shell spike.
+//! Border Agents desktop presence body — animated body (build-order step 3).
 //!
-//! Build-order step 2 from docs/OVERLAY_POSTMORTEM_AND_REBUILD_PLAN.md. This is a
-//! deliberately small, standalone binary that de-risks the entire desktop plan by
-//! proving — on the real COSMIC/Wayland/NVIDIA machine — the things the dead
-//! transparent-WebKitGTK stack could never do:
+//! Step 2 proved a per-buddy surface on the wlr overlay layer with pixel-exact
+//! anchor+margin placement, margin-update dragging, click-through input regions,
+//! and chosen-output placement (see git history / README). Step 3 turns that
+//! static sprite into an *animated body*: a time-driven face (idle bob, blink,
+//! emotion-driven eyes/mouth), a real text speech bubble, and an expanding menu
+//! card — all software-rendered (tiny-skia + fontdue), still no GTK/WebKit/GPU.
 //!
-//!   1. A surface on the wlr **overlay layer**, above all normal windows.
-//!   2. **Pixel-exact placement** via anchor + margin — the capability native
-//!      Wayland denies to normal toplevels (this was Symptom B: per-buddy windows
-//!      all stacked at the compositor default and ignored set_position).
-//!   3. **Dragging as margin updates** (a compositor texture move), not a native
-//!      window move.
-//!   4. **Click-through** via a per-pixel input region: clicks outside the buddy
-//!      silhouette pass through to whatever is underneath.
-//!   5. **Chosen-output placement** (second monitor) via BB_OUTPUT_INDEX.
+//! The presentation state (emotion / speech / menu) is exposed through a small
+//! internal API (`set_emotion`, `say`, `toggle_menu`) so step 4 can drive it from
+//! presence-protocol events over the WebSocket. Until then, clicking the buddy
+//! exercises it locally: click toggles the menu + a greeting; "Say hello" and
+//! "Cycle mood" menu items change speech and emotion.
 //!
-//! Ghosting (Symptom A) is structurally impossible here: a per-buddy surface that
-//! moves has no vacated pixels to repaint — the compositor just relocates its
-//! texture. Rendering is plain software `wl_shm` (no GTK, no WebKit, no GPU); the
-//! animated/skeletal renderer is step 3, this only needs a static sprite.
-//!
-//! Run:  cargo run --release          # primary output, top-left
-//!       BB_OUTPUT_INDEX=1 cargo run   # second monitor
+//! Run:  cargo run --release            # active output, top-left
+//!       BB_OUTPUT_INDEX=1 cargo run     # second monitor
 //!       BB_MARGIN_LEFT=400 BB_MARGIN_TOP=200 cargo run
-//! Drag the buddy with the left mouse button. Ctrl+C (or close from the
-//! compositor) to exit.
+//! Drag the buddy head with the left button. Ctrl+C / close to exit.
 
+mod render;
+
+use std::time::{Duration, Instant};
+
+use calloop::timer::{TimeoutAction, Timer};
+use calloop::{EventLoop, LoopSignal};
+use calloop_wayland_source::WaylandSource;
+use render::{BodyView, Emotion, Sprite};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, Region},
     delegate_compositor, delegate_layer, delegate_output, delegate_pointer, delegate_registry,
@@ -52,13 +52,7 @@ use smithay_client_toolkit::reexports::client::{
     Connection, QueueHandle,
 };
 
-const SURFACE_WIDTH: u32 = 200;
-const SURFACE_HEIGHT: u32 = 240;
-// The buddy silhouette sits in the upper part of the surface; the rest is a
-// transparent, click-through margin used later for the speech bubble / menu.
-const HEAD_CX: f64 = SURFACE_WIDTH as f64 / 2.0;
-const HEAD_CY: f64 = 86.0;
-const HEAD_R: f64 = 72.0;
+const CLICK_SLOP: f64 = 5.0;
 
 fn env_i32(key: &str, fallback: i32) -> i32 {
     std::env::var(key).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(fallback)
@@ -82,14 +76,22 @@ fn main() {
         shm,
         pool: None,
         compositor,
+        conn: conn.clone(),
         layer: None,
         pointer: None,
-        width: SURFACE_WIDTH,
-        height: SURFACE_HEIGHT,
+        sprite: Sprite::new(),
+        loop_signal: None,
+        width: render::SURFACE_W,
+        height: render::SURFACE_H,
         margin_left: env_i32("BB_MARGIN_LEFT", 48) as f64,
         margin_top: env_i32("BB_MARGIN_TOP", 48) as f64,
-        drag: None,
-        first_configure: true,
+        start: Instant::now(),
+        emotion: Emotion::Neutral,
+        speech: None,
+        menu_open: false,
+        configured: false,
+        press: None,
+        drag: false,
         exit: false,
     };
 
@@ -109,19 +111,6 @@ fn main() {
     layer.set_size(app.width, app.height);
     layer.set_margin(app.margin_top as i32, 0, 0, app.margin_left as i32);
     layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-
-    // Input region = the buddy silhouette only. Everything else in the surface is
-    // transparent AND click-through: pointer events there pass to the window below.
-    if let Ok(region) = Region::new(&app.compositor) {
-        region.add(
-            (HEAD_CX - HEAD_R) as i32,
-            (HEAD_CY - HEAD_R) as i32,
-            (HEAD_R * 2.0) as i32,
-            (HEAD_R * 2.0) as i32,
-        );
-        layer.wl_surface().set_input_region(Some(region.wl_region()));
-    }
-
     layer.commit();
 
     app.pool = Some(
@@ -130,7 +119,7 @@ fn main() {
     app.layer = Some(layer);
 
     eprintln!(
-        "[bb-desktop-body] overlay layer surface up: {}x{} @ margin(L={}, T={}){} — drag the buddy with the left button",
+        "[bb-desktop-body] animated body up: {}x{} @ margin(L={}, T={}){} — drag the head; click for the menu",
         app.width,
         app.height,
         app.margin_left as i32,
@@ -138,15 +127,44 @@ fn main() {
         output_label(&app),
     );
 
-    while !app.exit {
-        event_queue.blocking_dispatch(&mut app).expect("dispatch failed");
+    // calloop multiplexes Wayland input with a 30fps animation timer.
+    let mut event_loop: EventLoop<App> = EventLoop::try_new().expect("event loop");
+    let handle = event_loop.handle();
+    app.loop_signal = Some(event_loop.get_signal());
+    WaylandSource::new(conn, event_queue)
+        .insert(handle.clone())
+        .expect("insert wayland source");
+    handle
+        .insert_source(Timer::immediate(), |_deadline, _meta, app: &mut App| {
+            app.tick();
+            TimeoutAction::ToDuration(Duration::from_millis(33))
+        })
+        .expect("insert timer");
+
+    if let Err(err) = event_loop.run(Some(Duration::from_millis(33)), &mut app, |app| {
+        if app.exit {
+            if let Some(signal) = &app.loop_signal {
+                signal.stop();
+            }
+        }
+    }) {
+        // The compositor dropping the connection is a normal way to exit, not a crash.
+        eprintln!("[bb-desktop-body] event loop ended: {err}");
     }
 }
 
-struct DragState {
-    /// Pointer position within the surface at grab time. Held constant; see draw note.
+struct PressState {
     grab_x: f64,
     grab_y: f64,
+    target: PressTarget,
+    moved: bool,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum PressTarget {
+    Head,
+    MenuItem(usize),
+    Outside,
 }
 
 struct App {
@@ -156,21 +174,29 @@ struct App {
     shm: Shm,
     pool: Option<SlotPool>,
     compositor: CompositorState,
+    conn: Connection,
     layer: Option<LayerSurface>,
     pointer: Option<wl_pointer::WlPointer>,
+    sprite: Sprite,
+    loop_signal: Option<LoopSignal>,
     width: u32,
     height: u32,
     margin_left: f64,
     margin_top: f64,
-    drag: Option<DragState>,
-    first_configure: bool,
+    start: Instant,
+    emotion: Emotion,
+    speech: Option<String>,
+    menu_open: bool,
+    configured: bool,
+    press: Option<PressState>,
+    drag: bool,
     exit: bool,
 }
 
 fn pick_output(app: &App) -> Option<wl_output::WlOutput> {
     let index = env_i32("BB_OUTPUT_INDEX", -1);
     if index < 0 {
-        return None; // let the compositor choose the active output
+        return None;
     }
     app.output_state.outputs().nth(index as usize)
 }
@@ -190,16 +216,31 @@ fn output_label(app: &App) -> String {
 }
 
 impl App {
-    fn draw(&mut self, qh: &QueueHandle<Self>) {
+    fn tick(&mut self) {
+        self.draw();
+        let _ = self.conn.flush();
+    }
+
+    fn draw(&mut self) {
+        if !self.configured {
+            return; // never attach a buffer before the first configure is acked
+        }
         let (Some(pool), Some(layer)) = (self.pool.as_mut(), self.layer.as_ref()) else {
             return;
         };
         let (w, h) = (self.width, self.height);
         let stride = (w * 4) as i32;
 
+        let view = BodyView {
+            t: self.start.elapsed().as_secs_f32(),
+            emotion: self.emotion,
+            speech: self.speech.as_deref(),
+            menu_open: self.menu_open,
+        };
+
         let buffer = match pool.create_buffer(w as i32, h as i32, stride, wl_shm::Format::Argb8888) {
             Ok((buffer, canvas)) => {
-                paint_buddy(canvas, w, h);
+                self.sprite.paint(canvas, &view);
                 buffer
             }
             Err(err) => {
@@ -209,20 +250,15 @@ impl App {
         };
 
         let surface = layer.wl_surface();
-        buffer
-            .attach_to(surface)
-            .expect("failed to attach buffer to surface");
+        buffer.attach_to(surface).expect("attach buffer");
         surface.damage_buffer(0, 0, w as i32, h as i32);
         surface.commit();
-        let _ = qh; // no per-frame callback needed: the sprite is static
     }
 
-    /// Reposition by rewriting anchor margins. This is the whole point of the
-    /// spike: moving a buddy is a margin change (a compositor texture relocation),
-    /// never a buffer repaint — so the ghosting that killed the unified webview
-    /// cannot occur. We add (pointer - grab) using the *live* margin each event,
-    /// which tracks the cursor because the surface frame moves under the pointer
-    /// after each commit (see the on-Motion math).
+    /// Reposition by rewriting anchor margins — a compositor texture move, never a
+    /// repaint, so ghosting cannot occur. Adds (pointer - grab) to the live margin
+    /// each motion; the frame shifts under the pointer after each commit, so this
+    /// tracks the cursor without drift.
     fn reposition(&mut self) {
         if let Some(layer) = self.layer.as_ref() {
             let left = self.margin_left.max(0.0) as i32;
@@ -231,62 +267,133 @@ impl App {
             layer.commit();
         }
     }
-}
 
-/// Paint a static buddy silhouette into a premultiplied-ARGB8888 `wl_shm` canvas.
-/// Transparent background (alpha 0) everywhere outside the head.
-fn paint_buddy(canvas: &mut [u8], w: u32, h: u32) {
-    for pixel in canvas.chunks_exact_mut(4) {
-        pixel.copy_from_slice(&[0, 0, 0, 0]);
+    /// Input region = only the parts that should catch the pointer; everywhere else
+    /// is transparent AND click-through. Recomputed whenever the menu/bubble toggles.
+    fn update_input_region(&mut self) {
+        let Some(layer) = self.layer.as_ref() else { return };
+        let Ok(region) = Region::new(&self.compositor) else { return };
+
+        let mut rects = vec![render::head_rect().as_i32()];
+        if self.speech.is_some() {
+            rects.push(render::BUBBLE.as_i32());
+        }
+        if self.menu_open {
+            rects.push(render::MENU.as_i32());
+        }
+        for (x, y, w, h) in rects {
+            region.add(x, y, w, h);
+        }
+        layer.wl_surface().set_input_region(Some(region.wl_region()));
+        layer.commit();
     }
 
-    let put = |canvas: &mut [u8], x: i32, y: i32, rgba: [u8; 4]| {
-        if x < 0 || y < 0 || x as u32 >= w || y as u32 >= h {
-            return;
-        }
-        let idx = ((y as u32 * w + x as u32) * 4) as usize;
-        // wl_shm Argb8888 byte order is little-endian B, G, R, A; alpha is premultiplied.
-        canvas[idx] = rgba[2];
-        canvas[idx + 1] = rgba[1];
-        canvas[idx + 2] = rgba[0];
-        canvas[idx + 3] = rgba[3];
-    };
+    // --- presentation API (step 4 will call these from presence events) ---
 
-    // Head — filled disc, Hermes blue.
-    let r2 = HEAD_R * HEAD_R;
-    for y in 0..h as i32 {
-        for x in 0..w as i32 {
-            let dx = x as f64 + 0.5 - HEAD_CX;
-            let dy = y as f64 + 0.5 - HEAD_CY;
-            if dx * dx + dy * dy <= r2 {
-                put(canvas, x, y, [0x2f, 0x7d, 0xff, 0xff]);
+    fn set_emotion(&mut self, emotion: Emotion) {
+        self.emotion = emotion;
+    }
+
+    fn say(&mut self, text: impl Into<String>) {
+        self.speech = Some(text.into());
+        self.update_input_region();
+    }
+
+    fn toggle_menu(&mut self) {
+        self.menu_open = !self.menu_open;
+        if self.menu_open {
+            self.speech = Some("Hey — I'm Hermes, living on your desktop now.".to_string());
+        } else {
+            self.speech = None;
+        }
+        self.update_input_region();
+    }
+
+    fn activate_menu_item(&mut self, index: usize) {
+        match index {
+            0 => {
+                self.set_emotion(Emotion::Happy);
+                self.say("Hello there! Good to finally stand on the desktop.");
             }
+            1 => {
+                let next = next_emotion(self.emotion);
+                self.set_emotion(next);
+                self.say(format!("Mood: {}", emotion_name(next)));
+            }
+            _ => {}
         }
     }
 
-    // Eyes — two cyan discs.
-    let eye = |canvas: &mut [u8], cx: f64, cy: f64, rad: f64| {
-        let rr = rad * rad;
-        for y in 0..h as i32 {
-            for x in 0..w as i32 {
-                let dx = x as f64 + 0.5 - cx;
-                let dy = y as f64 + 0.5 - cy;
-                if dx * dx + dy * dy <= rr {
-                    put(canvas, x, y, [0x7d, 0xf9, 0xff, 0xff]);
+    fn on_press(&mut self, x: f64, y: f64) {
+        let target = if render::point_in_head(x, y) {
+            PressTarget::Head
+        } else if self.menu_open {
+            let mut hit = PressTarget::Outside;
+            for i in 0..render::MENU_ITEMS.len() {
+                if render::menu_item_rect(i).contains(x, y) {
+                    hit = PressTarget::MenuItem(i);
+                    break;
                 }
             }
+            hit
+        } else {
+            PressTarget::Outside
+        };
+
+        self.press = Some(PressState { grab_x: x, grab_y: y, target, moved: false });
+        if target == PressTarget::Head {
+            self.drag = true;
         }
-    };
-    eye(canvas, HEAD_CX - 24.0, HEAD_CY - 6.0, 13.0);
-    eye(canvas, HEAD_CX + 24.0, HEAD_CY - 6.0, 13.0);
+    }
+
+    fn on_motion(&mut self, x: f64, y: f64) {
+        let Some(press) = self.press.as_mut() else { return };
+        if !press.moved && (x - press.grab_x).hypot(y - press.grab_y) > CLICK_SLOP {
+            press.moved = true;
+        }
+        if self.drag {
+            let (gx, gy) = (press.grab_x, press.grab_y);
+            self.margin_left += x - gx;
+            self.margin_top += y - gy;
+            self.reposition();
+        }
+    }
+
+    fn on_release(&mut self) {
+        let Some(press) = self.press.take() else { return };
+        self.drag = false;
+        if press.moved {
+            return; // it was a drag, not a click
+        }
+        match press.target {
+            PressTarget::Head => self.toggle_menu(),
+            PressTarget::MenuItem(i) => self.activate_menu_item(i),
+            PressTarget::Outside => {}
+        }
+    }
+}
+
+fn next_emotion(current: Emotion) -> Emotion {
+    let cycle = Emotion::CYCLE;
+    let idx = cycle.iter().position(|e| *e == current).unwrap_or(0);
+    cycle[(idx + 1) % cycle.len()]
+}
+
+fn emotion_name(emotion: Emotion) -> &'static str {
+    match emotion {
+        Emotion::Neutral => "neutral",
+        Emotion::Happy => "happy",
+        Emotion::Thinking => "thinking",
+        Emotion::Curious => "curious",
+        Emotion::Alert => "alert",
+        Emotion::Sleepy => "sleepy",
+    }
 }
 
 impl CompositorHandler for App {
-    fn scale_factor_changed(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _s: &wl_surface::WlSurface, _new: i32) {}
+    fn scale_factor_changed(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _s: &wl_surface::WlSurface, _n: i32) {}
     fn transform_changed(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _s: &wl_surface::WlSurface, _t: wl_output::Transform) {}
-    fn frame(&mut self, _c: &Connection, qh: &QueueHandle<Self>, _s: &wl_surface::WlSurface, _time: u32) {
-        self.draw(qh);
-    }
+    fn frame(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _s: &wl_surface::WlSurface, _time: u32) {}
     fn surface_enter(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _s: &wl_surface::WlSurface, _o: &wl_output::WlOutput) {}
     fn surface_leave(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _s: &wl_surface::WlSurface, _o: &wl_output::WlOutput) {}
 }
@@ -294,12 +401,15 @@ impl CompositorHandler for App {
 impl LayerShellHandler for App {
     fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _layer: &LayerSurface) {
         self.exit = true;
+        if let Some(signal) = &self.loop_signal {
+            signal.stop();
+        }
     }
 
     fn configure(
         &mut self,
         _conn: &Connection,
-        qh: &QueueHandle<Self>,
+        _qh: &QueueHandle<Self>,
         _layer: &LayerSurface,
         configure: LayerSurfaceConfigure,
         _serial: u32,
@@ -310,10 +420,12 @@ impl LayerShellHandler for App {
         if configure.new_size.1 != 0 {
             self.height = configure.new_size.1;
         }
-        if self.first_configure {
-            self.first_configure = false;
+        let first = !self.configured;
+        self.configured = true;
+        if first {
+            self.update_input_region();
         }
-        self.draw(qh);
+        self.draw();
     }
 }
 
@@ -348,35 +460,18 @@ impl PointerHandler for App {
         _pointer: &wl_pointer::WlPointer,
         events: &[PointerEvent],
     ) {
-        let on_surface = self
-            .layer
-            .as_ref()
-            .map(|l| l.wl_surface().clone());
-        let Some(surface) = on_surface else { return };
-
+        let Some(surface) = self.layer.as_ref().map(|l| l.wl_surface().clone()) else {
+            return;
+        };
         for event in events {
-            if &event.surface != &surface {
+            if event.surface != surface {
                 continue;
             }
             let (px, py) = event.position;
             match event.kind {
-                PointerEventKind::Press { .. } => {
-                    self.drag = Some(DragState { grab_x: px, grab_y: py });
-                }
-                PointerEventKind::Release { .. } => {
-                    self.drag = None;
-                }
-                PointerEventKind::Motion { .. } => {
-                    if let Some(drag) = self.drag.as_ref() {
-                        // Live-margin tracking: add (pointer - grab) to the current
-                        // margin. The surface frame shifts under the pointer after
-                        // each commit, so the next event's local position already
-                        // reflects the move — this tracks the cursor without drift.
-                        self.margin_left += px - drag.grab_x;
-                        self.margin_top += py - drag.grab_y;
-                        self.reposition();
-                    }
-                }
+                PointerEventKind::Press { .. } => self.on_press(px, py),
+                PointerEventKind::Motion { .. } => self.on_motion(px, py),
+                PointerEventKind::Release { .. } => self.on_release(),
                 _ => {}
             }
         }

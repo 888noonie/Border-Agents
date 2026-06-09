@@ -1,11 +1,17 @@
-# bb-desktop-body — wlr-layer-shell spike
+# bb-desktop-body — native desktop presence body
 
-Build-order **step 2** from [docs/OVERLAY_POSTMORTEM_AND_REBUILD_PLAN.md](../docs/OVERLAY_POSTMORTEM_AND_REBUILD_PLAN.md).
+Build-order **steps 2–3** from [docs/OVERLAY_POSTMORTEM_AND_REBUILD_PLAN.md](../docs/OVERLAY_POSTMORTEM_AND_REBUILD_PLAN.md).
 
 A small, standalone Rust binary that de-risks the whole desktop-body plan by proving,
 on the real COSMIC/Wayland/NVIDIA machine, the capabilities the dead transparent-WebKitGTK
 stack could never deliver. It talks Wayland directly via `smithay-client-toolkit` and renders
-with software `wl_shm` — **no GTK, no WebKit, no GPU**.
+with software `wl_shm` (tiny-skia + fontdue) — **no GTK, no WebKit, no GPU**.
+
+- **Step 2 (spike):** a static sprite on the overlay layer — placement, drag, click-through, output.
+- **Step 3 (animated body):** a time-driven face (idle bob, blink, emotion-driven eyes/mouth),
+  a real text **speech bubble**, and an expanding **menu card**. A `calloop` 30fps timer drives
+  animation alongside Wayland input. The presentation state (`set_emotion` / `say` / `toggle_menu`)
+  is the seam step 4 wires to presence-protocol events over the WebSocket.
 
 ## What it proves
 
@@ -28,18 +34,21 @@ BB_OUTPUT_INDEX=1 cargo run               # second monitor
 BB_MARGIN_LEFT=400 BB_MARGIN_TOP=200 cargo run
 ```
 
-Drag the blue buddy head with the **left mouse button**. Clicks in the transparent lower
-region of the surface should fall through to the window beneath. Ctrl+C (or close from the
-compositor) to exit.
+**Drag** the blue buddy head with the left button. **Click** the head to open the menu +
+greeting bubble; the menu items change the buddy's speech and cycle its mood. Clicks in the
+transparent areas fall through to the window beneath. Ctrl+C (or close from the compositor) to exit.
 
 ## What to look for (manual verification)
 
-- The buddy appears **above** other windows and stays there.
+- The buddy appears **above** other windows and stays there, gently bobbing and blinking.
 - Dragging moves it smoothly and leaves **no trails** behind (the whole point).
+- Clicking opens a **speech bubble with readable text** and a **menu card**; "Cycle mood"
+  visibly changes the eyes/mouth.
 - It can be placed on a second monitor with `BB_OUTPUT_INDEX`.
 
-## Next (step 3)
+## Next (step 4 — wire the soul)
 
-Replace the static `paint_buddy` sprite with the animated body — sprite/Rive animation,
-speech bubble, expanding menu card — and wire it to the presence protocol (`src/presenceProtocol.ts`)
-so the soul drives it over the WebSocket.
+Add a presence-protocol WebSocket client: feed inbound `express` / `say` / `move_to` / `hydrate`
+events into `set_emotion` / `say` / margin updates, and emit `clicked` / `grabbed` / `dragged` /
+`dropped` / `summoned` / `dismissed` back to the gateway — the same protocol the browser body
+already speaks (`src/presenceProtocol.ts`).

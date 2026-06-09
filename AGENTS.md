@@ -131,3 +131,59 @@ Every PR should answer:
 2. What trust decision does it make inspectable?
 3. What receipt does it produce?
 4. What tests prove it?
+
+## Cursor Cloud specific instructions
+
+### Services
+
+| Service | Command | Port |
+|---------|---------|------|
+| Vite dev server | `npm run dev` | `http://127.0.0.1:1420` |
+| Hermes gateway | `npm run gateway:dev` | `ws://127.0.0.1:17387/border-buddies` |
+| Full desktop stack | `bash scripts/bb-start.sh` | starts gateway + `tauri dev` (Vite on 1420) |
+
+Do not run `npm run dev` and `npm run desktop:dev` at the same time — Tauri's `beforeDevCommand` also starts Vite on port 1420.
+
+### One-time Linux desktop prerequisites
+
+Tauri on Linux needs system packages (already installed in the Cloud VM image):
+
+```bash
+sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev patchelf
+```
+
+Rust must be **stable ≥ 1.85** (dependency `serde_spanned` requires edition 2024). In this VM, Rust lives under `/usr/local/cargo` (not `~/.cargo`):
+
+```bash
+source /usr/local/cargo/env
+rustup update stable
+```
+
+`scripts/bb-start.sh` sources `$HOME/.cargo/env`; use `/usr/local/cargo/env` here if desktop start fails with "cargo not found".
+
+### Verify / lint
+
+There is no ESLint config and no `npm test` script yet (vitest is listed but unwired). Use:
+
+```bash
+npm run build          # tsc + vite production build
+source /usr/local/cargo/env && cd src-tauri && cargo check   # Rust/Tauri compile check
+```
+
+### Quick smoke test (no GUI)
+
+With the gateway running, echo chat over WebSocket:
+
+```bash
+node --input-type=module -e "
+import WebSocket from 'ws';
+const ws = new WebSocket('ws://127.0.0.1:17387/border-buddies');
+ws.on('open', () => ws.send(JSON.stringify({ type: 'chat', buddy: 'hermes', text: 'ping', requestId: '1' })));
+ws.on('message', d => { console.log(d.toString()); ws.close(); });
+"
+```
+
+### Browser vs desktop
+
+- **Browser preview** (`npm run dev` + open `http://127.0.0.1:1420`): fastest for UI and Hermes chat; needs the gateway for chat.
+- **Desktop overlay** (`npm run desktop:dev` or `bb-start.sh`): requires `DISPLAY`, GTK/WebKit deps, and Rust; exercises Linux hitbox shaping in `src-tauri/`.

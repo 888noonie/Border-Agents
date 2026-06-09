@@ -111,17 +111,25 @@ fn main() {
         exit: false,
     };
 
-    // Let outputs arrive so we can honor BB_OUTPUT_INDEX before creating the surface.
+    // Let outputs (and their xdg-output logical size) arrive before we create the
+    // surface. Two roundtrips: the first binds wl_output, the second delivers the
+    // logical-size / mode events we clamp against.
     event_queue.roundtrip(&mut app).expect("initial roundtrip failed");
+    event_queue.roundtrip(&mut app).expect("second roundtrip failed");
 
     let output = pick_output(&app);
-    // Remember the target output's size so a drag can be clamped on-screen.
+    // Remember the target output's size so a drag can be clamped on-screen. Prefer
+    // the xdg logical size; fall back to the current mode if logical size is absent.
     app.screen = output
         .clone()
         .or_else(|| app.output_state.outputs().next())
         .and_then(|o| app.output_state.info(&o))
-        .and_then(|i| i.logical_size)
+        .and_then(|info| {
+            info.logical_size
+                .or_else(|| info.modes.iter().find(|m| m.current).map(|m| m.dimensions))
+        })
         .map(|(w, h)| (w as f64, h as f64));
+    eprintln!("[bb-desktop-body] screen bounds for clamping: {:?}", app.screen);
     let surface = app.compositor.create_surface(&qh);
     let layer = layer_shell.create_layer_surface(
         &qh,

@@ -106,6 +106,56 @@
       },
       "problemMatcher": [],
       "detail": "Browser-only Vite preview (no Tauri overlay)"
+    },
+    {
+      "label": "BB body start",
+      "type": "shell",
+      "command": "cargo run --release",
+      "options": {
+        "cwd": "${workspaceFolder}/desktop-body"
+      },
+      "group": "none",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true,
+        "focus": true
+      },
+      "problemMatcher": ["$rustc"],
+      "detail": "Build + run the native desktop presence body (animated buddy on the wlr overlay layer)"
+    },
+    {
+      "label": "BB body stop",
+      "type": "shell",
+      "command": "pkill -x bb-desktop-body || echo 'no desktop body running'",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "group": "none",
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "clear": true
+      },
+      "problemMatcher": [],
+      "detail": "Stop the desktop presence body"
+    },
+    {
+      "label": "BB body restart",
+      "type": "shell",
+      "command": "pkill -x bb-desktop-body; sleep 0.5; cargo run --release",
+      "options": {
+        "cwd": "${workspaceFolder}/desktop-body"
+      },
+      "group": "none",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true,
+        "focus": true
+      },
+      "problemMatcher": ["$rustc"],
+      "detail": "Stop, then rebuild + run the latest desktop presence body"
     }
   ]
 }

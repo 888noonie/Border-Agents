@@ -131,3 +131,49 @@ Every PR should answer:
 2. What trust decision does it make inspectable?
 3. What receipt does it produce?
 4. What tests prove it?
+
+## Cursor Cloud specific instructions
+
+### Stack and services
+
+| Service | Port / URL | Start command |
+|--------|------------|---------------|
+| Vite dev server (React UI) | `http://127.0.0.1:1420` | `npm run dev` |
+| Hermes dev gateway (WebSocket) | `ws://127.0.0.1:17387/border-buddies` | `HERMES_PROVIDER=echo npm run gateway:dev` |
+| Full desktop overlay (Tauri) | loads UI from `:1420` | `bash scripts/bb-start.sh` or `npm run desktop:dev` |
+
+For browser-only development, run Vite and the gateway in separate terminals (or tmux sessions). For the full desktop overlay, use `bash scripts/bb-start.sh`, which starts the gateway then `tauri dev`.
+
+### Lint, build, and tests
+
+- **Typecheck + production build:** `npm run build` (`tsc && vite build`)
+- **Rust/Tauri compile check:** `cd src-tauri && cargo check` (requires Rust ≥ 1.96 and Linux GTK deps below)
+- **Lint:** no ESLint script is wired in `package.json` yet
+- **Automated tests:** vitest is a devDependency but no `npm test` script exists yet
+
+### Linux desktop prerequisites (Tauri)
+
+Tauri v2 on Linux needs WebKit2GTK 4.1 and GTK 3 dev packages (one-time VM/image setup, not in the update script):
+
+```bash
+sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev build-essential \
+  libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev pkg-config
+```
+
+Ensure `rustc` ≥ 1.96 is on `PATH` (`rustup default stable`). The repo's Tauri crate graph requires Cargo edition 2024 support.
+
+### Gateway echo mode (no API keys)
+
+Copy `.env.example` to `.env` only when using a real LLM provider. For local dev without credentials, set `HERMES_PROVIDER=echo` so the gateway echoes chat messages back.
+
+### Hello-world verification
+
+1. `npm run dev` → open `http://127.0.0.1:1420` and confirm buddy characters render.
+2. `HERMES_PROVIDER=echo npm run gateway:dev` → send a WebSocket `hello` + `chat` to `ws://127.0.0.1:17387/border-buddies`; expect a `chat_reply` echo.
+3. In the UI, open Hermes chat and send a message; status should show gateway ready and replies should echo.
+
+### Gotchas
+
+- `BorderDock` imports Tauri APIs; in a plain browser preview, Tauri calls fail gracefully but some desktop-only features (hitboxes, always-on-top) are unavailable.
+- Do not run `npm run dev` and `npm run desktop:dev` on the same port without stopping one first — both target port `1420`.
+- `scripts/bb-stop.sh` / `npm run desktop:stop` stops desktop-related processes; gateway may need a manual kill if started separately.

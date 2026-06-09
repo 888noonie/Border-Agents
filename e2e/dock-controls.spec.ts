@@ -24,9 +24,9 @@ test.describe('Dock controls', () => {
 
     await expect(page.getByLabel('Dock adjustment controls')).toBeVisible();
     await expect(page.getByRole('button', { name: /Cycle dock render mode/i })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Enter fullscreen' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Move dock controls' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Centre dock controls' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Resize overlay window' })).toBeVisible();
     await expect(page.getByRole('button', { name: /Pass through/i })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Hide dock' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Fit buddies to border' })).toBeVisible();

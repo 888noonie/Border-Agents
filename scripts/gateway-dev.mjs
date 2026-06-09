@@ -112,6 +112,26 @@ async function askHermes(text) {
   return reply.trim();
 }
 
+function buildGatewayPrompt(message) {
+  const userText = String(message?.text ?? "").trim();
+  const context = typeof message?.context === "string" ? message.context.trim() : "";
+  const purpose = typeof message?.purpose === "string" ? message.purpose.trim() : "";
+
+  if (!context) {
+    return userText;
+  }
+
+  const sections = [
+    purpose ? `Purpose: ${purpose}` : "",
+    "[Authorized context]",
+    context,
+    "[User request]",
+    userText,
+  ].filter(Boolean);
+
+  return sections.join("\n\n");
+}
+
 process.on("uncaughtException", (error) => {
   logError("uncaught exception", error);
   process.exit(1);
@@ -180,7 +200,7 @@ wss.on("connection", (socket, request) => {
     if (message?.type === "chat" && message.buddy === "hermes") {
       void (async () => {
         try {
-          const reply = await askHermes(message.text);
+          const reply = await askHermes(buildGatewayPrompt(message));
 
           socket.send(
             JSON.stringify({
@@ -194,6 +214,8 @@ wss.on("connection", (socket, request) => {
             source,
             buddy: "hermes",
             provider: HERMES_PROVIDER,
+            purpose: message.purpose ?? null,
+            hasContext: typeof message.context === "string" && message.context.trim().length > 0,
             requestId: message.requestId,
           });
         } catch (error) {

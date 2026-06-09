@@ -32,6 +32,16 @@ import {
   normalizeGatewaySettings,
   type GatewaySettings,
 } from "../src/gatewaySettings";
+import {
+  type BuddyGovernanceSnapshot,
+} from "../src/liveGovernance";
+import { buildGovernanceSurfaceCopy } from "../src/governanceSurfaceCopy";
+import {
+  appendSnapshotToReceiptLedger,
+  readReceiptLedger,
+  summarizeReceiptLedger,
+  type ReceiptLedgerSummary,
+} from "../src/receiptLedger";
 import { connectionLabelForState, useBuddyGateway } from "../src/useBuddyGateway";
 import { TrustWorkbenchPreview } from "./trust-workbench/TrustWorkbenchPreview";
 import { BuddySurface, type BuddySurfaceHandle } from "./buddy/BuddySurface";
@@ -127,8 +137,10 @@ function useDockHitboxRegistry(
   const boxesByBuddy = useRef<Map<string, Hitbox[]>>(new Map());
   const chromeNodeRef = useRef<HTMLDivElement | null>(null);
   const passBannerNodeRef = useRef<HTMLDivElement | null>(null);
+  const permanentPillsNodeRef = useRef<HTMLDivElement | null>(null);
   const [chromeNode, setChromeNode] = useState<HTMLDivElement | null>(null);
   const [passBannerNode, setPassBannerNode] = useState<HTMLDivElement | null>(null);
+  const [permanentPillsNode, setPermanentPillsNode] = useState<HTMLDivElement | null>(null);
   const { setHitboxes, hasHitboxFailures } = useBuddyHitbox(overlayDragActiveRef);
 
   const controlsRef = useCallback((node: HTMLDivElement | null) => {
@@ -139,6 +151,11 @@ function useDockHitboxRegistry(
   const passBannerRef = useCallback((node: HTMLDivElement | null) => {
     passBannerNodeRef.current = node;
     setPassBannerNode(node);
+  }, []);
+
+  const permanentPillsRef = useCallback((node: HTMLDivElement | null) => {
+    permanentPillsNodeRef.current = node;
+    setPermanentPillsNode(node);
   }, []);
 
   const flushHitboxes = useCallback(() => {
@@ -168,6 +185,22 @@ function useDockHitboxRegistry(
         w: Math.round(rect.width),
         h: Math.round(rect.height),
       });
+    }
+
+    const permanentPills = permanentPillsNodeRef.current;
+    if (permanentPills) {
+      const buttons = Array.from(permanentPills.querySelectorAll("button"));
+      const targets: Element[] = buttons.length > 0 ? buttons : [permanentPills];
+
+      for (const target of targets) {
+        const rect = target.getBoundingClientRect();
+        boxes.push({
+          x: Math.round(rect.left),
+          y: Math.round(rect.top),
+          w: Math.round(rect.width),
+          h: Math.round(rect.height),
+        });
+      }
     }
 
     setHitboxes(boxes);
@@ -238,9 +271,28 @@ function useDockHitboxRegistry(
     };
   }, [flushHitboxes, passBannerNode]);
 
+  useEffect(() => {
+    if (!permanentPillsNode || typeof ResizeObserver === "undefined") {
+      return;
+    }
+
+    flushHitboxes();
+
+    const observer = new ResizeObserver(() => {
+      flushHitboxes();
+    });
+
+    observer.observe(permanentPillsNode);
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [flushHitboxes, permanentPillsNode]);
+
   return {
     controlsRef,
     passBannerRef,
+    permanentPillsRef,
     reportHitboxes,
     clearBuddyHitboxes,
     clearAllHitboxes,
@@ -252,7 +304,7 @@ function useDockHitboxRegistry(
 function isBrowserPreviewSurface() {
   try {
     const label = getCurrentWebviewWindow().label;
-    return label !== "border-dock" && !label.startsWith("buddy-");
+    return label !== "border-dock" && label !== "dock-chrome" && !label.startsWith("buddy-");
   } catch {
     return true;
   }
@@ -377,29 +429,14 @@ const PLACEMENT_STORAGE_KEY = "border-buddies:placements:v4";
 const SETTINGS_STORAGE_KEY = "border-buddies:settings:v2";
 const DOCK_CHROME_STORAGE_KEY = "border-agents:dock-chrome:v1";
 const HIDDEN_NATIVE_WINDOW_ID = "__native_hidden__";
+// Sentinel used when running inside the dedicated dock-chrome overlay window
+// (NVIDIA per-buddy mode). Triggers chrome-only render, no buddy hotspots.
+const DOCK_CHROME_WINDOW_ID = "__dock_chrome__";
 const DEFAULT_BORDER_BUDDY_ID = "hermes";
 const PASS_THROUGH_SHORTCUT = "CommandOrControl+Alt+B";
 const DOCK_COLLAPSE_SHORTCUT = "CommandOrControl+Alt+H";
 const FULL_RENDER_MODE: DockRenderMode = "head+bubble";
 
-/**
- * Hermes dock ticker content.
- * These represent "outstanding" information / announcements surfaced on the right edge.
- * For now demo data; will be wired to real governance state (pending interventions,
- * receipt warnings, graded memory counts, update announcements, etc.).
- */
-const HERMES_TICKER_MESSAGES = [
-  "Hermes: Human Intervention Required (current task 82%)",
-  "Veritas: 4 receipt warnings",
-  "Nexus: 7 memory packets graded for current purpose",
-  "Forge: 1 action review pending",
-  "Adjust: chrome position + layout persisted",
-] as const;
-
-const HERMES_TICKER_SEGMENTS = [
-  HERMES_TICKER_MESSAGES.join("   •   "),
-  HERMES_TICKER_MESSAGES.join("   •   "),
-];
 const IDLE_FADE_DELAY = 5600;
 const IDLE_CLICK_THROUGH_PULSE = 900;
 const DOCK_SLOTS_BY_EDGE: Record<Edge, number[]> = {
@@ -539,6 +576,10 @@ export function BrowserBuddyDock() {
     initialUserModeState.modes[initialUserModeState.activeMode].gateway,
   );
   const [buddyMessages, setBuddyMessages] = useState<Record<string, string>>({});
+  const [governanceSnapshots, setGovernanceSnapshots] = useState<Record<string, BuddyGovernanceSnapshot | null>>({});
+  const [ledgerSummary, setLedgerSummary] = useState<ReceiptLedgerSummary>(() =>
+    summarizeReceiptLedger(readReceiptLedger()),
+  );
   const placementsRef = useRef<AgentPlacements>(placements);
   const dragStartedAtRef = useRef<number | null>(null);
   const overlayDragActiveRef = useRef(false);
@@ -585,6 +626,7 @@ export function BrowserBuddyDock() {
   );
   const resolvingWindowBuddy = windowBuddyId === undefined;
   const hiddenNativeWindow = windowBuddyId === HIDDEN_NATIVE_WINDOW_ID;
+  const dockChromeWindow = windowBuddyId === DOCK_CHROME_WINDOW_ID;
   const perBuddyWindow = Boolean(windowBuddy);
   const unifiedDock = !perBuddyWindow;
   const dockCollapsed = unifiedDock && dockSettings.collapsed;
@@ -611,8 +653,8 @@ export function BrowserBuddyDock() {
   }, [browserPreview, unifiedDock]);
   const effectiveRenderMode = unifiedDock ? dockRenderMode : FULL_RENDER_MODE;
   const passThroughAvailable = !nativeUnifiedDock;
-  const gatewayEnabled = nativeUnifiedDock || browserPreview;
-  const gatewaySource = browserPreview ? "browser-preview" : "border-dock";
+  const gatewayEnabled = !dockChromeWindow && (nativeUnifiedDock || perBuddyWindow || browserPreview);
+  const gatewaySource = browserPreview ? "browser-preview" : perBuddyWindow ? "buddy-window" : "border-dock";
   const gateway = useBuddyGateway({
     settings: gatewaySettings,
     source: gatewaySource,
@@ -625,6 +667,19 @@ export function BrowserBuddyDock() {
       setActiveAgentId(buddyId);
     },
   });
+  const activeGovernanceSnapshot = useMemo(() => governanceSnapshots.hermes ?? null, [governanceSnapshots]);
+  const governanceSurfaceCopy = useMemo(
+    () =>
+      buildGovernanceSurfaceCopy({
+        snapshot: activeGovernanceSnapshot,
+        ledgerSummary,
+      }),
+    [activeGovernanceSnapshot, ledgerSummary],
+  );
+  const governanceTickerSegments = useMemo(() => {
+    const segment = governanceSurfaceCopy.tickerMessages.join("   •   ");
+    return [segment, segment];
+  }, [governanceSurfaceCopy.tickerMessages]);
   const windowBuddyPlacement = windowBuddy
     ? placements[windowBuddy.id] ?? defaultPlacements[windowBuddy.id]
     : null;
@@ -671,7 +726,7 @@ export function BrowserBuddyDock() {
     let mounted = true;
 
     async function configureWindow() {
-      if (resolvingWindowBuddy || hiddenNativeWindow) {
+      if (resolvingWindowBuddy || hiddenNativeWindow || dockChromeWindow) {
         return;
       }
 
@@ -728,6 +783,7 @@ export function BrowserBuddyDock() {
   }, [
     multiMonitor,
     hiddenNativeWindow,
+    dockChromeWindow,
     resolvingWindowBuddy,
     windowBuddy,
     windowBuddyPlacement?.edge,
@@ -737,12 +793,12 @@ export function BrowserBuddyDock() {
   ]);
 
   useEffect(() => {
-    if (browserPreview) {
+    if (browserPreview || dockChromeWindow) {
       return;
     }
 
     void getCurrentWindow().setFullscreen(dockSettings.fullscreen).catch(() => {});
-  }, [browserPreview, dockSettings.fullscreen]);
+  }, [browserPreview, dockChromeWindow, dockSettings.fullscreen]);
 
   useEffect(() => {
     localStorage.setItem(PLACEMENT_STORAGE_KEY, JSON.stringify(placements));
@@ -1154,30 +1210,20 @@ export function BrowserBuddyDock() {
     };
   }, [nativeUnifiedDock, recallBuddiesToBorder]);
 
-  // In native border mode, periodically force all visible head hitboxes to be
-  // re-measured and re-reported. This is the most reliable way to keep the
-  // minimal clickable regions for the buddies on the edge alive when no chat
-  // surface is open. The individual hotspots depend on headForceKey in their
-  // measurement effect.
+  // Native transparent windows can leave visual trails when the whole overlay
+  // is re-rendered repeatedly. Do one delayed head measurement after startup
+  // and let explicit layout/resize/placement changes handle the rest.
   useEffect(() => {
     if (!nativeUnifiedDock || dockCollapsed) {
       return;
     }
 
-    const id = window.setInterval(() => {
-      setHeadForceKey((k) => k + 1);
-      // Also nudge a flush in case only chrome changed.
-      refreshChromeHitboxes();
-    }, 650);
-
-    // Initial force shortly after mount.
     const initial = window.setTimeout(() => setHeadForceKey((k) => k + 1), 120);
 
     return () => {
-      clearInterval(id);
       clearTimeout(initial);
     };
-  }, [nativeUnifiedDock, dockCollapsed, refreshChromeHitboxes]);
+  }, [nativeUnifiedDock, dockCollapsed]);
 
   useEffect(() => {
     async function registerDockShortcuts() {
@@ -1360,6 +1406,7 @@ export function BrowserBuddyDock() {
             // Browser previews and unsupported window managers keep the free placement.
           } finally {
             setDraggingAgentId(null);
+            void invoke("repaint_overlay_window").catch(() => {});
           }
         }, 240);
       })
@@ -1767,7 +1814,9 @@ export function BrowserBuddyDock() {
     }));
 
     if (perBuddyWindow) {
-      startNativeBuddyDrag(buddyId, currentPlacement.edge, windowBuddyBubbleVisible);
+      window.requestAnimationFrame(() => {
+        void invoke("repaint_overlay_window").catch(() => {});
+      });
     }
   }
 
@@ -1797,12 +1846,61 @@ export function BrowserBuddyDock() {
     return null;
   }
 
+  if (dockChromeWindow) {
+    return (
+      <main
+        className="border-dock border-dock--dock-chrome-window border-dock--native"
+        data-window-buddy="dock-chrome"
+        aria-label="Border Buddies dock controls"
+      >
+        <DockChrome
+          activeUserMode={activeUserMode}
+          clickThrough={false}
+          collapsed={false}
+          controlsRef={setDockChromeNode}
+          chromePlacement={null}
+          dockPinned
+          onCollapseToggle={() =>
+            setDockSettings((current) => ({
+              ...current,
+              collapsed: !current.collapsed,
+            }))
+          }
+          onCycleRenderMode={() =>
+            setDockSettings((current) => ({
+              ...current,
+              renderMode: cycleDockRenderMode(current.renderMode),
+            }))
+          }
+          fullscreen={false}
+          onToggleFullscreen={() => {}}
+          onBeginOverlayDrag={beginOverlayWindowDrag}
+          onBeginChromeDrag={startDockChromeDrag}
+          onResetChromePlacement={resetDockChromePlacement}
+          onBeginOverlayResize={() => {}}
+          onRecall={() => void recallBuddiesToBorder()}
+          onRecover={() => performSelfHeal({ panic: true })}
+          passThroughAvailable={false}
+          onToggleClickThrough={() => {}}
+          fullInputCapture={false}
+          onToggleFullInputCapture={() => {}}
+          healReport={healReport}
+          tickerSegments={governanceTickerSegments}
+          onUserModeChange={switchUserMode}
+          renderMode={effectiveRenderMode}
+          nativeUnifiedDock={false}
+        />
+      </main>
+    );
+  }
+
   return (
     <main
       className={[
         "border-dock",
         perBuddyWindow ? "border-dock--per-buddy" : "border-dock--unified",
         browserPreview ? "border-dock--preview" : "",
+        nativeUnifiedDock || perBuddyWindow ? "border-dock--native" : "",
         unifiedDock ? `border-dock--render-${effectiveRenderMode.replace("+", "-plus-")}` : "",
         dockCollapsed ? "border-dock--collapsed" : "",
         idle && !fullInputCapture && !dockPinned ? "border-dock--idle" : "",
@@ -1829,7 +1927,7 @@ export function BrowserBuddyDock() {
     >
       {clickThrough ? (
         <div className="dock-pass-banner" ref={passBannerRef} role="status">
-          <span>Pass-through on — Hermes is not clickable.</span>
+          <span>{governanceSurfaceCopy.passThroughMessage}</span>
           <button type="button" onClick={() => setClickThroughMode(false)}>
             Catch (resume clicks)
           </button>
@@ -1877,6 +1975,7 @@ export function BrowserBuddyDock() {
               setFullInputCapture((enabled) => !enabled);
             }}
             healReport={healReport}
+            tickerSegments={governanceTickerSegments}
             onUserModeChange={switchUserMode}
             renderMode={effectiveRenderMode}
             nativeUnifiedDock={nativeUnifiedDock}
@@ -1891,7 +1990,10 @@ export function BrowserBuddyDock() {
                 <BuddyHotspot
                   buddy={{
                     ...buddy,
-                    message: buddyMessages[buddy.id] ?? buddy.message,
+                    message:
+                      buddyMessages[buddy.id] ??
+                      governanceSurfaceCopy.buddyMessages?.[buddy.id as keyof NonNullable<typeof governanceSurfaceCopy.buddyMessages>] ??
+                      buddy.message,
                   }}
                   active={buddy.id === activeAgentId}
                   collapsed={dockCollapsed}
@@ -1918,16 +2020,43 @@ export function BrowserBuddyDock() {
                   onGatewayConnect={gateway.connect}
                   onGatewayDisconnect={gateway.disconnect}
                   onGatewaySettingsChange={setGatewaySettings}
+                  onGovernanceSnapshotChange={(snapshot) => {
+                    if (buddy.id !== "hermes") {
+                      return;
+                    }
+
+                    const previous = governanceSnapshots[buddy.id] ?? null;
+                    if (sameGovernanceSnapshot(previous, snapshot)) {
+                      return;
+                    }
+
+                    setGovernanceSnapshots((current) => ({
+                      ...current,
+                      [buddy.id]: snapshot,
+                    }));
+                    if (snapshot) {
+                      setLedgerSummary(
+                        summarizeReceiptLedger(
+                          appendSnapshotToReceiptLedger({
+                            buddyId: buddy.id,
+                            snapshot,
+                          }),
+                        ),
+                      );
+                    }
+                  }}
                   onManualTuck={() => tuckBuddy(buddy.id)}
                   onRequestInteract={() => popBuddyOut(buddy.id)}
                   onClearHitboxes={() => clearBuddyHitboxes(buddy.id)}
                   onReportHitboxes={(boxes) => reportHitboxes(buddy.id, boxes)}
                   headForceKey={headForceKey}
 
-                  onSendChat={(text) => {
-                    const sent = gateway.sendChat(buddy.id, text);
+                  onSendChat={(payload) => {
+                    const sent = gateway.sendChat(buddy.id, payload);
                     void bbLog(sent ? "info" : "warn", "gateway sendChat", {
                       buddyId: buddy.id,
+                      purpose: payload.purpose ?? null,
+                      hasContext: Boolean(payload.context),
                       sent,
                       gatewayState: gateway.state,
                     });
@@ -2021,6 +2150,7 @@ function DockChrome({
   fullscreen,
   onToggleFullscreen,
   dockPinned,
+  tickerSegments,
 }: {
   activeUserMode: UserMode;
   clickThrough: boolean;
@@ -2046,6 +2176,7 @@ function DockChrome({
   fullscreen: boolean;
   onToggleFullscreen: () => void;
   dockPinned: boolean;
+  tickerSegments: string[];
 }) {
   const recentHeal =
     healReport && Date.now() - healReport.at < 20_000 ? healReport.actions.join(", ") : null;
@@ -2140,7 +2271,7 @@ function DockChrome({
             {!adjustOpen && !clickThrough && !recentHeal && (
               <div className="dock-controls__ticker" aria-label="Hermes status and outstanding items ticker" role="status">
                 <div className="dock-ticker__track">
-                  {HERMES_TICKER_SEGMENTS.map((segment, i) => (
+                  {tickerSegments.slice(0, 1).map((segment, i) => (
                     <span key={i} className="dock-ticker__segment" aria-hidden={i > 0}>
                       {segment}
                     </span>
@@ -2279,6 +2410,7 @@ function BuddyHotspot({
   onGatewayConnect,
   onGatewayDisconnect,
   onGatewaySettingsChange,
+  onGovernanceSnapshotChange,
   onReportHitboxes,
   onRequestInteract,
   onSendChat,
@@ -2309,9 +2441,10 @@ function BuddyHotspot({
   onGatewayConnect: () => void;
   onGatewayDisconnect: () => void;
   onGatewaySettingsChange: (settings: GatewaySettings) => void;
+  onGovernanceSnapshotChange: (snapshot: BuddyGovernanceSnapshot | null) => void;
   onReportHitboxes: (boxes: Hitbox[]) => void;
   onRequestInteract: () => void;
-  onSendChat: (text: string) => boolean;
+  onSendChat: (payload: { text: string; purpose?: string; context?: string }) => boolean;
   perBuddyWindow: boolean;
   placement: AgentPlacement;
   onManualTuck: () => void;
@@ -2480,10 +2613,12 @@ function BuddyHotspot({
           gatewayUrl={gatewayUrl}
           hasGateway={hasGateway}
           interactive={surfaceInteractive}
+          preferCenterFit={perBuddyWindow}
           message={buddy.message ?? ""}
           onGatewayConnect={onGatewayConnect}
           onGatewayDisconnect={onGatewayDisconnect}
           onGatewaySettingsChange={onGatewaySettingsChange}
+          onGovernanceSnapshotChange={onGovernanceSnapshotChange}
           onLayoutChange={measureAndReportHitboxes}
           onRequestInteract={onRequestInteract}
           onRequestDock={onManualTuck}
@@ -2528,6 +2663,29 @@ function BuddyFigure({ buddyId, state }: { buddyId: string; state: AgentPlacemen
   }
 
   return state === "free" ? <FoxBody /> : <FoxHead />;
+}
+
+function sameGovernanceSnapshot(
+  left: BuddyGovernanceSnapshot | null | undefined,
+  right: BuddyGovernanceSnapshot | null | undefined,
+) {
+  if (!left && !right) {
+    return true;
+  }
+
+  if (!left || !right) {
+    return false;
+  }
+
+  const leftReceipt = left.frame.receipts[left.frame.receipts.length - 1]?.receipt_id ?? null;
+  const rightReceipt = right.frame.receipts[right.frame.receipts.length - 1]?.receipt_id ?? null;
+
+  return (
+    left.purpose === right.purpose &&
+    leftReceipt === rightReceipt &&
+    left.prompt.included.length === right.prompt.included.length &&
+    left.prompt.excluded.length === right.prompt.excluded.length
+  );
 }
 
 function HermesHead() {
@@ -2937,7 +3095,12 @@ function defaultDockSlot(buddyId: string) {
 }
 
 function getCurrentBuddyIdFromUrl() {
-  const buddyId = new URLSearchParams(window.location.search).get("buddy");
+  const params = new URLSearchParams(window.location.search);
+  // Dedicated dock-chrome overlay window (NVIDIA per-buddy mode).
+  if (params.get("mode") === "dock-chrome") {
+    return DOCK_CHROME_WINDOW_ID;
+  }
+  const buddyId = params.get("buddy");
   return buddyId || null;
 }
 

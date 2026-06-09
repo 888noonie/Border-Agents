@@ -15,6 +15,7 @@ import {
 } from "../../src/buddyProfiles";
 import type { GatewayConnectionState } from "../../src/gatewayProtocol";
 import type { GatewaySettings } from "../../src/gatewaySettings";
+import { buildBuddyGovernanceSnapshot, type BuddyGovernanceSnapshot } from "../../src/liveGovernance";
 import { connectionLabelForState } from "../../src/useBuddyGateway";
 import { BuddyActionMenu } from "./BuddyActionMenu";
 import { BuddyPanel, type BuddyChatLine } from "./BuddyPanel";
@@ -36,6 +37,12 @@ type Hitbox = {
 
 export type BuddySurfaceHandle = {
   measureHitboxes: () => Hitbox[];
+};
+
+type ChatPayload = {
+  text: string;
+  purpose?: string;
+  context?: string;
 };
 
 type DockBuddy = {
@@ -77,6 +84,7 @@ type BuddySurfaceProps = {
    *    large stable hitbox makes interaction reliable.
    */
   interactive: boolean;
+  preferCenterFit?: boolean;
   hasGateway: boolean;
   gatewayState: GatewayConnectionState;
   gatewayDetail: string | null;
@@ -93,8 +101,9 @@ type BuddySurfaceProps = {
   onRequestInteract?: () => void;
   /** Ask the host to re-dock (tuck) this buddy back onto the border. */
   onRequestDock?: () => void;
-  onSendChat: (text: string) => boolean;
+  onSendChat: (payload: { text: string; purpose?: string; context?: string }) => boolean;
   onSettingsChange: (settings: BuddySettings) => void;
+  onGovernanceSnapshotChange?: (snapshot: BuddyGovernanceSnapshot | null) => void;
 };
 
 function rectToHitbox(element: HTMLElement | null, padding = 8): Hitbox | null {
@@ -150,6 +159,7 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
     edge,
     dockSlot,
     interactive,
+    preferCenterFit = false,
     hasGateway,
     gatewayState,
     gatewayDetail,
@@ -166,6 +176,7 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
     onRequestDock,
     onSendChat,
     onSettingsChange,
+    onGovernanceSnapshotChange,
   },
   ref,
 ) {
@@ -179,11 +190,14 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
   const [history, setHistory] = useState<BuddyChatLine[]>([]);
   const [panelShift, setPanelShift] = useState({ x: 0, y: 0 });
-  const [surfaceUi, setSurfaceUi] = useState<BuddySurfaceUiState>(() => loadStoredBuddySurfaceUi(buddy.id));
+  const [surfaceUi, setSurfaceUi] = useState<BuddySurfaceUiState>(() =>
+    loadStoredBuddySurfaceUi(buddy.id, preferCenterFit),
+  );
   const lastMessageRef = useRef("");
+  const governanceSnapshotChangeRef = useRef(onGovernanceSnapshotChange);
   // A message typed while the gateway is still offline is parked here so it can
   // auto-send the moment the connection comes online (seamless first reply).
-  const pendingSendRef = useRef<string | null>(null);
+  const pendingSendRef = useRef<ChatPayload | null>(null);
   const autoConnectAttemptedRef = useRef(false);
 
 
@@ -197,6 +211,15 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
   const bubbleVertical = edge === "top" || dockSlot < 0.22 ? "below" : "above";
   const trustWorkbenchMode = buddy.id === "fox" ? "nexus" : buddy.id === "owl" ? "veritas" : null;
   const bubbleTab = surfaceUi.activeTab;
+  const governanceSnapshot = useMemo(
+    () =>
+      buildBuddyGovernanceSnapshot({
+        buddyId: buddy.id,
+        history,
+        settings,
+      }),
+    [buddy.id, history, settings],
+  );
 
   // Close any transient overlays automatically when the buddy re-docks so they
   // can never leave a stale hitbox behind on the border.
@@ -208,12 +231,35 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
   }, [interactive]);
 
   useEffect(() => {
-    setSurfaceUi(loadStoredBuddySurfaceUi(buddy.id));
-  }, [buddy.id]);
+    setSurfaceUi(loadStoredBuddySurfaceUi(buddy.id, preferCenterFit));
+  }, [buddy.id, preferCenterFit]);
 
   useEffect(() => {
     saveStoredBuddySurfaceUi(buddy.id, surfaceUi);
   }, [buddy.id, surfaceUi]);
+
+  useEffect(() => {
+    governanceSnapshotChangeRef.current = onGovernanceSnapshotChange;
+  }, [onGovernanceSnapshotChange]);
+
+  const governanceSnapshotKey = useMemo(() => {
+    if (!governanceSnapshot) {
+      return "none";
+    }
+
+    const latestReceipt = governanceSnapshot.frame.receipts[governanceSnapshot.frame.receipts.length - 1];
+
+    return [
+      governanceSnapshot.purpose,
+      latestReceipt?.receipt_id ?? "no-receipt",
+      governanceSnapshot.prompt.included.length,
+      governanceSnapshot.prompt.excluded.length,
+    ].join(":");
+  }, [governanceSnapshot]);
+
+  useEffect(() => {
+    governanceSnapshotChangeRef.current?.(governanceSnapshot);
+  }, [governanceSnapshot, governanceSnapshotKey]);
 
   const statusBubbleText = useMemo(() => {
     const trimmedMessage = message.trim();
@@ -464,6 +510,12 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
       return;
     }
 
+    const payload: ChatPayload = {
+      text: trimmed,
+      purpose: governanceSnapshot?.purpose,
+      context: governanceSnapshot?.prompt.context,
+    };
+
     // Always show the user's message immediately so the chat feels responsive.
     setHistory((current) => [
       ...current,
@@ -474,7 +526,7 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
     // Offline: park the message and bring the gateway up. The auto-flush effect
     // below sends it the moment the connection is live — no second click needed.
     if (hasGateway && !gatewayOnline) {
-      pendingSendRef.current = trimmed;
+      pendingSendRef.current = payload;
       setHistory((current) => [
         ...current,
         { id: createLineId(), role: "status", text: "Connecting to gateway…" },
@@ -483,10 +535,10 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
       return;
     }
 
-    const sent = onSendChat(trimmed);
+    const sent = onSendChat(payload);
     if (!sent) {
       // Couldn't deliver right now — keep it queued and (re)connect.
-      pendingSendRef.current = trimmed;
+      pendingSendRef.current = payload;
       if (hasGateway) {
         onGatewayConnect();
       }
@@ -574,6 +626,7 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
                     mode={trustWorkbenchMode}
                     title={trustWorkbenchMode === "nexus" ? "Nexus context grades" : "Veritas receipt checks"}
                     compact
+                    snapshot={governanceSnapshot}
                   />
                 ) : null
               }
@@ -687,6 +740,7 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
     gatewayBusy,
     history,
     trustWorkbenchMode,
+    governanceSnapshot,
     settings.memoryMode,
     settings.modelLabel,
     statusBubbleText,
@@ -710,6 +764,7 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
           clickable
           bubbleSide={bubbleSide}
           bubbleVertical={bubbleVertical}
+          activationLabel="Open chat"
           title="Open chat — undock buddy"
           onActivate={onRequestInteract}
         />
@@ -887,17 +942,25 @@ function BubbleToggle({
   );
 }
 
-function loadStoredBuddySurfaceUi(buddyId: string): BuddySurfaceUiState {
+function loadStoredBuddySurfaceUi(buddyId: string, preferCenterFit = false): BuddySurfaceUiState {
   try {
     const raw = localStorage.getItem(BUDDY_SURFACE_UI_STORAGE_KEY);
     if (!raw) {
-      return DEFAULT_BUDDY_SURFACE_UI;
+      return preferCenterFit
+        ? { ...DEFAULT_BUDDY_SURFACE_UI, alwaysCenterFit: true }
+        : DEFAULT_BUDDY_SURFACE_UI;
     }
 
     const stored = JSON.parse(raw) as Partial<Record<string, Partial<BuddySurfaceUiState>>>;
-    return normalizeBuddySurfaceUi(stored[buddyId]);
+    const parsed = normalizeBuddySurfaceUi(stored[buddyId]);
+    if (preferCenterFit && !parsed.alwaysCenterFit) {
+      return { ...parsed, alwaysCenterFit: true };
+    }
+    return parsed;
   } catch {
-    return DEFAULT_BUDDY_SURFACE_UI;
+    return preferCenterFit
+      ? { ...DEFAULT_BUDDY_SURFACE_UI, alwaysCenterFit: true }
+      : DEFAULT_BUDDY_SURFACE_UI;
   }
 }
 

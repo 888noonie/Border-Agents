@@ -12,6 +12,7 @@ type BuddyUiBubbleProps = {
   inline?: boolean;
   tabs?: BuddyUiBubbleTab[];
   activeTab?: string;
+  activationLabel?: string;
   title?: string;
   onActivate?: () => void;
   onTabChange?: (tabId: string) => void;
@@ -35,6 +36,7 @@ export function BuddyUiBubble({
   inline = false,
   tabs = [],
   activeTab = "message",
+  activationLabel,
   title,
   onActivate,
   onTabChange,
@@ -60,6 +62,7 @@ export function BuddyUiBubble({
         clickable ? "buddy-ui-bubble--clickable" : "",
       ].join(" ")}
       role={clickable ? "button" : "status"}
+      aria-label={clickable && activationLabel ? `${activationLabel}: ${text}` : undefined}
       aria-live="polite"
       aria-atomic="true"
       tabIndex={clickable ? 0 : -1}
@@ -118,6 +121,9 @@ export function BuddyUiBubble({
       >
         {activeTabContent ?? text}
       </div>
+      {clickable && activationLabel ? (
+        <small className="buddy-ui-bubble__activation-label">{activationLabel}</small>
+      ) : null}
     </div>
   );
 }

@@ -14,7 +14,14 @@ export type BuddyGatewayController = {
   busy: boolean;
   connect: () => void;
   disconnect: () => void;
-  sendChat: (buddyId: string, text: string) => boolean;
+  sendChat: (
+    buddyId: string,
+    payload: {
+      text: string;
+      purpose?: string;
+      context?: string;
+    },
+  ) => boolean;
 };
 
 type UseBuddyGatewayOptions = {
@@ -133,9 +140,9 @@ export function useBuddyGateway({
     clientRef.current?.disconnect();
   }, []);
 
-  const sendChat = useCallback((buddyId: string, text: string) => {
+  const sendChat = useCallback((buddyId: string, payload: { text: string; purpose?: string; context?: string }) => {
     const client = clientRef.current;
-    const trimmed = text.trim();
+    const trimmed = payload.text.trim();
 
     if (!client || !trimmed) {
       return false;
@@ -146,7 +153,11 @@ export function useBuddyGateway({
       return false;
     }
 
-    const requestId = client.sendChat(buddyId, trimmed);
+    const requestId = client.sendChat(buddyId, {
+      text: trimmed,
+      purpose: payload.purpose,
+      context: payload.context?.trim() || undefined,
+    });
 
     if (!requestId) {
       return false;

@@ -4,6 +4,7 @@ export const DEFAULT_GATEWAY_URL = "ws://127.0.0.1:17387/border-buddies";
 
 export type GatewaySource =
   | "border-dock"
+  | "buddy-window"
   | "browser-extension"
   | "browser-preview"
   | "gateway-dev";
@@ -47,6 +48,8 @@ export type GatewayChatMessage = {
   buddy: string;
   text: string;
   requestId: string;
+  purpose?: string;
+  context?: string;
 };
 
 export type GatewayChatReplyMessage = {

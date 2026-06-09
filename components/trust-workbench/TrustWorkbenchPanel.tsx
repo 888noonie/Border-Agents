@@ -8,6 +8,7 @@ import {
   type VeritasPanelData,
 } from "../../src/core";
 import type { Grade } from "../../src/core/types";
+import type { BuddyGovernanceSnapshot } from "../../src/liveGovernance";
 import "./TrustWorkbenchPreview.css";
 
 const PURPOSE_LABELS: Record<BuiltInPurpose, string> = {
@@ -47,15 +48,29 @@ type TrustWorkbenchPanelProps = {
   mode?: TrustWorkbenchPanelMode;
   title?: string;
   compact?: boolean;
+  snapshot?: BuddyGovernanceSnapshot | null;
 };
 
 export function TrustWorkbenchPanel({
   mode = "full",
   title = "Memory grading preview",
   compact = false,
+  snapshot = null,
 }: TrustWorkbenchPanelProps) {
-  const results = useMemo(() => runHermesMemoryDemo(), []);
-  const [purpose, setPurpose] = useState<BuiltInPurpose>("agent_action");
+  const results = useMemo(
+    () =>
+      snapshot
+        ? [
+            {
+              purpose: snapshot.purpose,
+              frame: snapshot.frame,
+              prompt: snapshot.prompt,
+            },
+          ]
+        : runHermesMemoryDemo(),
+    [snapshot],
+  );
+  const [purpose, setPurpose] = useState<BuiltInPurpose>(snapshot?.purpose ?? "agent_action");
   const active = results.find((result) => result.purpose === purpose) ?? results[0];
   const nexus = buildNexusPanelData({ frame: active.frame, prompt: active.prompt });
   const veritas = buildVeritasPanelData({ frame: active.frame, prompt: active.prompt });
@@ -69,6 +84,10 @@ export function TrustWorkbenchPanel({
     setSelectedChunkId(firstReceipt?.chunkId ?? null);
   }, [purpose, firstReceipt?.chunkId]);
 
+  useEffect(() => {
+    setPurpose(snapshot?.purpose ?? "agent_action");
+  }, [snapshot?.purpose]);
+
   return (
     <div className={["trust-panel", compact ? "trust-panel--compact" : ""].join(" ")} aria-label="Trust Workbench">
       <div className="trust-preview__header trust-panel__header">
@@ -81,18 +100,24 @@ export function TrustWorkbenchPanel({
         </span>
       </div>
 
-      <div className="trust-preview__purpose-tabs" aria-label="Purpose">
-        {results.map((result) => (
-          <button
-            className={result.purpose === purpose ? "trust-preview__tab trust-preview__tab--active" : "trust-preview__tab"}
-            key={result.purpose}
-            type="button"
-            onClick={() => setPurpose(result.purpose)}
-          >
-            {PURPOSE_LABELS[result.purpose]}
-          </button>
-        ))}
-      </div>
+      {results.length > 1 ? (
+        <div className="trust-preview__purpose-tabs" aria-label="Purpose">
+          {results.map((result) => (
+            <button
+              className={result.purpose === purpose ? "trust-preview__tab trust-preview__tab--active" : "trust-preview__tab"}
+              key={result.purpose}
+              type="button"
+              onClick={() => setPurpose(result.purpose)}
+            >
+              {PURPOSE_LABELS[result.purpose]}
+            </button>
+          ))}
+        </div>
+      ) : (
+        <div className="trust-preview__purpose-tabs" aria-label="Purpose">
+          <span className="trust-preview__tab trust-preview__tab--active">{PURPOSE_LABELS[active.purpose]}</span>
+        </div>
+      )}
 
       {mode === "full" || mode === "nexus" ? <NexusPreview data={nexus} /> : null}
       {mode === "full" || mode === "veritas" ? (

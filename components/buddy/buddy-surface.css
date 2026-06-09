@@ -470,6 +470,19 @@
   cursor: pointer;
 }
 
+.buddy-ui-bubble__activation-label {
+  display: block;
+  width: fit-content;
+  margin-top: 0.45rem;
+  border-radius: 999px;
+  padding: 0.2rem 0.5rem;
+  background: rgb(21 38 60 / 0.08);
+  color: rgb(21 38 60 / 0.72);
+  font-size: 0.66rem;
+  font-weight: 780;
+  letter-spacing: 0.02em;
+}
+
 .buddy-ui-bubble--clickable:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px rgb(47 125 255 / 0.35);

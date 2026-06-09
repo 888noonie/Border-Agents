@@ -123,13 +123,22 @@ export class BuddyGatewayClient {
     return true;
   }
 
-  sendChat(buddyId: string, text: string) {
+  sendChat(
+    buddyId: string,
+    payload: {
+      text: string;
+      purpose?: string;
+      context?: string;
+    },
+  ) {
     const requestId = createRequestId();
     const sent = this.send({
       type: "chat",
       buddy: buddyId,
-      text,
+      text: payload.text,
       requestId,
+      purpose: payload.purpose,
+      context: payload.context,
     });
 
     return sent ? requestId : null;

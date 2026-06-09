@@ -49,8 +49,26 @@ describe("BuddySurface", () => {
     const { container } = render(<BuddySurface {...baseProps} interactive={false} />);
 
     expect(screen.getByText("Attention required.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Open chat/i })).toBeInTheDocument();
     expect(screen.queryByLabelText("Bubble controls")).not.toBeInTheDocument();
     expect(container.querySelectorAll(".buddy-ui-bubble")).toHaveLength(1);
+  });
+
+  test("opens interaction from the docked speech bubble", async () => {
+    const user = userEvent.setup();
+    const onRequestInteract = vi.fn();
+
+    render(
+      <BuddySurface
+        {...baseProps}
+        interactive={false}
+        onRequestInteract={onRequestInteract}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /Open chat/i }));
+
+    expect(onRequestInteract).toHaveBeenCalledTimes(1);
   });
 
   test("shows collapsed tab sections when undocked and expands on demand", async () => {

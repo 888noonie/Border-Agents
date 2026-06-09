@@ -39,6 +39,8 @@ fn bb_env_flag_enabled(name: &str) -> bool {
         .unwrap_or(false)
 }
 
+
+
 fn init_bb_diagnostics() {
     std::panic::set_hook(Box::new(|info| {
         bb_events_log(&format!(
@@ -54,6 +56,33 @@ fn init_bb_diagnostics() {
     ));
 }
 
+#[cfg(target_os = "linux")]
+fn configure_linux_webkit_environment() {
+    // Native Wayland forbids clients from positioning their own toplevel
+    // windows, so per-buddy windows stack uselessly and set_position is a
+    // silent no-op. Running through XWayland restores client positioning,
+    // always-on-top, and X11 input shapes. Opt out by setting GDK_BACKEND.
+    if std::env::var("GDK_BACKEND").is_err() {
+        std::env::set_var("GDK_BACKEND", "x11");
+        bb_events_log(&format!(
+            "[rust {}] GDK_BACKEND=x11 set: forcing XWayland so overlay windows can self-position",
+            bb_events_timestamp()
+        ));
+    }
+
+    if std::env::var("WEBKIT_DISABLE_DMABUF_RENDERER").is_err() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+        bb_events_log(&format!(
+            "[rust {}] WEBKIT_DISABLE_DMABUF_RENDERER=1 set unconditionally for transparent-window repaint stability",
+            bb_events_timestamp()
+        ));
+    }
+
+    if std::env::var("GSK_RENDERER").is_err() {
+        std::env::set_var("GSK_RENDERER", "gl");
+    }
+}
+
 fn sanitize_hitbox(hitbox: &Hitbox) -> Option<(i32, i32, i32, i32)> {
     if hitbox.w <= 0 || hitbox.h <= 0 {
         return None;
@@ -65,6 +94,37 @@ fn sanitize_hitbox(hitbox: &Hitbox) -> Option<(i32, i32, i32, i32)> {
     let y = hitbox.y.clamp(-4096, 16384);
 
     Some((x, y, width, height))
+}
+
+#[cfg(target_os = "linux")]
+fn configure_linux_transparent_window(window: &WebviewWindow) -> Result<(), String> {
+    use gtk::prelude::*;
+
+    let gtk_win = window.gtk_window().map_err(|error| error.to_string())?;
+    gtk_win.set_app_paintable(true);
+
+    if let Some(screen) = gtk::prelude::WidgetExt::screen(&gtk_win) {
+        if let Some(visual) = screen.rgba_visual() {
+            gtk_win.set_visual(Some(&visual));
+        }
+    }
+
+    request_linux_repaint(&gtk_win);
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn request_linux_repaint<W>(gtk_win: &W)
+where
+    W: gtk::prelude::IsA<gtk::Widget>,
+{
+    use gtk::prelude::*;
+
+    gtk_win.queue_draw();
+
+    if let Some(gdk_win) = gtk_win.window() {
+        gdk_win.invalidate_rect(None, true);
+    }
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -177,7 +237,7 @@ const BUDDY_WINDOWS: &[BuddyWindowSpec] = &[
         slot: 0.68,
     },
 ];
-const DEFAULT_BUDDY_IDS: &[&str] = &["hermes"];
+const DEFAULT_BUDDY_IDS: &[&str] = &["hermes", "crab", "owl", "fox"];
 
 const DOCK_ZONES: &[DockZone] = &[
     DockZone {
@@ -273,6 +333,9 @@ fn configure_border_dock(
         )))
         .map_err(|error| error.to_string())?;
 
+    #[cfg(target_os = "linux")]
+    configure_linux_transparent_window(&window)?;
+
     let active_monitor_ids = selected_monitors
         .iter()
         .map(|monitor| monitor.id.clone())
@@ -313,6 +376,9 @@ fn configure_buddy_window(
                 bounds.x, bounds.y,
             )))
             .map_err(|error| error.to_string())?;
+
+        #[cfg(target_os = "linux")]
+        repaint_linux_overlay_window(&window)?;
     }
 
     Ok(BuddyWindowLayout {
@@ -388,6 +454,7 @@ fn set_input_hitboxes(window: WebviewWindow, boxes: Vec<Hitbox>) -> Result<(), S
         }
 
         gdk_win.input_shape_combine_region(&region, 0, 0);
+        request_linux_repaint(&gtk_win);
 
         if applied == 0 && !boxes.is_empty() {
             bb_events_log(&format!(
@@ -419,6 +486,102 @@ fn set_input_hitboxes(window: WebviewWindow, boxes: Vec<Hitbox>) -> Result<(), S
     {
         let _ = (window, boxes);
     }
+
+    Ok(())
+}
+
+/// Per-window state for the resize-jiggle repaint (see `jiggle_overlay_size`).
+#[cfg(target_os = "linux")]
+struct JiggleState {
+    base: PhysicalSize<u32>,
+    shrunk: bool,
+    last_shrink: std::time::Instant,
+}
+
+#[cfg(target_os = "linux")]
+static OVERLAY_JIGGLE: Mutex<Vec<(String, JiggleState)>> = Mutex::new(Vec::new());
+
+/// Minimum interval between shrink pulses while a drag streams repaint calls.
+#[cfg(target_os = "linux")]
+const JIGGLE_MIN_INTERVAL_MS: u128 = 90;
+
+/// On WebKitGTK >= 2.46 (Skia) the accelerated-compositing scene ignores
+/// GDK-level invalidation (`queue_draw`/`invalidate_rect`), so stale pixels
+/// from moved buddies survive every conventional repaint. The only operation
+/// that reliably forces WebKit to reallocate and redraw its compositing
+/// buffers is an actual window resize. This alternates the window height by
+/// 1px (throttled) so each call performs a real size change — GTK coalesces
+/// queued resizes, so a shrink+restore in one call would net to nothing.
+#[cfg(target_os = "linux")]
+fn jiggle_overlay_size(window: &WebviewWindow) -> Result<(), String> {
+    if bb_env_flag_enabled("BB_DISABLE_RESIZE_REPAINT") {
+        return Ok(());
+    }
+
+    let label = window.label().to_string();
+    let Ok(mut states) = OVERLAY_JIGGLE.lock() else {
+        return Ok(());
+    };
+
+    if let Some((_, state)) = states.iter_mut().find(|(name, _)| *name == label) {
+        if state.shrunk {
+            window
+                .set_size(Size::Physical(state.base))
+                .map_err(|error| error.to_string())?;
+            state.shrunk = false;
+        } else if state.last_shrink.elapsed().as_millis() >= JIGGLE_MIN_INTERVAL_MS {
+            let base = window.inner_size().map_err(|error| error.to_string())?;
+            if base.height > 2 {
+                state.base = base;
+                window
+                    .set_size(Size::Physical(PhysicalSize::new(
+                        base.width,
+                        base.height - 1,
+                    )))
+                    .map_err(|error| error.to_string())?;
+                state.shrunk = true;
+                state.last_shrink = std::time::Instant::now();
+            }
+        }
+        return Ok(());
+    }
+
+    let base = window.inner_size().map_err(|error| error.to_string())?;
+    if base.height > 2 {
+        window
+            .set_size(Size::Physical(PhysicalSize::new(
+                base.width,
+                base.height - 1,
+            )))
+            .map_err(|error| error.to_string())?;
+        states.push((
+            label,
+            JiggleState {
+                base,
+                shrunk: true,
+                last_shrink: std::time::Instant::now(),
+            },
+        ));
+    }
+
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn repaint_linux_overlay_window(window: &WebviewWindow) -> Result<(), String> {
+    let gtk_win = window.gtk_window().map_err(|error| error.to_string())?;
+    request_linux_repaint(&gtk_win);
+    jiggle_overlay_size(window)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn repaint_overlay_window(window: WebviewWindow) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    repaint_linux_overlay_window(&window)?;
+
+    #[cfg(not(target_os = "linux"))]
+    let _ = window;
 
     Ok(())
 }
@@ -469,6 +632,9 @@ fn snap_buddy_window(
                 bounds.x, bounds.y,
             )))
             .map_err(|error| error.to_string())?;
+
+        #[cfg(target_os = "linux")]
+        repaint_linux_overlay_window(&window)?;
 
         return Ok(BuddySnapResult {
             buddy_id: request.buddy_id,
@@ -539,8 +705,59 @@ fn create_buddy_windows(app: &AppHandle) -> Result<(), String> {
         configure_overlay_window(&window)?;
     }
 
+    // Create a dedicated dock-chrome window for the controls bar (mode switcher,
+    // interact/dock pills, ticker). The unified border-dock window is hidden in
+    // NVIDIA per-buddy mode to prevent transparent fullscreen ghosting, but this
+    // small fixed-position window at the top-centre is safe from that artifact.
+    if app.get_webview_window("dock-chrome").is_none() {
+        create_dock_chrome_window(app, &monitor)?;
+    }
+
     Ok(())
 }
+
+/// Width/height of the dock-chrome controls bar window.
+const DOCK_CHROME_WIDTH: u32 = 900;
+const DOCK_CHROME_HEIGHT: u32 = 96;
+
+fn create_dock_chrome_window(app: &AppHandle, monitor: &MonitorFrame) -> Result<(), String> {
+    // Centre horizontally at the top of the primary monitor.
+    let x = monitor.x + (monitor.width as i32 - DOCK_CHROME_WIDTH as i32) / 2;
+    let y = monitor.y + 4;
+
+    let window = WebviewWindowBuilder::new(
+        app,
+        "dock-chrome",
+        WebviewUrl::App("index.html?mode=dock-chrome".into()),
+    )
+    .title("Border Buddies · Dock")
+    .inner_size(DOCK_CHROME_WIDTH as f64, DOCK_CHROME_HEIGHT as f64)
+    .position(x as f64, y as f64)
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .resizable(false)
+    .maximizable(false)
+    .minimizable(false)
+    .shadow(false)
+    .focused(false)
+    .focusable(true)
+    .disable_drag_drop_handler()
+    .visible(true)
+    .build()
+    .map_err(|error| error.to_string())?;
+
+    configure_overlay_window(&window)?;
+
+    bb_events_log(&format!(
+        "[rust {}] dock-chrome window created at ({x}, {y})",
+        bb_events_timestamp()
+    ));
+
+    Ok(())
+}
+
 
 fn enabled_buddy_ids() -> Vec<&'static str> {
     let Ok(value) = std::env::var("BORDER_BUDDIES") else {
@@ -575,6 +792,9 @@ fn configure_overlay_window(window: &WebviewWindow) -> Result<(), String> {
     window
         .set_skip_taskbar(true)
         .map_err(|error| error.to_string())?;
+
+    #[cfg(target_os = "linux")]
+    configure_linux_transparent_window(window)?;
 
     Ok(())
 }
@@ -655,11 +875,15 @@ fn calculate_bounds(monitors: &[MonitorFrame]) -> Result<DockBounds, String> {
     })
 }
 
-/// Returns the fixed (width, height) envelope for a buddy control window. The
-/// panel is wide enough for the speech bubble and tall enough for the expanded
-/// settings controls, while still relying on the input shape for click-through.
+/// Fixed envelope for per-buddy overlay windows (never resized at runtime).
+/// Must fit head + speech bubble + full interactive chat panel inside one
+/// transparent window; input shapes keep the unused envelope click-through.
+const BUDDY_ENVELOPE_WIDTH: u32 = 640;
+const BUDDY_ENVELOPE_HEIGHT: u32 = 720;
+
+/// Returns the fixed (width, height) envelope for a buddy control window.
 fn calculate_buddy_envelope(_edge: &str) -> (u32, u32) {
-    (384, 392)
+    (BUDDY_ENVELOPE_WIDTH, BUDDY_ENVELOPE_HEIGHT)
 }
 
 fn calculate_buddy_window_bounds(
@@ -763,13 +987,18 @@ fn lerp_i32(start: i32, end: i32, slot: f64) -> i32 {
 }
 
 fn legacy_per_buddy_windows_enabled() -> bool {
-    std::env::var("BORDER_BUDDIES_LEGACY_WINDOWS")
-        .map(|value| value == "1" || value.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
+    if let Ok(value) = std::env::var("BORDER_BUDDIES_LEGACY_WINDOWS") {
+        return matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on");
+    }
+
+    false
 }
 
 pub fn run() {
     init_bb_diagnostics();
+
+    #[cfg(target_os = "linux")]
+    configure_linux_webkit_environment();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -797,6 +1026,7 @@ pub fn run() {
             snap_buddy_window,
             set_buddy_window_interactive,
             set_input_hitboxes,
+            repaint_overlay_window,
             reset_dock_input
         ])
         .run(tauri::generate_context!())

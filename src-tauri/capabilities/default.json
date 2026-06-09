@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Allows the BorderDock overlay window to position itself and control pointer-event pass-through.",
-  "windows": ["border-dock", "buddy-*"],
+  "windows": ["border-dock", "buddy-*", "dock-chrome"],
   "permissions": [
     "core:default",
     "core:window:allow-show",

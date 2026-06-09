@@ -9,6 +9,15 @@
   backface-visibility: hidden;
 }
 
+.border-dock--native::before {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background: rgb(0 0 0 / 0.012);
+  content: "";
+  pointer-events: none;
+}
+
 .border-dock--click-through .agent-hotspot,
 .border-dock--click-through .speech-bubble {
   opacity: 0.42;
@@ -18,9 +27,45 @@
   opacity: 0.72;
 }
 
+.border-dock--native *,
+.border-dock--native *::before,
+.border-dock--native *::after {
+  animation: none !important;
+  backdrop-filter: none !important;
+  filter: none !important;
+  transition: none !important;
+}
+
+/* The moving buddies must keep their own GPU backing store, otherwise
+   WebKitGTK never repaints the region they vacate on the transparent
+   window and every drag frame is left painted on screen (ghost trails). */
+.border-dock--native .agent-hotspot,
+.border-dock--native .agent-button {
+  will-change: transform !important;
+  backface-visibility: hidden !important;
+}
+
 .border-dock--per-buddy {
-  width: 100vw;
-  height: 100vh;
+  width: 100%;
+  height: 100%;
+}
+
+.border-dock--dock-chrome-window .dock-chrome {
+  top: 4px;
+}
+
+.border-dock--dock-chrome-window .dock-controls {
+  opacity: 1;
+}
+
+.border-dock--per-buddy .buddy-cluster__panel-wrap--center-fit {
+  width: min(22rem, calc(100% - 1rem));
+  max-height: calc(100% - 1rem);
+}
+
+.border-dock--per-buddy .buddy-panel--full {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .border-dock--per-buddy .dock-stage,
@@ -123,9 +168,9 @@
 .dock-stage {
   position: absolute;
   inset: 0;
+  z-index: 1;
   background: transparent;
   pointer-events: none;
-  transform: translateZ(0);
 }
 
 .dock-permanent-pills {
@@ -152,15 +197,13 @@
   text-transform: uppercase;
   cursor: pointer;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
-  transition: all 160ms ease;
-  backdrop-filter: blur(8px);
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
 }
 
 .dock-pill-button:hover {
   background: rgb(8 17 31 / 0.85);
   border-color: rgb(255 255 255 / 0.3);
   color: white;
-  transform: translateY(-1px);
 }
 
 .dock-pill-button--active {
@@ -273,7 +316,6 @@
   white-space: nowrap;
 }
 
-/* Hermes dock ticker on the right edge of controls — scrolling outstanding info */
 .dock-controls__ticker {
   flex: 1 1 220px;
   min-width: 140px;
@@ -310,31 +352,17 @@
 }
 
 .dock-ticker__track {
-  display: inline-flex;
-  align-items: center;
-  gap: 0;
-  animation: dock-ticker-scroll 22s linear infinite;
-  will-change: transform;
-}
-
-.dock-controls:hover .dock-ticker__track {
-  animation-play-state: paused;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .dock-ticker__segment {
-  padding-right: 28px;
-  display: inline-flex;
-  align-items: center;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
   color: inherit;
-}
-
-@keyframes dock-ticker-scroll {
-  0% {
-    transform: translateX(0);
-  }
-  100% {
-    transform: translateX(-50%);
-  }
 }
 
 .dock-adjust-tray {
@@ -509,11 +537,16 @@
 
 .agent-hotspot--free {
   --agent-size: 7.4rem;
-  top: var(--agent-y);
+  /* Position via a GPU-composited transform rather than top/left. On Linux
+     transparent WebKitGTK windows a top/left change is a paint-level move whose
+     vacated region is never damage-tracked, leaving ghost trails as the buddy
+     drags. translate3d keeps the buddy on its own compositor layer so the old
+     position is cleared each frame. See docs/ROUNDTABLE_tauri_linux_overlay_challenge.md */
+  top: 0;
   right: auto;
   bottom: auto;
-  left: var(--agent-x);
-  transform: none;
+  left: 0;
+  transform: translate3d(var(--agent-x), var(--agent-y), 0);
 }
 
 .agent-hotspot--faint {

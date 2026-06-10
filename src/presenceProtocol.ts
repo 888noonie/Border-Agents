@@ -15,9 +15,10 @@
  *             puppet that renders these — where to sit, how to feel, what to say,
  *             where to look.  move_to | express | say | attention | hydrate
  *
- *   to-soul   (body → soul): interaction events the body reports about itself.
- *             The soul reasons over these.  clicked | grabbed | dragged | dropped
- *             | summoned | dismissed
+ *   to-soul   (body → soul): lifecycle + interaction events the body reports about
+ *             itself. The soul reasons over these (and they are tomorrow's receipt
+ *             inputs, so each kind means exactly one thing).  attached | clicked |
+ *             grabbed | dragged | dropped | summoned | dismissed
  *
  * Discriminator note: presence messages carry `protocol: "presence"`, which keeps
  * them cleanly separable from the legacy gateway messages (which carry `type`) on
@@ -125,6 +126,19 @@ export type PresenceToBodyMessage =
 
 // --- to-soul: the body reporting what happened to it ---------------------------
 
+/**
+ * Lifecycle handshake: the body announces itself when it comes online or reconnects,
+ * so the soul knows to push a `hydrate`. This is deliberately NOT `summoned` —
+ * `summoned` means the *user* opened the buddy's surface; `attached` means the *body*
+ * came online. Conflating them would poison the soul's reasoning and any audit trail.
+ * `at` is the body's current position if it has one; `capabilities` hints what this
+ * body can render/do (e.g. `["drag", "menu", "say"]`).
+ */
+export type PresenceAttached = PresenceEnvelope<
+  "attached",
+  { at?: PresencePosition; capabilities?: readonly string[] }
+>;
+
 export type PresenceClicked = PresenceEnvelope<
   "clicked",
   { button?: PresencePointer; at?: PresencePosition }
@@ -146,6 +160,7 @@ export type PresenceSummoned = PresenceEnvelope<"summoned", Record<never, never>
 export type PresenceDismissed = PresenceEnvelope<"dismissed", Record<never, never>>;
 
 export type PresenceToSoulMessage =
+  | PresenceAttached
   | PresenceClicked
   | PresenceGrabbed
   | PresenceDragged
@@ -166,6 +181,7 @@ export const PRESENCE_TO_BODY_KINDS: readonly PresenceToBodyMessage["kind"][] = 
 ];
 
 export const PRESENCE_TO_SOUL_KINDS: readonly PresenceToSoulMessage["kind"][] = [
+  "attached",
   "clicked",
   "grabbed",
   "dragged",
@@ -192,6 +208,10 @@ function isFiniteNumber(value: unknown): value is number {
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === "string");
 }
 
 function isEdge(value: unknown): value is PresenceEdge {
@@ -273,6 +293,11 @@ function isValidForKind(kind: PresenceKind, raw: Record<string, unknown>): boole
         (raw.position === undefined || isPosition(raw.position)) &&
         (raw.emotion === undefined || isEmotion(raw.emotion)) &&
         (raw.speech === undefined || typeof raw.speech === "string")
+      );
+    case "attached":
+      return (
+        (raw.at === undefined || isPosition(raw.at)) &&
+        (raw.capabilities === undefined || isStringArray(raw.capabilities))
       );
     case "clicked":
       return (
@@ -389,6 +414,13 @@ export const presence = {
     opts: EnvelopeOptions = {},
   ): PresenceHydrate {
     return envelope("hydrate", buddy, { ...snapshot }, opts) as PresenceHydrate;
+  },
+  attached(
+    buddy: string,
+    opts: { at?: PresencePosition; capabilities?: readonly string[] } & EnvelopeOptions = {},
+  ): PresenceAttached {
+    const { at, capabilities, ts } = opts;
+    return envelope("attached", buddy, { at, capabilities }, { ts }) as PresenceAttached;
   },
   clicked(
     buddy: string,

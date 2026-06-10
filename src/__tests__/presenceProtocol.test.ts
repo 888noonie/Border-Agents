@@ -62,12 +62,13 @@ describe("presence protocol round-trips", () => {
     presence.attention("hermes", "user", { ts: 5 }),
     presence.attention("hermes", { point: { x: 10, y: 20 }, space: "screen" }, { ts: 6 }),
     presence.hydrate("hermes", { position: ANCHORED, emotion: "neutral", speech: "hi" }, { ts: 7 }),
-    presence.clicked("hermes", { button: "primary", at: FREE, ts: 8 }),
-    presence.grabbed("hermes", FREE, { ts: 9 }),
-    presence.dragged("hermes", FREE, { ts: 10 }),
-    presence.dropped("hermes", ANCHORED, { onTarget: "trash", ts: 11 }),
-    presence.summoned("hermes", { ts: 12 }),
-    presence.dismissed("hermes", { ts: 13 }),
+    presence.attached("hermes", { at: ANCHORED, capabilities: ["drag", "menu"], ts: 8 }),
+    presence.clicked("hermes", { button: "primary", at: FREE, ts: 9 }),
+    presence.grabbed("hermes", FREE, { ts: 10 }),
+    presence.dragged("hermes", FREE, { ts: 11 }),
+    presence.dropped("hermes", ANCHORED, { onTarget: "trash", ts: 12 }),
+    presence.summoned("hermes", { ts: 13 }),
+    presence.dismissed("hermes", { ts: 14 }),
   ];
 
   test.each(cases)("survives JSON serialization: $kind", (message) => {
@@ -108,5 +109,28 @@ describe("presence protocol parsing rejects malformed input", () => {
   test("accepts valid optional fields and minimal payloads", () => {
     expect(parsePresenceMessage(presence.clicked("hermes", { ts: 1 }))).not.toBeNull();
     expect(parsePresenceMessage(presence.hydrate("hermes", {}, { ts: 1 }))).not.toBeNull();
+  });
+});
+
+describe("attached handshake", () => {
+  test("is a to-soul lifecycle kind, distinct from summoned", () => {
+    expect((PRESENCE_TO_SOUL_KINDS as readonly string[])).toContain("attached");
+    expect(presenceDirection("attached")).toBe("to-soul");
+    // The two must never be conflated — attached = body online, summoned = user opened surface.
+    expect("attached").not.toBe("summoned");
+  });
+
+  test("accepts a bare handshake and rejects malformed capabilities", () => {
+    expect(parsePresenceMessage(presence.attached("hermes", { ts: 1 }))).not.toBeNull();
+    expect(
+      parsePresenceMessage({
+        protocol: PRESENCE_PROTOCOL,
+        v: 0,
+        kind: "attached",
+        buddy: "hermes",
+        ts: 1,
+        capabilities: ["drag", 7],
+      }),
+    ).toBeNull();
   });
 });

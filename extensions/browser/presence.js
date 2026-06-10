@@ -19,7 +19,7 @@
   const VERSION = 0;
 
   const TO_BODY_KINDS = ["move_to", "express", "say", "attention", "hydrate"];
-  const TO_SOUL_KINDS = ["clicked", "grabbed", "dragged", "dropped", "summoned", "dismissed"];
+  const TO_SOUL_KINDS = ["attached", "clicked", "grabbed", "dragged", "dropped", "summoned", "dismissed"];
   const ALL_KINDS = [...TO_BODY_KINDS, ...TO_SOUL_KINDS];
   const EMOTIONS = ["neutral", "happy", "thinking", "curious", "alert", "sleepy"];
 
@@ -37,6 +37,10 @@
 
   function isSpace(value) {
     return value === "viewport" || value === "screen" || value === "normalized";
+  }
+
+  function isStringArray(value) {
+    return Array.isArray(value) && value.every((item) => typeof item === "string");
   }
 
   function isPosition(value) {
@@ -82,6 +86,8 @@
         return isFocus(raw.focus);
       case "hydrate":
         return (raw.position === undefined || isPosition(raw.position)) && (raw.emotion === undefined || EMOTIONS.includes(raw.emotion)) && (raw.speech === undefined || typeof raw.speech === "string");
+      case "attached":
+        return (raw.at === undefined || isPosition(raw.at)) && (raw.capabilities === undefined || isStringArray(raw.capabilities));
       case "clicked":
         return (raw.button === undefined || raw.button === "primary" || raw.button === "secondary") && (raw.at === undefined || isPosition(raw.at));
       case "grabbed":
@@ -152,6 +158,10 @@
     placementToPosition,
     positionToPlacement,
     // factory helpers — the events the body emits
+    attached(buddy, opts) {
+      const o = opts || {};
+      return envelope("attached", buddy, { at: o.at, capabilities: o.capabilities });
+    },
     clicked(buddy, opts) {
       const o = opts || {};
       return envelope("clicked", buddy, { button: o.button, at: o.at });

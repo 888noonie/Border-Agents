@@ -1,0 +1,150 @@
+{
+  "move_to": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "move_to",
+    "buddy": "hermes",
+    "ts": 1000,
+    "position": {
+      "mode": "anchored",
+      "edge": "right",
+      "offset": {
+        "x": 24,
+        "y": 48
+      }
+    },
+    "transitionMs": 180
+  },
+  "express": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "express",
+    "buddy": "hermes",
+    "ts": 1001,
+    "emotion": "happy",
+    "intensity": 0.8
+  },
+  "say": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "say",
+    "buddy": "hermes",
+    "ts": 1002,
+    "text": "Hi — I'm your setup host."
+  },
+  "attention": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "attention",
+    "buddy": "hermes",
+    "ts": 1003,
+    "focus": "user"
+  },
+  "hydrate": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "hydrate",
+    "buddy": "hermes",
+    "ts": 1004,
+    "position": {
+      "mode": "anchored",
+      "edge": "right",
+      "offset": {
+        "x": 24,
+        "y": 48
+      }
+    },
+    "emotion": "neutral",
+    "speech": "ready"
+  },
+  "attached": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "attached",
+    "buddy": "hermes",
+    "ts": 1005,
+    "at": {
+      "mode": "anchored",
+      "edge": "right",
+      "offset": {
+        "x": 24,
+        "y": 48
+      }
+    },
+    "capabilities": [
+      "drag",
+      "menu",
+      "say"
+    ]
+  },
+  "clicked": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "clicked",
+    "buddy": "hermes",
+    "ts": 1006,
+    "button": "primary",
+    "at": {
+      "mode": "free",
+      "space": "screen",
+      "x": 800,
+      "y": 120
+    }
+  },
+  "grabbed": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "grabbed",
+    "buddy": "hermes",
+    "ts": 1007,
+    "at": {
+      "mode": "free",
+      "space": "screen",
+      "x": 800,
+      "y": 120
+    }
+  },
+  "dragged": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "dragged",
+    "buddy": "hermes",
+    "ts": 1008,
+    "at": {
+      "mode": "free",
+      "space": "screen",
+      "x": 800,
+      "y": 120
+    }
+  },
+  "dropped": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "dropped",
+    "buddy": "hermes",
+    "ts": 1009,
+    "at": {
+      "mode": "anchored",
+      "edge": "right",
+      "offset": {
+        "x": 24,
+        "y": 48
+      }
+    },
+    "onTarget": "dock"
+  },
+  "summoned": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "summoned",
+    "buddy": "hermes",
+    "ts": 1010
+  },
+  "dismissed": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "dismissed",
+    "buddy": "hermes",
+    "ts": 1011
+  }
+}

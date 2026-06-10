@@ -42,6 +42,13 @@ That means:
 4. Authorization must be graded.
 5. Prompt context must be purpose-aware.
 6. Every grade must produce a receipt.
+7. Bodies present; souls act. Screen perception and screen action are governed
+   effectors of the soul, routed through Core Patrol with receipts — never
+   capabilities of the body. A body is a dumb puppet that *expresses* what the
+   soul does (`thinking`, `attention`, pointing); it never reads or acts on the
+   screen itself. This boundary is also what keeps bodies portable across
+   platforms and the trust core deterministic. It erodes through convenience,
+   not decision — hold it.
 
 ## v0.1 scope
 
@@ -75,6 +82,11 @@ Trust decisions must be deterministic.
 - An LLM must not decide authorization.
 - Authorization comes from policy, provenance, labels, timestamps, permissions, and explicit overrides.
 - Every override must produce a receipt.
+- Effectors (screen read, screen action, file access, external share, tool calls)
+  belong to the soul and route through Core Patrol as purpose-typed, receipted
+  calls — `agent_action` (strict, trusted-only, requires `may_use_for_action`) is
+  the gate for computer-use-style screen action. The presence body has no effector
+  capability; it only renders cues. See non-negotiable law 7.
 
 ## Naming guidance
 

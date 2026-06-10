@@ -18,6 +18,7 @@
     "demo:trace": "tsx src/core/demo/governanceTraceCli.ts",
     "preview": "vite preview --host 127.0.0.1 --port 1420",
     "gateway:dev": "node scripts/gateway-dev.mjs",
+    "body:dev": "bash scripts/bb-body.sh",
     "gen:fixtures": "tsx scripts/gen-presence-fixtures.ts",
     "report": "bash scripts/bb-report.sh",
     "clean:cache": "bash scripts/bb-clean.sh",

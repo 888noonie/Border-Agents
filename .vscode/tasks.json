@@ -110,9 +110,9 @@
     {
       "label": "BB body start",
       "type": "shell",
-      "command": "cargo run --release",
+      "command": "bash scripts/bb-body.sh",
       "options": {
-        "cwd": "${workspaceFolder}/desktop-body"
+        "cwd": "${workspaceFolder}"
       },
       "group": "none",
       "presentation": {
@@ -122,7 +122,7 @@
         "focus": true
       },
       "problemMatcher": ["$rustc"],
-      "detail": "Build + run the native desktop presence body (animated buddy on the wlr overlay layer)"
+      "detail": "Build + run the native desktop presence body — single-instance (stops any running body first, so you never get two buddies)"
     },
     {
       "label": "BB body stop",
@@ -143,9 +143,9 @@
     {
       "label": "BB body restart",
       "type": "shell",
-      "command": "pkill -x bb-desktop-body; sleep 0.5; cargo run --release",
+      "command": "bash scripts/bb-body.sh",
       "options": {
-        "cwd": "${workspaceFolder}/desktop-body"
+        "cwd": "${workspaceFolder}"
       },
       "group": "none",
       "presentation": {
@@ -155,7 +155,7 @@
         "focus": true
       },
       "problemMatcher": ["$rustc"],
-      "detail": "Stop, then rebuild + run the latest desktop presence body"
+      "detail": "Stop, then rebuild + run the latest desktop presence body (same single-instance launcher as BB body start)"
     }
   ]
 }

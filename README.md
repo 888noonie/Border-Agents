@@ -22,6 +22,47 @@ The UX — friendly, reactive, and human — is what makes reliability and safet
 
 AI work should not silently cross from possibility into use. Border Agents makes every crossing visible, inspectable, and governed — through delightful characters.
 
+## Architecture — one soul, many bodies
+
+A buddy is two separable things:
+
+- **The soul** — a headless agent runtime (an LLM, an agent platform, a scripted
+  host). It reasons, decides, and acts.
+- **The body** — a dumb presence surface that *renders* the soul: where it sits,
+  how it feels, what it says. The same soul can wear many bodies (a native desktop
+  buddy, a browser content-script buddy, one day a phone), each implementing a small
+  typed **presence protocol** (`src/presenceProtocol.ts`).
+
+Why split them? Portability (porting a body is ~5 cues + ~6 events, not a whole
+runtime) and — more importantly — **trust**. The boundary is a law:
+
+> **Bodies present; souls act.** Screen perception and screen action are *governed
+> effectors of the soul*, routed through Core Patrol with receipts — never
+> capabilities of the body. The body only expresses what the soul does; it never
+> reads or acts on the screen itself. (AGENTS.md non-negotiable law 7.)
+
+The native desktop body is a pure-Rust renderer on a `wlr-layer-shell` overlay
+surface (`desktop-body/`, no GTK/WebKit/GPU) — the outcome of the overlay rebuild
+documented in `docs/OVERLAY_POSTMORTEM_AND_REBUILD_PLAN.md`. Normal panel windows
+(settings, Trust Workbench) still use the Tauri webview; only *transparent overlay*
+surfaces were the dead end.
+
+## Postures — Work · Play · Private
+
+One choice sets your whole stance, as friendly sugar over the governance core
+(`src/core/userPosture.ts`). A posture can only ever *tighten* trust, never widen
+it: **Private** clamps every purpose to trusted/public/strict; **Work** is the
+balanced baseline; **Play** keeps Work's exact authorization but lowers interaction
+friction. Medium- and high-risk actions always ask for confirmation, in every
+posture — "Play" relaxes interruptions, never the trust boundary.
+
+## The Wizard — your go-to setup buddy
+
+The first body you meet is a **Wizard**: it onboards you (connect your model, pick a
+posture, place your buddies) and stays the single go-to surface for any later setup
+or UX tweak. It's a scripted *soul persona* driving the ordinary body, with forms in
+a normal panel window — design in `docs/WIZARD_ONBOARDING_SCRIPT.md`.
+
 ## Core Buddies — Your Default Team
 
 Each buddy is a miniature, expressive character with its own personality.
@@ -45,36 +86,38 @@ Each buddy is a miniature, expressive character with its own personality.
 
 ## Run On Pop!_OS Desktop
 
-Start the always-on-top transparent desktop overlay:
+**The native presence body** (the buddy on your screen edge) lives in `desktop-body/`
+and renders on a `wlr-layer-shell` overlay surface. In VS Code, run the tasks:
+
+```text
+BB body start      # build + launch the native buddy
+BB body restart    # rebuild and relaunch
+BB body stop       # stop it
+```
+
+Or directly:
 
 ```bash
-cd "$HOME/TETRATHEDRAL/Border Agents/Border-Agents"
+cd "$HOME/TETRATHEDRAL/Border Agents/Border-Agents/desktop-body"
+cargo run --release
+# BB_OUTPUT_INDEX=1 cargo run --release   # second monitor
+```
+
+**The Tauri panel host** (settings, Trust Workbench, and other normal windows —
+*not* the transparent overlay, which the rebuild retired) runs with:
+
+```bash
 source "$HOME/.cargo/env"
-npm run desktop:dev
+npm run desktop:dev          # VS Code task: BB start  /  stop: BB stop
+npm run desktop:build        # installable bundle
 ```
 
-In VS Code, run the task:
-
-```text
-BB start
-```
-
-Stop the desktop overlay:
-
-```text
-BB stop
-```
-
-Build an installable desktop bundle:
+**The dev gateway** (a stand-in "soul" speaking the presence protocol) and the
+**browser-only preview**:
 
 ```bash
-npm run desktop:build
-```
-
-The browser-only preview is still available with:
-
-```bash
-npm run dev
+npm run gateway:dev          # VS Code task: BB gateway
+npm run dev                  # browser preview  (VS Code task: BB browser preview)
 ```
 
 Governance ensures they are reliable. Playfulness ensures you'll love having them around.

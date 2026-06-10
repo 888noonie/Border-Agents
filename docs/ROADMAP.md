@@ -56,7 +56,7 @@ Delivered / scaffolded:
 - Collapsible workbench sections with colored counters for compact buddy panels
 - Trust Workbench action state: verify, selected source, receipt export preview, trusted-only context summary
 - Receipt detail viewer with receipt id, packet/chunk ids, grade, prompt status, final reason, and derivation steps
-- Remembered user mode selector: Work / Play / Private posture for dock, gateway, receipts, and future file review defaults
+- Work / Play / Private posture as a deterministic core primitive (`src/core/userPosture.ts`): tighten-only over the purpose policies, with a separate non-authorization interaction layer and a hard confirmation floor on medium/high-risk actions
 - Refined speech bubble behavior: docked buddies show minimal status output; undocked buddies show tabbed controls
 - Persisted undocked speech bubble state: active tab, collapsed sections, center/full-height fit, and settings-overflow guard
 - Tests for workbench section collapse and receipt expansion
@@ -70,6 +70,29 @@ Next deliverables:
 - Durable receipt export/download path
 - Dedicated receipt viewer layout for longer derivation trails
 - Wire file-system review surfaces to the active user mode posture
+
+---
+
+## Presence layer — one soul, many bodies ⏳
+
+Goal: a portable presence surface for buddies, with the body/soul trust boundary
+(AGENTS.md law 7) baked in. Born from the overlay rebuild — see
+`docs/OVERLAY_POSTMORTEM_AND_REBUILD_PLAN.md`.
+
+Build order:
+
+1. **Presence protocol v0** ✅ — typed, versioned soul⟷body schema
+   (`src/presenceProtocol.ts`); JS mirror for the browser body; dev gateway soul.
+2. **Layer-shell spike** ✅ — pure-Rust per-buddy surface on `wlr-layer-shell`
+   (`desktop-body/`), pixel-exact placement, click-through, no GTK/WebKit/GPU.
+3. **Animated body** ✅ (user-verified) — face, blink, emotion, speech bubble, menu;
+   drag-stable via relative pointer; on-screen clamp; correct buffer-size rendering.
+4. **Wire the soul** ⏳ — presence WebSocket client in the Rust body; first driver is
+   the scripted **Wizard** onboarding host (`docs/WIZARD_ONBOARDING_SCRIPT.md`).
+5. **Governance vertical slice** — a buddy action produces a receipt, joining the
+   presence layer to the governance core.
+
+Known cosmetic TODO: edge-aware speech-bubble placement (clips at far-right edge).
 
 ---
 

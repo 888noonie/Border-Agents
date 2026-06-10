@@ -16,23 +16,26 @@ same vector results
 
 Do not expand into a general agent framework until the memory grading primitive is proven.
 
-## Translation rule
+## Metaphor & naming
 
-Use the project owner's four-layer rule:
+Border Agents is a metaphor-rich product *on purpose* — souls and bodies, buddies,
+Core Patrol, the Wizard, Hermes. That vocabulary is a feature: it makes governance
+legible and the experience delightful. Use it freely in vision, docs, UX, the
+characters, and the presence layer.
 
-```text
-Vision layer: metaphor allowed
-Architecture layer: metaphor translated
-API layer: metaphor removed
-Test layer: metaphor forbidden
-```
+Keep one place plain and literal: the **trust-critical core** — the governance
+primitives (`MemoryPacket`, `PurposePolicy`, `MemoryGrader`, `SafeContextFrame`,
+`PromptRenderer`, `GradeReceipt`, the posture resolver) and their tests. A misread
+*there* is a security bug, not a vibe, so those identifiers and assertions stay
+precise and concrete. Metaphor may *describe* what they do in comments and docs; it
+just shouldn't be the name you reason about when deciding authorization.
 
-That means:
+Rule of thumb: **metaphor for what the system feels like; literal names for what the
+system decides.** In the core, when in doubt, translate. Everywhere else, enjoy it.
 
-- Vision docs may use terms like border, patrol, crossing, safe passage.
-- Architecture docs must translate those into boundaries, states, policies, frames, receipts, and UI events.
-- API code must use plain technical names.
-- Tests must use concrete inputs, outputs, and assertions only.
+The older "four-layer" framing (vision allowed → architecture translated → API
+removed → test forbidden) still holds as a *gradient*, just read it as guidance, not
+a ban: metaphor is most welcome at the edges and most disciplined at the deciding core.
 
 ## Non-negotiable laws
 
@@ -49,6 +52,26 @@ That means:
    screen itself. This boundary is also what keeps bodies portable across
    platforms and the trust core deterministic. It erodes through convenience,
    not decision — hold it.
+
+## Where the build is (June 2026)
+
+Two halves, joined by the presence protocol; not yet wired end to end.
+
+- **Governance core** (`src/core/`) — deterministic, test-backed: `MemoryPacket`,
+  `PurposePolicy`, `MemoryGrader`, `SafeContextFrame`, `PromptRenderer`,
+  `GradeReceipt`, and the Work/Play/Private posture (`userPosture.ts`, tighten-only
+  over the purpose policies). 70 tests green.
+- **Presence layer** (branch `presence-layer`) — soul⟷body split. Typed, versioned
+  protocol (`src/presenceProtocol.ts`); a pure-Rust native body on `wlr-layer-shell`
+  (`desktop-body/`, animated, drag-stable, user-verified); a browser body
+  (`extensions/browser/presence.js`); a dev gateway "soul" (`scripts/gateway-dev.mjs`).
+  Born from the overlay rebuild — read `docs/OVERLAY_POSTMORTEM_AND_REBUILD_PLAN.md`
+  before touching desktop overlay code.
+
+Next: **Step 4** — a presence WebSocket client in the Rust body, first driven by the
+scripted **Wizard** onboarding host (`docs/WIZARD_ONBOARDING_SCRIPT.md`). Then
+**Step 5** — the governance vertical slice that makes a buddy action produce a
+receipt, finally joining the two halves.
 
 ## v0.1 scope
 
@@ -101,7 +124,9 @@ Use plain internal API names:
 - `PromptRenderer`
 - `GradeReceipt`
 
-Avoid mystical or metaphor-heavy class names in implementation.
+Keep these core identifiers literal. Metaphor-rich names are welcome elsewhere —
+presence/body code, characters, UI, demos (`soul`, `body`, `Wizard`, `Host`,
+`Hermes`, `Core Patrol` all earn their keep). See *Metaphor & naming* above.
 
 ## First demo requirement
 

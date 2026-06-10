@@ -85,6 +85,7 @@ fn main() {
     }
 
     let mut app = App {
+        buddy: std::env::var("BB_BUDDY").unwrap_or_else(|_| "hermes".to_string()),
         registry_state: RegistryState::new(&globals),
         seat_state: SeatState::new(&globals, &qh),
         output_state: OutputState::new(&globals, &qh),
@@ -179,13 +180,13 @@ fn main() {
     // This commit only logs them; the next applies them to the body state.
     let (presence_tx, presence_rx) = calloop::channel::channel::<String>();
     handle
-        .insert_source(presence_rx, |event, _meta, _app: &mut App| {
+        .insert_source(presence_rx, |event, _meta, app: &mut App| {
             if let ChannelEvent::Msg(text) = event {
-                eprintln!("[bb-presence] inbound cue: {text}");
+                app.on_presence_message(&text);
             }
         })
         .expect("insert presence source");
-    presence::spawn(presence_tx);
+    presence::spawn(app.buddy.clone(), presence_tx);
 
     if let Err(err) = event_loop.run(Some(Duration::from_millis(33)), &mut app, |app| {
         if app.exit {
@@ -213,6 +214,8 @@ enum PressTarget {
 }
 
 struct App {
+    /// This body's identity — filters inbound cues and stamps outbound events.
+    buddy: String,
     registry_state: RegistryState,
     seat_state: SeatState,
     output_state: OutputState,
@@ -350,7 +353,58 @@ impl App {
         layer.commit();
     }
 
-    // --- presentation API (step 4 will call these from presence events) ---
+    // --- presence: the soul driving the body ---
+
+    /// Apply an inbound presence frame. Cues for other buddies, and anything
+    /// malformed or not a body cue, are ignored (the parser already dropped them).
+    fn on_presence_message(&mut self, text: &str) {
+        let Some(msg) = presence::parse_to_body(text) else { return };
+        if msg.buddy != self.buddy {
+            return;
+        }
+        eprintln!("[bb-presence] applying cue for {}: {:?}", msg.buddy, msg.cue);
+        match msg.cue {
+            presence::Cue::Express { emotion } => {
+                if let Some(e) = Emotion::from_wire(&emotion) {
+                    self.set_emotion(e);
+                }
+            }
+            presence::Cue::Say { text } => self.say(text),
+            presence::Cue::MoveTo { position } => self.apply_position(position),
+            presence::Cue::Hydrate { position, emotion, speech } => {
+                if let Some(p) = position {
+                    self.apply_position(p);
+                }
+                if let Some(e) = emotion.as_deref().and_then(Emotion::from_wire) {
+                    self.set_emotion(e);
+                }
+                if let Some(s) = speech {
+                    self.say(s);
+                }
+            }
+        }
+    }
+
+    /// Place the body at an abstract presence position. Shares the margin + clamp +
+    /// reposition path with dragging, so move_to and drag can never drift apart.
+    fn apply_position(&mut self, position: presence::Position) {
+        let (left, top) = match position {
+            presence::Position::Anchored { edge, ox, oy } => presence::anchored_to_margins(
+                edge,
+                ox,
+                oy,
+                (render::SURFACE_W as f64, render::SURFACE_H as f64),
+                self.screen,
+            ),
+            presence::Position::Free { x, y } => (x, y),
+        };
+        self.margin_left = left;
+        self.margin_top = top;
+        self.clamp_margins();
+        self.reposition();
+    }
+
+    // --- presentation API (called by presence cues above and local interaction) ---
 
     fn set_emotion(&mut self, emotion: Emotion) {
         self.emotion = emotion;

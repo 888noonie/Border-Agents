@@ -37,9 +37,10 @@ fn now_ms() -> u64 {
 
 /// Spawn the presence client thread. Returns immediately; the body runs with or
 /// without a soul. `inbound` forwards raw inbound JSON frames into the calloop loop.
-pub fn spawn(inbound: Sender<String>) {
+/// `buddy` is the body's identity — used in the `attached` handshake and (on the main
+/// thread) to filter inbound cues addressed to other buddies.
+pub fn spawn(buddy: String, inbound: Sender<String>) {
     let url = std::env::var("BB_PRESENCE_URL").unwrap_or_else(|_| DEFAULT_URL.to_string());
-    let buddy = std::env::var("BB_BUDDY").unwrap_or_else(|_| "hermes".to_string());
 
     if let Err(err) = thread::Builder::new()
         .name("bb-presence".into())
@@ -139,5 +140,209 @@ fn set_read_timeout(socket: &WebSocket<MaybeTlsStream<TcpStream>>, dur: Option<D
             let _ = stream.set_read_timeout(dur);
         }
         _ => {}
+    }
+}
+
+// --- inbound to-body cues ------------------------------------------------------
+//
+// We parse only the to-body kinds the body acts on: express / say / move_to /
+// hydrate. `attention` is reserved (deferred — see the Step 4 plan), and to-soul
+// kinds are not cues, so both yield `None` and are ignored. Mirrors the strict
+// TS parser: anything malformed returns `None` and is dropped, never panics.
+
+use serde_json::Value;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Edge {
+    Top,
+    Right,
+    Bottom,
+    Left,
+}
+
+/// A body-agnostic position resolved enough for the body to place itself.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Position {
+    /// Tuck against `edge` with a pixel offset (maps to anchor+margin).
+    Anchored { edge: Edge, ox: f64, oy: f64 },
+    /// Float at a screen point (v1: treated as the surface top-left).
+    Free { x: f64, y: f64 },
+}
+
+/// An inbound presentation cue the body applies to itself.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Cue {
+    Express { emotion: String },
+    Say { text: String },
+    MoveTo { position: Position },
+    Hydrate {
+        position: Option<Position>,
+        emotion: Option<String>,
+        speech: Option<String>,
+    },
+}
+
+/// A parsed to-body message: which buddy it concerns, and the cue to apply.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToBody {
+    pub buddy: String,
+    pub cue: Cue,
+}
+
+fn parse_edge(value: &str) -> Option<Edge> {
+    match value {
+        "top" => Some(Edge::Top),
+        "right" => Some(Edge::Right),
+        "bottom" => Some(Edge::Bottom),
+        "left" => Some(Edge::Left),
+        _ => None,
+    }
+}
+
+fn parse_position(value: &Value) -> Option<Position> {
+    match value.get("mode")?.as_str()? {
+        "anchored" => {
+            let edge = parse_edge(value.get("edge")?.as_str()?)?;
+            let offset = value.get("offset")?;
+            let ox = offset.get("x")?.as_f64()?;
+            let oy = offset.get("y")?.as_f64()?;
+            Some(Position::Anchored { edge, ox, oy })
+        }
+        "free" => {
+            let x = value.get("x")?.as_f64()?;
+            let y = value.get("y")?.as_f64()?;
+            Some(Position::Free { x, y })
+        }
+        _ => None,
+    }
+}
+
+/// Parse a raw inbound frame into a to-body cue, or `None` if it is not a
+/// well-formed v0 presence message of a kind the body acts on.
+pub fn parse_to_body(text: &str) -> Option<ToBody> {
+    let v: Value = serde_json::from_str(text).ok()?;
+
+    if v.get("protocol")?.as_str()? != PROTOCOL {
+        return None;
+    }
+    if v.get("v")?.as_u64()? != VERSION as u64 {
+        return None;
+    }
+    let buddy = v.get("buddy")?.as_str()?.to_string();
+
+    let cue = match v.get("kind")?.as_str()? {
+        "express" => Cue::Express {
+            emotion: v.get("emotion")?.as_str()?.to_string(),
+        },
+        "say" => Cue::Say {
+            text: v.get("text")?.as_str()?.to_string(),
+        },
+        "move_to" => Cue::MoveTo {
+            position: parse_position(v.get("position")?)?,
+        },
+        "hydrate" => Cue::Hydrate {
+            position: v.get("position").and_then(parse_position),
+            emotion: v.get("emotion").and_then(|e| e.as_str()).map(String::from),
+            speech: v.get("speech").and_then(|s| s.as_str()).map(String::from),
+        },
+        // attention (reserved) and all to-soul kinds are not body cues.
+        _ => return None,
+    };
+
+    Some(ToBody { buddy, cue })
+}
+
+/// Resolve an `anchored` position to surface (left, top) margins. Edge-relative math
+/// needs the screen size; without it (`screen == None`) we can only honor offsets
+/// from the top-left, so right/bottom fall back to the raw offset.
+pub fn anchored_to_margins(
+    edge: Edge,
+    ox: f64,
+    oy: f64,
+    surface: (f64, f64),
+    screen: Option<(f64, f64)>,
+) -> (f64, f64) {
+    let (surf_w, surf_h) = surface;
+    let mut left = ox;
+    let mut top = oy;
+    if let Some((sw, sh)) = screen {
+        match edge {
+            Edge::Right => left = sw - surf_w - ox,
+            Edge::Bottom => top = sh - surf_h - oy,
+            Edge::Left | Edge::Top => {}
+        }
+    }
+    (left, top)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The cross-language contract: this is the same fixture the TS suite checks.
+    const FIXTURES: &str = include_str!("../../fixtures/presence-v0.json");
+
+    fn fixture(kind: &str) -> String {
+        let all: Value = serde_json::from_str(FIXTURES).unwrap();
+        all.get(kind).unwrap().to_string()
+    }
+
+    #[test]
+    fn parses_each_to_body_fixture() {
+        let express = parse_to_body(&fixture("express")).unwrap();
+        assert_eq!(express.buddy, "hermes");
+        assert_eq!(express.cue, Cue::Express { emotion: "happy".into() });
+
+        let say = parse_to_body(&fixture("say")).unwrap();
+        assert!(matches!(say.cue, Cue::Say { .. }));
+
+        let move_to = parse_to_body(&fixture("move_to")).unwrap();
+        assert_eq!(
+            move_to.cue,
+            Cue::MoveTo { position: Position::Anchored { edge: Edge::Right, ox: 24.0, oy: 48.0 } }
+        );
+
+        let hydrate = parse_to_body(&fixture("hydrate")).unwrap();
+        match hydrate.cue {
+            Cue::Hydrate { position, emotion, speech } => {
+                assert!(position.is_some());
+                assert_eq!(emotion.as_deref(), Some("neutral"));
+                assert_eq!(speech.as_deref(), Some("ready"));
+            }
+            other => panic!("expected hydrate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn to_soul_and_attention_fixtures_are_not_body_cues() {
+        for kind in ["attached", "clicked", "grabbed", "dropped", "summoned", "dismissed", "attention"] {
+            assert!(parse_to_body(&fixture(kind)).is_none(), "{kind} should not be a body cue");
+        }
+    }
+
+    #[test]
+    fn rejects_malformed_and_wrong_version() {
+        assert!(parse_to_body("not json").is_none());
+        assert!(parse_to_body(r#"{"protocol":"presence","v":1,"kind":"say","buddy":"h","ts":1,"text":"x"}"#).is_none());
+        assert!(parse_to_body(r#"{"protocol":"gateway","v":0,"kind":"say","buddy":"h","ts":1,"text":"x"}"#).is_none());
+        // move_to with an incomplete offset
+        assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"move_to","buddy":"h","ts":1,"position":{"mode":"anchored","edge":"right","offset":{"x":1}}}"#).is_none());
+    }
+
+    #[test]
+    fn anchored_mapping_honors_each_edge() {
+        let surface = (320.0, 360.0);
+        let screen = Some((1000.0, 800.0));
+        assert_eq!(anchored_to_margins(Edge::Left, 24.0, 48.0, surface, screen), (24.0, 48.0));
+        assert_eq!(anchored_to_margins(Edge::Top, 24.0, 48.0, surface, screen), (24.0, 48.0));
+        assert_eq!(anchored_to_margins(Edge::Right, 24.0, 48.0, surface, screen), (1000.0 - 320.0 - 24.0, 48.0));
+        assert_eq!(anchored_to_margins(Edge::Bottom, 24.0, 48.0, surface, screen), (24.0, 800.0 - 360.0 - 48.0));
+    }
+
+    #[test]
+    fn anchored_mapping_falls_back_without_screen() {
+        let surface = (320.0, 360.0);
+        // Right/bottom can't be resolved without a screen — honor the raw offset.
+        assert_eq!(anchored_to_margins(Edge::Right, 24.0, 48.0, surface, None), (24.0, 48.0));
     }
 }

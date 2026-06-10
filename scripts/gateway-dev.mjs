@@ -133,6 +133,18 @@ function handlePresenceInteraction(socket, message) {
   const buddy = String(message.buddy);
 
   switch (message.kind) {
+    case "attached":
+      // Complete the handshake: a real soul replies to `attached` with a `hydrate`
+      // snapshot. The dev soul sends a friendly one so a freshly-connected body
+      // visibly comes online. (The full Wizard onboarding script is a later step.)
+      socket.send(
+        presenceEnvelope("hydrate", buddy, {
+          position: { mode: "anchored", edge: "right", offset: { x: 24, y: 48 } },
+          emotion: "happy",
+          speech: "Wired up — hello from the gateway.",
+        }),
+      );
+      return;
     case "summoned":
       socket.send(presenceEnvelope("express", buddy, { emotion: "happy" }));
       socket.send(presenceEnvelope("say", buddy, { text: "You called?" }));

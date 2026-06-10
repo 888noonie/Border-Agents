@@ -6,3 +6,4 @@ export * from "./promptRenderer";
 export * from "./receiptSummary";
 export * from "./schemas";
 export * from "./types";
+export * from "./userPosture";

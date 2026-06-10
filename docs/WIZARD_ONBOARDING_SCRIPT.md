@@ -74,14 +74,30 @@ target**, **advancing body→soul event**, and the **governance receipt** it emi
 
 ## Act 2 — Choose your posture  (Work / Play / Private — NEW sugar)
 
-Friendly wrapper over the real governance knobs (`PURPOSE_POLICIES`, `RenderMode`).
-Proposed mapping (the Wizard's only net-new concept):
+Friendly wrapper over the real governance knobs. **Implemented & test-backed** in
+`src/core/userPosture.ts` (`resolvePosturePolicy`, `getInteractionPosture`,
+`requiresConfirmation`) — 10 tests in `src/core/__tests__/userPosture.test.ts`.
 
-| Posture     | Feel                  | Default render_mode | Grades in prompt        | Sensitivity ceiling | Agent actions |
-|-------------|-----------------------|---------------------|-------------------------|---------------------|---------------|
-| **Private** | Locked down           | `strict`            | `trusted` only          | `public`            | ask every time |
-| **Work**    | Balanced (default)    | `annotated`         | `trusted`,`limited`     | `internal`          | ask on high-risk |
-| **Play**    | Relaxed, low-friction | `clean`             | `trusted`,`limited`     | `internal`          | ask on high-risk |
+**Design rule (locked, enforced by construction):** a posture may only ever
+*tighten* a purpose policy, never widen it (AGENTS.md laws 4 & 7). The resolver is
+structurally incapable of widening — it intersects grade/sensitivity sets and only
+strengthens render mode. So Private clamps; Work is the authored baseline; **Play
+has IDENTICAL authorization to Work**. "Play" feels low-friction only through a
+*separate interaction layer* (confirmation cadence, notification verbosity), which
+never changes *whether* something is authorized.
+
+| Posture     | Authorization                                              | Interaction (non-trust)              |
+|-------------|-----------------------------------------------------------|--------------------------------------|
+| **Private** | Clamp every purpose → `trusted`-only, `public`-only, `strict`, require freshness + assertion authority | quiet, auto-collapse chrome |
+| **Work**    | Built-in purpose policies as authored (baseline)          | normal notifications                 |
+| **Play**    | **Same as Work** — no relaxation of the trust boundary    | chatty; waives confirm on *low-risk only* |
+
+**Hard confirmation floor (the line that stops Play being a hole):** medium- and
+high-risk purposes (`answer_current_policy`, `agent_action`, `external_share`)
+*always* confirm, in every posture. Play can only waive confirmation on low-risk,
+already-authorized actions (`summarize_history`). Each Private clamp emits a
+`DerivationStep` (`policy_rule: user_posture.tighten_only`) for the `posture.set`
+receipt.
 
 - **Body:** `express` mirrors the pick — Private→`alert`, Work→`neutral`, Play→`happy`.
   `say` a one-line consequence (“Private: nothing leaves without your say-so.”).
@@ -149,4 +165,6 @@ First-run vs hub is decided by an `onboarding.completed` receipt existing.
 - Host persona: dedicated `host` character asset vs unbranded body skin. *Lean: skin.*
 - Where the body reads placement/posture config (a `config.json` the Rust body loads
   vs continuing to use env). Needed before Act 3 can actually move buddies on save.
-- Posture table values above are a proposal — confirm before they become policy.
+- Posture is now implemented (`src/core/userPosture.ts`). Remaining: persist the
+  chosen posture, seed it into the Safe Context Frame resolution path, and surface
+  the interaction layer (confirm cadence / notifications) in the body + dock.

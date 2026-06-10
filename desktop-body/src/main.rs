@@ -112,6 +112,7 @@ fn main() {
         press: None,
         drag: false,
         exit: false,
+        presence_out: None,
     };
 
     // Let outputs (and their xdg-output logical size) arrive before we create the
@@ -186,7 +187,7 @@ fn main() {
             }
         })
         .expect("insert presence source");
-    presence::spawn(app.buddy.clone(), presence_tx);
+    app.presence_out = Some(presence::spawn(app.buddy.clone(), presence_tx));
 
     if let Err(err) = event_loop.run(Some(Duration::from_millis(33)), &mut app, |app| {
         if app.exit {
@@ -204,6 +205,9 @@ struct PressState {
     target: PressTarget,
     /// Accumulated physical pointer travel since press — distinguishes click from drag.
     dist: f64,
+    /// Whether `grabbed` has been emitted for this press (fires once, when `dist`
+    /// first crosses the click slop — never on press, or every click is a phantom grab).
+    grabbed_sent: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -242,6 +246,9 @@ struct App {
     press: Option<PressState>,
     drag: bool,
     exit: bool,
+    /// Outbound to-soul events (clicked/grabbed/dropped). Best-effort: `None` until the
+    /// presence thread starts, and sends are dropped when no soul is connected.
+    presence_out: Option<std::sync::mpsc::Sender<String>>,
 }
 
 fn pick_output(app: &App) -> Option<wl_output::WlOutput> {
@@ -460,7 +467,7 @@ impl App {
             PressTarget::Outside
         };
 
-        self.press = Some(PressState { target, dist: 0.0 });
+        self.press = Some(PressState { target, dist: 0.0, grabbed_sent: false });
         if target == PressTarget::Head {
             self.drag = true;
         }
@@ -471,11 +478,21 @@ impl App {
     fn on_drag_delta(&mut self, dx: f64, dy: f64) {
         let Some(press) = self.press.as_mut() else { return };
         press.dist += dx.abs() + dy.abs();
+        // A grab is a real drag, not a click: announce it the first time travel
+        // crosses the slop. Doing this here (not in on_press) keeps every click from
+        // emitting a phantom grabbed+dropped pair.
+        let grab_now = self.drag && !press.grabbed_sent && press.dist > CLICK_SLOP;
+        if grab_now {
+            press.grabbed_sent = true;
+        }
         if self.drag {
             self.margin_left += dx;
             self.margin_top += dy;
             self.clamp_margins();
             self.reposition();
+        }
+        if grab_now {
+            self.emit_grabbed();
         }
     }
 
@@ -483,13 +500,41 @@ impl App {
         let Some(press) = self.press.take() else { return };
         self.drag = false;
         if press.dist > CLICK_SLOP {
-            return; // it was a drag, not a click
+            // It was a drag: tell the soul where the buddy came to rest, so the
+            // placement can be persisted and restored on the next hydrate.
+            self.emit_dropped();
+            return;
         }
         match press.target {
-            PressTarget::Head => self.toggle_menu(),
+            PressTarget::Head => {
+                self.emit_clicked();
+                self.toggle_menu();
+            }
             PressTarget::MenuItem(i) => self.activate_menu_item(i),
             PressTarget::Outside => {}
         }
+    }
+
+    // --- presence: report this body's own interaction to the soul ---
+
+    /// Best-effort push of a to-soul event. Dropped silently if the presence thread
+    /// isn't up or no soul is connected — the body never depends on being observed.
+    fn send_to_soul(&self, json: String) {
+        if let Some(tx) = self.presence_out.as_ref() {
+            let _ = tx.send(json);
+        }
+    }
+
+    fn emit_clicked(&self) {
+        self.send_to_soul(presence::clicked_json(&self.buddy, self.margin_left, self.margin_top));
+    }
+
+    fn emit_grabbed(&self) {
+        self.send_to_soul(presence::grabbed_json(&self.buddy, self.margin_left, self.margin_top));
+    }
+
+    fn emit_dropped(&self) {
+        self.send_to_soul(presence::dropped_json(&self.buddy, self.margin_left, self.margin_top));
     }
 }
 

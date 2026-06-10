@@ -13,6 +13,7 @@
 //! the body runs standalone and the thread keeps retrying with backoff.
 
 use std::net::TcpStream;
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -35,22 +36,26 @@ fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
-/// Spawn the presence client thread. Returns immediately; the body runs with or
-/// without a soul. `inbound` forwards raw inbound JSON frames into the calloop loop.
-/// `buddy` is the body's identity — used in the `attached` handshake and (on the main
-/// thread) to filter inbound cues addressed to other buddies.
-pub fn spawn(buddy: String, inbound: Sender<String>) {
+/// Spawn the presence client thread. Returns an outbound sender the body uses to push
+/// to-soul events (clicked/grabbed/dropped/...); the body runs with or without a soul,
+/// so sends are best-effort and silently dropped if no soul is connected. `inbound`
+/// forwards raw inbound JSON frames into the calloop loop. `buddy` is the body's
+/// identity — used in the `attached` handshake and to filter inbound cues.
+pub fn spawn(buddy: String, inbound: Sender<String>) -> mpsc::Sender<String> {
     let url = std::env::var("BB_PRESENCE_URL").unwrap_or_else(|_| DEFAULT_URL.to_string());
+    let (out_tx, out_rx) = mpsc::channel::<String>();
 
     if let Err(err) = thread::Builder::new()
         .name("bb-presence".into())
-        .spawn(move || run(url, buddy, inbound))
+        .spawn(move || run(url, buddy, inbound, out_rx))
     {
         eprintln!("[bb-presence] could not start presence thread: {err} — running standalone");
     }
+
+    out_tx
 }
 
-fn run(url: String, buddy: String, inbound: Sender<String>) {
+fn run(url: String, buddy: String, inbound: Sender<String>, out_rx: mpsc::Receiver<String>) {
     let mut backoff = INITIAL_BACKOFF;
 
     loop {
@@ -59,9 +64,15 @@ fn run(url: String, buddy: String, inbound: Sender<String>) {
                 eprintln!("[bb-presence] connected to {url} as '{buddy}'");
                 backoff = INITIAL_BACKOFF; // reset after a good connection
 
+                // Presence events are ephemeral. Anything queued while we were
+                // disconnected is now stale — replaying a grabbed/clicked after
+                // reconnect would be a lie. Discard the backlog; `attached`+`hydrate`
+                // re-establishes truth.
+                while out_rx.try_recv().is_ok() {}
+
                 if announce(&mut socket, &buddy).is_ok() {
                     set_read_timeout(&socket, Some(READ_TIMEOUT));
-                    if pump(&mut socket, &inbound).is_break() {
+                    if pump(&mut socket, &inbound, &out_rx).is_break() {
                         return; // main loop gone — body is exiting
                     }
                 }
@@ -103,6 +114,7 @@ fn announce(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>, buddy: &str) -> R
 fn pump(
     socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
     inbound: &Sender<String>,
+    out_rx: &mpsc::Receiver<String>,
 ) -> std::ops::ControlFlow<()> {
     use std::io::ErrorKind;
     use std::ops::ControlFlow;
@@ -123,7 +135,11 @@ fn pump(
             Err(tungstenite::Error::Io(e))
                 if e.kind() == ErrorKind::WouldBlock || e.kind() == ErrorKind::TimedOut =>
             {
-                // Idle read timeout — nothing to read. (Later: drain outbound here.)
+                // Idle read timeout — the cadence (~200ms) at which we flush queued
+                // to-soul events. A send failure means the link is gone; reconnect.
+                if !drain_outbound(socket, out_rx) {
+                    return ControlFlow::Continue(());
+                }
             }
             Err(err) => {
                 eprintln!("[bb-presence] read error: {err} — reconnecting");
@@ -131,6 +147,64 @@ fn pump(
             }
         }
     }
+}
+
+/// Flush all queued to-soul events to the socket. Returns `false` if a send failed
+/// (the caller should reconnect). An empty or disconnected queue is not an error.
+fn drain_outbound(
+    socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    out_rx: &mpsc::Receiver<String>,
+) -> bool {
+    loop {
+        match out_rx.try_recv() {
+            Ok(text) => {
+                if let Err(err) = socket.send(Message::Text(text.into())) {
+                    eprintln!("[bb-presence] failed to send to-soul event: {err} — reconnecting");
+                    return false;
+                }
+            }
+            // Empty: nothing pending. Disconnected: the body is shutting down — the
+            // inbound channel will surface that; just stop draining for now.
+            Err(_) => return true,
+        }
+    }
+}
+
+// --- outbound to-soul events ---------------------------------------------------
+//
+// The body reports its own interaction (clicked/grabbed/dropped) so the soul can
+// react and, in time, mint receipts. These are presentation-OUT only: the body never
+// reports screen content or does anything beyond its own surface (AGENTS.md law 7).
+// Position is the body's current placement as a `free`/`screen` point — what the soul
+// persists so a later `hydrate` can restore it.
+
+fn to_soul(kind: &str, buddy: &str, mut fields: Value) -> String {
+    let envelope = fields.as_object_mut().expect("fields is a json object");
+    envelope.insert("protocol".into(), json!(PROTOCOL));
+    envelope.insert("v".into(), json!(VERSION));
+    envelope.insert("kind".into(), json!(kind));
+    envelope.insert("buddy".into(), json!(buddy));
+    envelope.insert("ts".into(), json!(now_ms()));
+    Value::Object(envelope.clone()).to_string()
+}
+
+fn free_at(x: f64, y: f64) -> Value {
+    json!({ "mode": "free", "space": "screen", "x": x, "y": y })
+}
+
+/// A non-drag press on the buddy.
+pub fn clicked_json(buddy: &str, x: f64, y: f64) -> String {
+    to_soul("clicked", buddy, json!({ "button": "primary", "at": free_at(x, y) }))
+}
+
+/// The user began dragging the buddy (emitted once, when travel crosses the click slop).
+pub fn grabbed_json(buddy: &str, x: f64, y: f64) -> String {
+    to_soul("grabbed", buddy, json!({ "at": free_at(x, y) }))
+}
+
+/// The user released a drag — `at` is the final resting position the soul persists.
+pub fn dropped_json(buddy: &str, x: f64, y: f64) -> String {
+    to_soul("dropped", buddy, json!({ "at": free_at(x, y) }))
 }
 
 /// Set a read timeout on the underlying TCP stream (plain ws:// only).
@@ -371,5 +445,28 @@ mod tests {
         let surface = (320.0, 360.0);
         // Right/bottom can't be resolved without a screen — honor the raw offset.
         assert_eq!(anchored_to_margins(Edge::Right, 24.0, 48.0, surface, None), (24.0, 48.0));
+    }
+
+    #[test]
+    fn to_soul_builders_emit_valid_envelopes() {
+        let g: Value = serde_json::from_str(&grabbed_json("hermes", 100.0, 200.0)).unwrap();
+        assert_eq!(g["protocol"], "presence");
+        assert_eq!(g["v"], 0);
+        assert_eq!(g["kind"], "grabbed");
+        assert_eq!(g["buddy"], "hermes");
+        assert_eq!(g["at"]["mode"], "free");
+        assert_eq!(g["at"]["space"], "screen");
+        assert_eq!(g["at"]["x"], 100.0);
+        assert_eq!(g["at"]["y"], 200.0);
+
+        let c: Value = serde_json::from_str(&clicked_json("hermes", 1.0, 2.0)).unwrap();
+        assert_eq!(c["kind"], "clicked");
+        assert_eq!(c["button"], "primary");
+        assert_eq!(c["at"]["mode"], "free");
+
+        let d: Value = serde_json::from_str(&dropped_json("hermes", 3.0, 4.0)).unwrap();
+        assert_eq!(d["kind"], "dropped");
+        assert_eq!(d["at"]["x"], 3.0);
+        assert_eq!(d["at"]["y"], 4.0);
     }
 }

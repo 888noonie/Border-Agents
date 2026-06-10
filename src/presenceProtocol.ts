@@ -58,12 +58,21 @@ export const PRESENCE_EMOTIONS: readonly PresenceEmotion[] = [
 ];
 
 /**
- * Body-agnostic position. `anchored` tucks the buddy against a screen edge with a
- * pixel offset (maps to layer-shell anchor+margin); `free` floats it at a point in
- * a named coordinate space.
+ * Body-agnostic position. `anchored` floats the *whole* buddy near a screen edge
+ * with a pixel offset (maps to layer-shell anchor+margin); `tucked` parks it flush
+ * against an edge in a minimized form (the body shows only a tucked bump/peek, not
+ * the full figure) with the offset giving its position *along* that edge — the
+ * along-edge axis is `y` for left/right edges and `x` for top/bottom; the flush axis
+ * is ignored. `free` floats it at a point in a named coordinate space.
+ *
+ * `tucked` is a distinct mode, not anchored-with-zero-offset, because it changes how
+ * the body *presents* (minimized bump vs full figure) and what summon/dismiss mean —
+ * keeping it explicit means a persisted drop position round-trips through `hydrate`
+ * with its tucked-ness intact, instead of springing back to the full figure.
  */
 export type PresencePosition =
   | { mode: "anchored"; edge: PresenceEdge; offset: { x: number; y: number } }
+  | { mode: "tucked"; edge: PresenceEdge; offset: { x: number; y: number } }
   | { mode: "free"; space: PresenceSpace; x: number; y: number };
 
 /** Where the buddy is attending. */
@@ -231,7 +240,7 @@ function isPosition(value: unknown): value is PresencePosition {
     return false;
   }
 
-  if (value.mode === "anchored") {
+  if (value.mode === "anchored" || value.mode === "tucked") {
     const offset = value.offset;
     return (
       isEdge(value.edge) &&

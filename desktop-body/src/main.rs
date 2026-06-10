@@ -389,7 +389,11 @@ impl App {
     /// reposition path with dragging, so move_to and drag can never drift apart.
     fn apply_position(&mut self, position: presence::Position) {
         let (left, top) = match position {
-            presence::Position::Anchored { edge, ox, oy } => presence::anchored_to_margins(
+            // Tucked shares the anchor+margin math with Anchored for now (a flush-axis
+            // offset of 0 parks it against the edge); the minimized bump rendering and
+            // shrunk input region land in a later commit.
+            presence::Position::Anchored { edge, ox, oy }
+            | presence::Position::Tucked { edge, ox, oy } => presence::anchored_to_margins(
                 edge,
                 ox,
                 oy,

@@ -14,6 +14,7 @@ import { presence, type PresencePosition } from "./presenceProtocol";
 
 const BUDDY = "hermes";
 const ANCHORED: PresencePosition = { mode: "anchored", edge: "right", offset: { x: 24, y: 48 } };
+const TUCKED: PresencePosition = { mode: "tucked", edge: "left", offset: { x: 0, y: 400 } };
 const FREE: PresencePosition = { mode: "free", space: "screen", x: 800, y: 120 };
 
 /** Fixed timestamps keep the emitted fixture byte-stable across regenerations. */
@@ -27,7 +28,7 @@ export const PRESENCE_FIXTURES = {
   clicked: presence.clicked(BUDDY, { button: "primary", at: FREE, ts: 1006 }),
   grabbed: presence.grabbed(BUDDY, FREE, { ts: 1007 }),
   dragged: presence.dragged(BUDDY, FREE, { ts: 1008 }),
-  dropped: presence.dropped(BUDDY, ANCHORED, { onTarget: "dock", ts: 1009 }),
+  dropped: presence.dropped(BUDDY, TUCKED, { onTarget: "dock", ts: 1009 }),
   summoned: presence.summoned(BUDDY, { ts: 1010 }),
   dismissed: presence.dismissed(BUDDY, { ts: 1011 }),
 } as const;

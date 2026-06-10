@@ -163,8 +163,13 @@ pub enum Edge {
 /// A body-agnostic position resolved enough for the body to place itself.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Position {
-    /// Tuck against `edge` with a pixel offset (maps to anchor+margin).
+    /// Float the whole figure near `edge` with a pixel offset (anchor+margin).
     Anchored { edge: Edge, ox: f64, oy: f64 },
+    /// Park flush against `edge` in minimized (bump) form; the offset's along-edge
+    /// axis positions it down/across that edge, the flush axis is ignored. The
+    /// minimized rendering itself lands in a later commit; placement is shared with
+    /// `Anchored` for now (a flush-axis offset of 0 puts it against the edge).
+    Tucked { edge: Edge, ox: f64, oy: f64 },
     /// Float at a screen point (v1: treated as the surface top-left).
     Free { x: f64, y: f64 },
 }
@@ -207,6 +212,13 @@ fn parse_position(value: &Value) -> Option<Position> {
             let ox = offset.get("x")?.as_f64()?;
             let oy = offset.get("y")?.as_f64()?;
             Some(Position::Anchored { edge, ox, oy })
+        }
+        "tucked" => {
+            let edge = parse_edge(value.get("edge")?.as_str()?)?;
+            let offset = value.get("offset")?;
+            let ox = offset.get("x")?.as_f64()?;
+            let oy = offset.get("y")?.as_f64()?;
+            Some(Position::Tucked { edge, ox, oy })
         }
         "free" => {
             let x = value.get("x")?.as_f64()?;
@@ -311,6 +323,21 @@ mod tests {
             }
             other => panic!("expected hydrate, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_tucked_position() {
+        // The `tucked` mode arrives via move_to/hydrate just like anchored; the
+        // dropped fixture carries one too, but dropped is to-soul so it can't reach
+        // this path. Drive it through move_to to prove the body parses tucked.
+        let msg = parse_to_body(
+            r#"{"protocol":"presence","v":0,"kind":"move_to","buddy":"hermes","ts":1,"position":{"mode":"tucked","edge":"left","offset":{"x":0,"y":400}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            msg.cue,
+            Cue::MoveTo { position: Position::Tucked { edge: Edge::Left, ox: 0.0, oy: 400.0 } }
+        );
     }
 
     #[test]

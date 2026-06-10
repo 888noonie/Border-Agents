@@ -47,7 +47,7 @@
     if (!isObject(value)) {
       return false;
     }
-    if (value.mode === "anchored") {
+    if (value.mode === "anchored" || value.mode === "tucked") {
       return (
         isEdge(value.edge) &&
         isObject(value.offset) &&
@@ -128,12 +128,15 @@
   }
 
   // --- placement <-> presence position mapping (browser body) ---
-  // The body's placement model is { state: "tucked"|"free", edge, x?, y? }.
+  // The body's placement model is { state: "tucked"|"free", edge, x?, y? }. The
+  // edge-parked state maps to the protocol's `tucked` mode (now a first-class wire
+  // mode), not `anchored` — anchored means the full figure floating near an edge,
+  // which the browser body doesn't currently render as a distinct state.
   function placementToPosition(placement) {
     if (placement && placement.state === "free" && isFiniteNumber(placement.x) && isFiniteNumber(placement.y)) {
       return { mode: "free", space: "viewport", x: placement.x, y: placement.y };
     }
-    return { mode: "anchored", edge: isEdge(placement && placement.edge) ? placement.edge : "right", offset: { x: 0, y: 0 } };
+    return { mode: "tucked", edge: isEdge(placement && placement.edge) ? placement.edge : "right", offset: { x: 0, y: 0 } };
   }
 
   function positionToPlacement(position, fallbackEdge) {
@@ -141,7 +144,9 @@
     if (position && position.mode === "free") {
       return { state: "free", edge, x: position.x, y: position.y };
     }
-    if (position && position.mode === "anchored") {
+    // Both tucked (parked bump) and anchored (full figure near an edge) collapse to
+    // the browser body's single edge-parked placement state.
+    if (position && (position.mode === "tucked" || position.mode === "anchored")) {
       return { state: "tucked", edge: isEdge(position.edge) ? position.edge : edge };
     }
     return null;

@@ -8,7 +8,7 @@
 
 use fontdue::Font;
 use tiny_skia::{
-    Color, FillRule, Paint, PathBuilder, Pixmap, Shader, Stroke, Transform,
+    Color, FillRule, Mask, Paint, PathBuilder, Pixmap, Shader, Stroke, Transform,
 };
 
 // --- surface layout (also used by main.rs to build input regions) --------------
@@ -265,8 +265,53 @@ fn draw_mouth(pixmap: &mut Pixmap, bob: f32, mouth: &Mouth) {
             }
         }
         Mouth::Open(amount) => {
-            if let Some(o) = ellipse_path(HEAD_CX, my + 4.0, 11.0, 7.0 + 7.0 * amount) {
-                pixmap.fill_path(&o, &ink, FillRule::Winding, Transform::identity(), None);
+            let cx = HEAD_CX;
+            let cy = my + 4.0;
+            let rx = 11.0;
+            let ry = 7.0 + 7.0 * amount;
+
+            let Some(cavity) = ellipse_path(cx, cy, rx, ry) else { return };
+            // The open mouth interior.
+            pixmap.fill_path(&cavity, &ink, FillRule::Winding, Transform::identity(), None);
+
+            // Clip the teeth + tongue to the cavity so they're framed by the lips and
+            // never spill past them (the ellipse edge rounds off their corners).
+            let clip = Mask::new(pixmap.width(), pixmap.height()).map(|mut m| {
+                m.fill_path(&cavity, FillRule::Winding, true, Transform::identity());
+                m
+            });
+            let clip = clip.as_ref();
+
+            // Tongue — a pink mound in the lower half of the mouth.
+            let tongue = solid(Color::from_rgba8(232, 92, 110, 255));
+            if let Some(t) = ellipse_path(cx, cy + ry * 0.42, rx * 0.72, ry * 0.62) {
+                pixmap.fill_path(&t, &tongue, FillRule::Winding, Transform::identity(), clip);
+            }
+
+            // Upper teeth — a white band across the top, with thin gaps suggesting
+            // individual teeth.
+            let white = solid(Color::from_rgba8(248, 250, 252, 255));
+            let teeth_h = (ry * 0.55).min(7.0);
+            let top = cy - ry;
+            let mut band = PathBuilder::new();
+            band.move_to(cx - rx, top);
+            band.line_to(cx + rx, top);
+            band.line_to(cx + rx, top + teeth_h);
+            band.line_to(cx - rx, top + teeth_h);
+            band.close();
+            if let Some(path) = band.finish() {
+                pixmap.fill_path(&path, &white, FillRule::Winding, Transform::identity(), clip);
+            }
+
+            let mut sep = Stroke::default();
+            sep.width = 1.5;
+            for dx in [-rx * 0.45, 0.0, rx * 0.45] {
+                let mut pb = PathBuilder::new();
+                pb.move_to(cx + dx, top);
+                pb.line_to(cx + dx, top + teeth_h);
+                if let Some(p) = pb.finish() {
+                    pixmap.stroke_path(&p, &ink, &sep, Transform::identity(), clip);
+                }
             }
         }
     }

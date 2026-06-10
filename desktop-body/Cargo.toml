@@ -15,3 +15,7 @@ calloop-wayland-source = "0.3"
 tiny-skia = "0.11"
 fontdue = "0.9"
 wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
+# Presence WebSocket client (Step 4). Blocking, no async runtime; ws:// only, so no
+# TLS features are pulled in.
+tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }
+serde_json = "1"

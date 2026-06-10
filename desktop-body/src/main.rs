@@ -18,10 +18,12 @@
 //!       BB_MARGIN_LEFT=400 BB_MARGIN_TOP=200 cargo run
 //! Drag the buddy head with the left button. Ctrl+C / close to exit.
 
+mod presence;
 mod render;
 
 use std::time::{Duration, Instant};
 
+use calloop::channel::Event as ChannelEvent;
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{EventLoop, LoopSignal};
 use calloop_wayland_source::WaylandSource;
@@ -171,6 +173,19 @@ fn main() {
             TimeoutAction::ToDuration(Duration::from_millis(33))
         })
         .expect("insert timer");
+
+    // Presence: a soul (the dev gateway, or a real one) drives the body over a
+    // WebSocket. The client runs on its own thread and forwards inbound frames here.
+    // This commit only logs them; the next applies them to the body state.
+    let (presence_tx, presence_rx) = calloop::channel::channel::<String>();
+    handle
+        .insert_source(presence_rx, |event, _meta, _app: &mut App| {
+            if let ChannelEvent::Msg(text) = event {
+                eprintln!("[bb-presence] inbound cue: {text}");
+            }
+        })
+        .expect("insert presence source");
+    presence::spawn(presence_tx);
 
     if let Err(err) = event_loop.run(Some(Duration::from_millis(33)), &mut app, |app| {
         if app.exit {

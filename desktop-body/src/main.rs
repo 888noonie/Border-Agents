@@ -510,7 +510,32 @@ impl CompositorHandler for App {
     fn scale_factor_changed(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _s: &wl_surface::WlSurface, _n: i32) {}
     fn transform_changed(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _s: &wl_surface::WlSurface, _t: wl_output::Transform) {}
     fn frame(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _s: &wl_surface::WlSurface, _time: u32) {}
-    fn surface_enter(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _s: &wl_surface::WlSurface, _o: &wl_output::WlOutput) {}
+    /// The compositor's authoritative word on which output the surface actually
+    /// occupies. The startup guess (`outputs().next()`) can name the wrong monitor on
+    /// a multi-output desktop — e.g. clamping to the laptop panel while the buddy
+    /// renders on an external screen, which leaves a dead invisible border. Trust
+    /// `enter` over the guess, and re-derive the clamp bounds from this output. Also
+    /// keeps clamping correct when the buddy is later dragged across monitors.
+    fn surface_enter(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _s: &wl_surface::WlSurface, o: &wl_output::WlOutput) {
+        let Some(info) = self.output_state.info(o) else { return };
+        let size = info
+            .logical_size
+            .or_else(|| info.modes.iter().find(|m| m.current).map(|m| m.dimensions))
+            .map(|(w, h)| (w as f64, h as f64));
+        let Some(new_screen) = size else { return };
+        if self.screen == Some(new_screen) {
+            return;
+        }
+        eprintln!(
+            "[bb-desktop-body] surface entered output {:?}; clamp bounds {:?} -> {:?}",
+            info.name, self.screen, new_screen,
+        );
+        self.screen = Some(new_screen);
+        // Re-clamp against the real screen and push the corrected margins, so a buddy
+        // that started life clamped to the wrong output snaps onto this one.
+        self.clamp_margins();
+        self.reposition();
+    }
     fn surface_leave(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _s: &wl_surface::WlSurface, _o: &wl_output::WlOutput) {}
 }
 

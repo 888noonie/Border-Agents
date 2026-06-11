@@ -12,14 +12,16 @@ use tiny_skia::{
 };
 
 // --- surface layout (also used by main.rs to build input regions) --------------
-pub const SURFACE_W: u32 = 320;
-pub const SURFACE_H: u32 = 360;
+pub const SURFACE_W: u32 = 400;
+pub const SURFACE_H: u32 = 400;
 
 pub const HEAD_CX: f32 = 104.0;
 pub const HEAD_CY: f32 = 110.0;
 pub const HEAD_R: f32 = 64.0;
 
-pub const BUBBLE: Rect = Rect { x: 176.0, y: 60.0, w: 134.0, h: 104.0 };
+// The drawn bubble auto-sizes its height to the text (see `paint`); this const fixes
+// its origin/width and a max height that the input region covers (≈6 lines @ 16px).
+pub const BUBBLE: Rect = Rect { x: 184.0, y: 34.0, w: 200.0, h: 172.0 };
 pub const MENU: Rect = Rect { x: 38.0, y: 214.0, w: 168.0, h: 122.0 };
 pub const MENU_ITEM_H: f32 = 44.0;
 pub const MENU_ITEMS: [&str; 2] = ["Say hello", "Cycle mood"];
@@ -214,20 +216,24 @@ impl Sprite {
         draw_mouth(&mut pixmap, bob, &face.mouth);
 
         if let Some(text) = view.speech {
-            draw_round_rect(&mut pixmap, BUBBLE, Color::from_rgba8(247, 251, 255, 245));
-            draw_bubble_tail(&mut pixmap, bob);
             if let Some(font) = &self.font {
-                draw_wrapped_text(
-                    &mut pixmap,
-                    font,
-                    text,
-                    BUBBLE.x + 14.0,
-                    BUBBLE.y + 26.0,
-                    BUBBLE.w - 28.0,
-                    15.0,
-                    [16, 24, 44],
-                    3,
-                );
+                // Auto-size the bubble to the wrapped text so short lines get a small
+                // card and longer messages grow downward (capped at 6 lines). Height
+                // stays within BUBBLE.h so the input region keeps covering it.
+                let pad_x = 16.0;
+                let pad_top = 30.0;
+                let px = 16.0;
+                let line_h = px * 1.3;
+                let lines = wrap(font, text, px, BUBBLE.w - pad_x * 2.0, 6);
+                let body_h = pad_top + lines.len().max(1) as f32 * line_h + 12.0;
+                let rect = Rect { x: BUBBLE.x, y: BUBBLE.y, w: BUBBLE.w, h: body_h };
+                draw_round_rect(&mut pixmap, rect, Color::from_rgba8(247, 251, 255, 245));
+                draw_bubble_tail(&mut pixmap, bob);
+                let mut baseline = BUBBLE.y + pad_top;
+                for line in &lines {
+                    draw_line(&mut pixmap, font, line, BUBBLE.x + pad_x, baseline, px, [16, 24, 44]);
+                    baseline += line_h;
+                }
             }
         }
 

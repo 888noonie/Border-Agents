@@ -1,3 +1,9 @@
+import {
+  HERMES_CAPABILITIES,
+  TEXT_ONLY_CAPABILITIES,
+  type BuddyCapabilities,
+} from "./buddyCapabilities";
+
 export type BuddySurface = "border" | "browser" | "watch" | "auto" | "boat";
 
 export type BuddyProvider =
@@ -46,6 +52,9 @@ export type BuddyProfile = {
   authorityDefaults: BuddyAuthorityDefaults;
   appearance: BuddyAppearance;
   supportedSurfaces: BuddySurface[];
+  // The data-driven blueprint of what this buddy can take in / put out. Read by the
+  // onboarding wizard, the gateway (command parsing), and the bodies (output rendering).
+  capabilities: BuddyCapabilities;
 };
 
 export type BuddySettings = {
@@ -104,6 +113,7 @@ export const BUDDY_PROFILES: Record<string, BuddyProfile> = {
       defaultDockSlot: 0.58,
     },
     supportedSurfaces: ["border", "browser"],
+    capabilities: HERMES_CAPABILITIES,
   },
   crab: {
     schemaVersion: 1,
@@ -131,6 +141,7 @@ export const BUDDY_PROFILES: Record<string, BuddyProfile> = {
       defaultDockSlot: 0.72,
     },
     supportedSurfaces: ["border"],
+    capabilities: TEXT_ONLY_CAPABILITIES,
   },
   owl: {
     schemaVersion: 1,
@@ -158,6 +169,7 @@ export const BUDDY_PROFILES: Record<string, BuddyProfile> = {
       defaultDockSlot: 0.24,
     },
     supportedSurfaces: ["border"],
+    capabilities: TEXT_ONLY_CAPABILITIES,
   },
   fox: {
     schemaVersion: 1,
@@ -185,6 +197,7 @@ export const BUDDY_PROFILES: Record<string, BuddyProfile> = {
       defaultDockSlot: 0.68,
     },
     supportedSurfaces: ["border"],
+    capabilities: TEXT_ONLY_CAPABILITIES,
   },
 };
 

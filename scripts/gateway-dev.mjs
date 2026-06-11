@@ -3,6 +3,10 @@ import { WebSocketServer } from "ws";
 
 const PORT = 17387;
 const PATH = "/border-buddies";
+// Which dev "soul" drives the bodies: "echo" (default — react to interaction with
+// simple cues) or "wizard" (run the Act 0 onboarding Host script). A real soul
+// runtime replaces both; this just selects the scripted driver for live testing.
+const BB_SOUL = process.env.BB_SOUL?.trim() || "echo";
 const HERMES_PROVIDER = process.env.HERMES_PROVIDER?.trim() || "echo";
 const HERMES_API_BASE = normalizeApiBase(process.env.HERMES_API_BASE);
 const HERMES_API_KEY = process.env.HERMES_API_KEY?.trim() || "";
@@ -182,6 +186,48 @@ function handlePresenceInteraction(socket, message) {
   }
 }
 
+// Wizard onboarding Host — the scripted driver for Act 0 ("first contact").
+//
+// Canonical script: src/wizardOnboarding.ts (ONBOARDING_ACTS[0]). The strings/cues
+// below mirror it by hand until the real soul runtime consumes the TS model directly.
+// Per docs/WIZARD_ONBOARDING_SCRIPT.md the Host is an unbranded persona ("host"), not
+// Hermes; it puppets the same dumb body and hands off to the real companion at Act 5.
+const HOST_BUDDY = "host";
+
+function wizardHostAct0(socket, message) {
+  const buddy = String(message.buddy || HOST_BUDDY);
+
+  switch (message.kind) {
+    case "attached": {
+      // First contact: float to the right edge, look curious, attend the user, greet.
+      socket.send(
+        presenceEnvelope("move_to", buddy, {
+          position: { mode: "anchored", edge: "right", offset: { x: 24, y: 48 } },
+        }),
+      );
+      socket.send(presenceEnvelope("express", buddy, { emotion: "curious" }));
+      socket.send(presenceEnvelope("attention", buddy, { focus: "user" }));
+      socket.send(
+        presenceEnvelope("say", buddy, {
+          text: "Hi — I'm your setup host. Two minutes to get you wired up. Ready?",
+        }),
+      );
+      return;
+    }
+    case "clicked": {
+      // Advancing event for Act 0 → Act 1. The settings panel isn't wired yet, so we
+      // acknowledge on the body and log the panel-open intent at the seam boundary.
+      socket.send(presenceEnvelope("express", buddy, { emotion: "happy" }));
+      socket.send(presenceEnvelope("say", buddy, { text: "Great — opening setup…" }));
+      log("wizard: Act 0 complete; open panel at Act 1 (connect)", { buddy });
+      return;
+    }
+    default:
+      // Acts 1–5 land in later commits; ignore other body events for now.
+      return;
+  }
+}
+
 function buildGatewayPrompt(message) {
   const userText = String(message?.text ?? "").trim();
   const context = typeof message?.context === "string" ? message.context.trim() : "";
@@ -255,7 +301,11 @@ wss.on("connection", (socket, request) => {
     log("message", { source, ...message });
 
     if (message?.protocol === PRESENCE_PROTOCOL && message?.kind && message?.buddy) {
-      handlePresenceInteraction(socket, message);
+      if (BB_SOUL === "wizard") {
+        wizardHostAct0(socket, message);
+      } else {
+        handlePresenceInteraction(socket, message);
+      }
       return;
     }
 
@@ -322,6 +372,7 @@ wss.on("connection", (socket, request) => {
 
 server.listen(PORT, "127.0.0.1", () => {
   log(`listening on ws://127.0.0.1:${PORT}${PATH}`, {
+    soul: BB_SOUL,
     provider: HERMES_PROVIDER,
     mode: gatewayMode(),
     apiBase: HERMES_API_BASE || null,

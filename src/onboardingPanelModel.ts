@@ -12,6 +12,7 @@ import {
   entryMode,
   ONBOARDING_ACTS,
   type OnboardingAct,
+  type OnboardingCue,
   type OnboardingEntryMode,
   type OnboardingState,
 } from "./wizardOnboarding";
@@ -159,11 +160,29 @@ export type OnboardingPanelSectionModel =
   | PlacementSectionModel
   | SummarySectionModel;
 
+// What the panel shows for a "no forms" act (panelSection: "none"). The copy comes
+// from the act's own `say` cue so the panel and the body speak the same script.
+export interface OnboardingPanelIdleModel {
+  text: string;
+  // Label for the begin button when the act advances on "clicked"; null when the
+  // act advances on its own and the panel should just wait.
+  beginLabel: string | null;
+  // Milliseconds before the panel host fires "timeout" for acts that advance on it
+  // (the panel stands in for the Host soul's timer); null otherwise.
+  autoAdvanceMs: number | null;
+}
+
+// How long the panel lingers on a timeout-advancing act ("find_me") before moving
+// on — enough to read the cue line.
+export const IDLE_AUTO_ADVANCE_MS = 6000;
+
 export interface OnboardingPanelModel {
   mode: OnboardingEntryMode;
   act: OnboardingAct;
   nav: readonly OnboardingPanelNavItem[];
   section: OnboardingPanelSectionModel | null;
+  // Present exactly when `section` is null.
+  idle: OnboardingPanelIdleModel | null;
 }
 
 export function buildOnboardingPanelModel(args: {
@@ -180,6 +199,18 @@ export function buildOnboardingPanelModel(args: {
     act,
     nav: buildNav(activeSection, mode),
     section: buildSection(activeSection, args.receiptKinds),
+    idle: activeSection === "none" ? buildIdle(act) : null,
+  };
+}
+
+function buildIdle(act: OnboardingAct): OnboardingPanelIdleModel {
+  const say = act.cues.find(
+    (cue): cue is Extract<OnboardingCue, { kind: "say" }> => cue.kind === "say",
+  );
+  return {
+    text: say?.text ?? "The host is ready.",
+    beginLabel: act.advanceOn.includes("clicked") ? "Let's set up" : null,
+    autoAdvanceMs: act.advanceOn.includes("timeout") ? IDLE_AUTO_ADVANCE_MS : null,
   };
 }
 

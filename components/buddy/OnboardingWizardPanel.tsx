@@ -73,16 +73,18 @@ export function OnboardingWizardPanel({
         </div>
       ) : (
         <div className="onboarding-panel__body">
-          <p className="onboarding-panel__intro">
-            The host is ready. Open the setup flow when you want the full panel to step through connection, posture, placement, and receipts.
-          </p>
-          <button
-            type="button"
-            className="onboarding-panel__primary"
-            onClick={() => onAdvance("clicked")}
-          >
-            Let&apos;s set up
-          </button>
+          <p className="onboarding-panel__intro">{model.idle?.text}</p>
+          {model.idle?.beginLabel ? (
+            <button
+              type="button"
+              className="onboarding-panel__primary"
+              onClick={() => onAdvance("clicked")}
+            >
+              {model.idle.beginLabel}
+            </button>
+          ) : (
+            <p className="onboarding-panel__note">Moving on in a moment…</p>
+          )}
         </div>
       )}
     </section>

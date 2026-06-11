@@ -22,7 +22,7 @@ import {
   saveStoredOnboardingSurfaceState,
   type OnboardingSurfaceDraft,
 } from "../../src/onboardingSurfaceState";
-import { advanceOnboarding, type OnboardingEvent } from "../../src/wizardOnboarding";
+import { advanceOnboarding, currentAct, type OnboardingEvent } from "../../src/wizardOnboarding";
 import { type UserPosture } from "../../src/core/userPosture";
 import { connectionLabelForState } from "../../src/useBuddyGateway";
 import { BuddyActionMenu } from "./BuddyActionMenu";
@@ -283,6 +283,19 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
       setOnboardingHubSection(null);
     }
   }, [onboardingHubSection, onboardingModel, wizardEnabled]);
+
+  // The panel stands in for the Host soul's timer on timeout-advancing acts
+  // (find_me): linger long enough to read the cue, then move the script along.
+  // advanceWizard is intentionally outside the deps (see bubbleTabs note); the
+  // functional update inside it keeps a late firing safe.
+  const idleAutoAdvanceMs = onboardingModel?.idle?.autoAdvanceMs ?? null;
+  useEffect(() => {
+    if (idleAutoAdvanceMs === null) {
+      return;
+    }
+    const timer = window.setTimeout(() => advanceWizard("timeout"), idleAutoAdvanceMs);
+    return () => window.clearTimeout(timer);
+  }, [idleAutoAdvanceMs, onboardingModel?.act.id]);
 
   useEffect(() => {
     governanceSnapshotChangeRef.current = onGovernanceSnapshotChange;
@@ -623,19 +636,25 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
       return;
     }
 
-    const nextState = advanceOnboarding(onboardingSurface.progress, event as OnboardingEvent);
-    const nextReceipts = [...onboardingSurface.receiptKinds];
-    const receipt = onboardingModel.act.receipt;
-    if (receipt && onboardingModel.act.advanceOn.includes(event as OnboardingEvent) && !nextReceipts.includes(receipt)) {
-      nextReceipts.push(receipt);
-    }
+    // Progress + receipts are computed inside the functional update so a delayed
+    // caller (the find_me auto-advance timer) can never clobber state written
+    // after its closure was captured.
+    setOnboardingSurface((current) => {
+      const act = currentAct(current.progress);
+      const advances = act.advanceOn.includes(event as OnboardingEvent);
+      const receiptKinds =
+        act.receipt && advances && !current.receiptKinds.includes(act.receipt)
+          ? [...current.receiptKinds, act.receipt]
+          : current.receiptKinds;
+      return {
+        ...current,
+        progress: advanceOnboarding(current.progress, event as OnboardingEvent),
+        receiptKinds,
+      };
+    });
 
-    setOnboardingSurface((current) => ({
-      ...current,
-      progress: nextState,
-      receiptKinds: nextReceipts,
-    }));
-
+    // Settings writes are keyed on the panel event itself — each event is only ever
+    // emitted by its own section, in both linear and hub mode.
     if (event === "panel:connection_ok") {
       const draft = onboardingSurface.draft;
       onGatewaySettingsChange({ url: draft.apiBase, autoConnect: true });
@@ -648,14 +667,19 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
     if (event === "panel:posture_set") {
       onPostureChange?.(onboardingSurface.draft.posture);
     }
-    if (event === "panel:next" && onboardingModel?.act.id === "place_buddies") {
+    if (event === "panel:next") {
       onPlacementChange?.({
         enabledBuddyIds: onboardingSurface.draft.enabledBuddyIds,
         buddyEdges: onboardingSurface.draft.buddyEdges,
       });
     }
-    if (nextState.completed) {
+
+    // Handoff fires only on the linear flow's first completion — hub-mode saves keep
+    // the user on the section they were editing instead of yanking them away.
+    const nextState = advanceOnboarding(onboardingSurface.progress, event as OnboardingEvent);
+    if (!onboardingSurface.progress.completed && nextState.completed) {
       setOnboardingHubSection("summary");
+      updateSurfaceUi({ activeTab: "message" });
     }
   }
 

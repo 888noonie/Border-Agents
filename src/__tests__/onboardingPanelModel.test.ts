@@ -3,6 +3,7 @@ import {
   buildOnboardingPanelModel,
   DEFAULT_HERMES_SYSTEM_PROMPT,
   HERMES_PROVIDER_PRESETS,
+  IDLE_AUTO_ADVANCE_MS,
 } from "../onboardingPanelModel";
 import type { OnboardingState } from "../wizardOnboarding";
 
@@ -61,6 +62,43 @@ describe("onboarding panel model", () => {
     expect(play?.interactionSummary).toContain("without confirm");
     expect(privatePosture?.authorizationSummary).toContain("Trusted-only");
     expect(privatePosture?.interactionSummary).toContain("confirm low-risk actions");
+  });
+
+  it("gives first contact a begin button sourced from the act script", () => {
+    const model = buildOnboardingPanelModel({
+      state: { actIndex: 0, completed: false },
+      receiptKinds: [],
+    });
+
+    expect(model.section).toBeNull();
+    expect(model.idle).toEqual({
+      text: "Hi — I'm your setup host. Two minutes to get you wired up. Ready?",
+      beginLabel: "Let's set up",
+      autoAdvanceMs: null,
+    });
+  });
+
+  it("auto-advances find_me instead of offering a dead button", () => {
+    const model = buildOnboardingPanelModel({
+      state: { actIndex: 4, completed: false },
+      receiptKinds: [],
+    });
+
+    expect(model.act.id).toBe("find_me");
+    expect(model.section).toBeNull();
+    expect(model.idle?.beginLabel).toBeNull();
+    expect(model.idle?.autoAdvanceMs).toBe(IDLE_AUTO_ADVANCE_MS);
+    expect(model.idle?.text).toContain("Tug me out");
+  });
+
+  it("has no idle block when a form section is active", () => {
+    const model = buildOnboardingPanelModel({
+      state: { actIndex: 1, completed: false },
+      receiptKinds: [],
+    });
+
+    expect(model.section?.kind).toBe("connect");
+    expect(model.idle).toBeNull();
   });
 
   it("locks future sections during the first linear pass", () => {

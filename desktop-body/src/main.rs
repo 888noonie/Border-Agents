@@ -2,21 +2,22 @@
 //!
 //! Step 2 proved a per-buddy surface on the wlr overlay layer with pixel-exact
 //! anchor+margin placement, margin-update dragging, click-through input regions,
-//! and chosen-output placement (see git history / README). Step 3 turns that
-//! static sprite into an *animated body*: a time-driven face (idle bob, blink,
-//! emotion-driven eyes/mouth), a real text speech bubble, and an expanding menu
-//! card — all software-rendered (tiny-skia + fontdue), still no GTK/WebKit/GPU.
+//! and chosen-output placement (see git history / README). Step 3+ turns that
+//! static sprite into an *animated clay figure* (a Morph-style buddy: head as the
+//! dock/drag handle, slender stretchable torso, speech bubble + chat input that
+//! auto-face inward) — all software-rendered (tiny-skia + fontdue), still no
+//! GTK/WebKit/GPU.
 //!
-//! The presentation state (emotion / speech / menu) is exposed through a small
-//! internal API (`set_emotion`, `say`, `toggle_menu`) so step 4 can drive it from
-//! presence-protocol events over the WebSocket. Until then, clicking the buddy
-//! exercises it locally: click toggles the menu + a greeting; "Say hello" and
-//! "Cycle mood" menu items change speech and emotion.
+//! The presentation state (emotion / speech / chat) is exposed through a small
+//! internal API (`set_emotion`, `say`, `toggle_chat`) driven by presence-protocol
+//! events over the WebSocket. Mood belongs to the soul (`express` cues), never
+//! to a local button.
 //!
 //! Run:  cargo run --release            # active output, top-left
 //!       BB_OUTPUT_INDEX=1 cargo run     # second monitor
 //!       BB_MARGIN_LEFT=400 BB_MARGIN_TOP=200 cargo run
-//! Drag the buddy head with the left button. Ctrl+C / close to exit.
+//!       BB_COLOR="#7c5cff" cargo run    # recolour the clay
+//! Drag the head to move/dock; click the head to chat; drag the feet to stretch.
 
 mod presence;
 mod render;
@@ -27,7 +28,7 @@ use calloop::channel::Event as ChannelEvent;
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{EventLoop, LoopSignal};
 use calloop_wayland_source::WaylandSource;
-use render::{BodyView, BumpEdge, Emotion, Sprite};
+use render::{BodyView, BumpEdge, Emotion, Facing, Sprite};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, Region},
     delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
@@ -69,6 +70,20 @@ fn env_i32(key: &str, fallback: i32) -> i32 {
     std::env::var(key).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(fallback)
 }
 
+/// Parse `BB_COLOR` ("#C96D3C" or "C96D3C") into the clay colour; falls back to
+/// the Morph terracotta default. Easy per-buddy recolouring without a rebuild.
+fn env_color(key: &str) -> [u8; 3] {
+    let Some(raw) = std::env::var(key).ok() else { return render::CLAY_DEFAULT };
+    let hex = raw.trim().trim_start_matches('#');
+    if hex.len() != 6 {
+        return render::CLAY_DEFAULT;
+    }
+    match u32::from_str_radix(hex, 16) {
+        Ok(v) => [(v >> 16) as u8, (v >> 8) as u8, v as u8],
+        Err(_) => render::CLAY_DEFAULT,
+    }
+}
+
 fn main() {
     let conn = Connection::connect_to_env()
         .expect("could not connect to a Wayland compositor (is WAYLAND_DISPLAY set?)");
@@ -106,13 +121,13 @@ fn main() {
         loop_signal: None,
         screen: None,
         width: render::SURFACE_W,
-        height: render::SURFACE_H,
+        height: render::Layout::initial().surface_h(),
         margin_left: env_i32("BB_MARGIN_LEFT", 48) as f64,
         margin_top: env_i32("BB_MARGIN_TOP", 48) as f64,
         start: Instant::now(),
         emotion: Emotion::Neutral,
         speech: None,
-        menu_open: false,
+        chat_open: false,
         configured: false,
         press: None,
         drag: false,
@@ -122,6 +137,9 @@ fn main() {
         keyboard: None,
         input_text: String::new(),
         input_focused: false,
+        facing: Facing::Right,
+        body_len: render::BODY_LEN_DEFAULT,
+        color: env_color("BB_COLOR"),
     };
 
     // Let outputs (and their xdg-output logical size) arrive before we create the
@@ -166,7 +184,7 @@ fn main() {
     app.layer = Some(layer);
 
     eprintln!(
-        "[bb-desktop-body] animated body up: {}x{} @ margin(L={}, T={}){} — drag the head; click for the menu",
+        "[bb-desktop-body] clay figure up: {}x{} @ margin(L={}, T={}){} — drag the head to move; click to chat; drag the feet to stretch",
         app.width,
         app.height,
         app.margin_left as i32,
@@ -226,7 +244,8 @@ struct PressState {
 enum PressTarget {
     Head,
     Input,
-    MenuItem(usize),
+    /// The legs/feet zone — dragging it vertically stretches the body.
+    Feet,
     Bump,
     Outside,
 }
@@ -255,7 +274,7 @@ struct App {
     start: Instant,
     emotion: Emotion,
     speech: Option<String>,
-    menu_open: bool,
+    chat_open: bool,
     configured: bool,
     press: Option<PressState>,
     drag: bool,
@@ -273,6 +292,13 @@ struct App {
     input_text: String,
     /// Whether the input box has focus — gates keystrokes and shows the caret.
     input_focused: bool,
+    /// Which side the bubble/input sit on — recomputed from screen position so the
+    /// UI always faces the screen centre, never the docked edge.
+    facing: Facing,
+    /// Stretchable torso length (the user drags the feet to resize the figure).
+    body_len: f32,
+    /// Clay colour from `BB_COLOR`.
+    color: [u8; 3],
 }
 
 /// Map a presence-protocol edge onto the renderer's bump edge.
@@ -313,10 +339,23 @@ impl App {
         let _ = self.conn.flush();
     }
 
+    /// The current parameterized surface layout (facing + stretch) — single source
+    /// for drawing, hit-testing, and input regions so they can never disagree.
+    fn layout(&self) -> render::Layout {
+        render::Layout { facing: self.facing, body_len: self.body_len }
+    }
+
+    /// Surface size for geometry math (margins, tucking). Uses the compositor-acked
+    /// size, which tracks `set_size` requests one configure later.
+    fn surface_size(&self) -> (f64, f64) {
+        (self.width as f64, self.height as f64)
+    }
+
     fn draw(&mut self) {
         if !self.configured {
             return; // never attach a buffer before the first configure is acked
         }
+        let layout = self.layout();
         let (Some(pool), Some(layer)) = (self.pool.as_mut(), self.layer.as_ref()) else {
             return;
         };
@@ -327,10 +366,12 @@ impl App {
             t: self.start.elapsed().as_secs_f32(),
             emotion: self.emotion,
             speech: self.speech.as_deref(),
-            menu_open: self.menu_open,
+            chat_open: self.chat_open,
             tucked: self.tucked.map(edge_to_bump),
             input_text: &self.input_text,
             input_focused: self.input_focused,
+            layout,
+            color: self.color,
         };
 
         let buffer = match pool.create_buffer(w as i32, h as i32, stride, wl_shm::Format::Argb8888) {
@@ -361,6 +402,19 @@ impl App {
             layer.set_margin(self.margin_top as i32, 0, 0, self.margin_left as i32);
             layer.commit();
         }
+        self.update_facing();
+    }
+
+    /// Keep the bubble + input on the side of the figure that faces the screen
+    /// centre, so the UI never clips against the edge the buddy is docked to.
+    fn update_facing(&mut self) {
+        let Some((sw, _)) = self.screen else { return };
+        let head_x = self.margin_left + render::FIG_CX as f64;
+        let new_facing = if head_x > sw / 2.0 { Facing::Left } else { Facing::Right };
+        if new_facing != self.facing {
+            self.facing = new_facing;
+            self.update_input_region();
+        }
     }
 
     /// Keep the buddy *head* fully on-screen — not just the surface edge — so it can
@@ -385,15 +439,18 @@ impl App {
 
         // Tucked: only the bump catches the pointer — everything else is click-through,
         // so the screen space the buddy stepped aside from is truly freed.
+        let layout = self.layout();
         let rects = if let Some(edge) = self.tucked {
-            vec![render::bump_rect(edge_to_bump(edge)).as_i32()]
+            vec![layout.bump_rect(edge_to_bump(edge)).as_i32()]
         } else {
-            let mut rects = vec![render::head_rect().as_i32()];
+            // Head = move/dock handle; feet = stretch handle. The torso stays
+            // click-through — the figure shows, the desktop underneath still works.
+            let mut rects = vec![render::head_rect().as_i32(), layout.feet_rect().as_i32()];
             if self.speech.is_some() {
-                rects.push(render::BUBBLE.as_i32());
+                rects.push(layout.bubble_rect().as_i32());
             }
-            if self.menu_open {
-                rects.push(render::MENU.as_i32());
+            if self.chat_open {
+                rects.push(layout.input_region_rect().as_i32());
             }
             rects
         };
@@ -454,7 +511,7 @@ impl App {
                 edge,
                 ox,
                 oy,
-                (render::SURFACE_W as f64, render::SURFACE_H as f64),
+                self.surface_size(),
                 self.screen,
             ),
             presence::Position::Free { x, y } => (x, y),
@@ -481,30 +538,20 @@ impl App {
         self.update_input_region();
     }
 
-    fn toggle_menu(&mut self) {
-        self.menu_open = !self.menu_open;
-        if self.menu_open {
-            self.speech = Some("Hey — I'm Hermes, living on your desktop now.".to_string());
+    /// Open/close the chat input. Opening focuses it immediately (click head →
+    /// type). No local mood buttons here: expression belongs to the soul, which
+    /// drives it through `express` cues — the user talks, the buddy feels.
+    fn toggle_chat(&mut self) {
+        self.chat_open = !self.chat_open;
+        if self.chat_open {
+            self.input_focused = true;
         } else {
             self.speech = None;
-            // Closing the menu drops any half-typed input and the caret.
+            // Closing the chat drops any half-typed input and the caret.
             self.input_focused = false;
             self.input_text.clear();
         }
         self.update_input_region();
-    }
-
-    fn activate_menu_item(&mut self, index: usize) {
-        // The input box took slot 0 (the old "Say hello"); the remaining action button
-        // is "Cycle mood". Indices map to render::MENU_ITEMS.
-        match index {
-            0 => {
-                let next = next_emotion(self.emotion);
-                self.set_emotion(next);
-                self.say(format!("Mood: {}", emotion_name(next)));
-            }
-            _ => {}
-        }
     }
 
     /// Handle a keystroke while the input box is focused: submit on Enter, edit on
@@ -540,10 +587,11 @@ impl App {
     }
 
     fn on_press(&mut self, x: f64, y: f64) {
+        let layout = self.layout();
         // While tucked, the only live target is the bump; a click on it summons the
         // buddy back out. The bump is not draggable in v1.
         if let Some(edge) = self.tucked {
-            let target = if render::point_in_bump(edge_to_bump(edge), x, y) {
+            let target = if layout.point_in_bump(edge_to_bump(edge), x, y) {
                 PressTarget::Bump
             } else {
                 PressTarget::Outside
@@ -554,19 +602,10 @@ impl App {
 
         let target = if render::point_in_head(x, y) {
             PressTarget::Head
-        } else if self.menu_open {
-            let mut hit = PressTarget::Outside;
-            if render::input_box_rect().contains(x, y) {
-                hit = PressTarget::Input;
-            } else {
-                for i in 0..render::MENU_ITEMS.len() {
-                    if render::menu_item_rect(i).contains(x, y) {
-                        hit = PressTarget::MenuItem(i);
-                        break;
-                    }
-                }
-            }
-            hit
+        } else if self.chat_open && layout.input_region_rect().contains(x, y) {
+            PressTarget::Input
+        } else if layout.feet_rect().contains(x, y) {
+            PressTarget::Feet
         } else {
             PressTarget::Outside
         };
@@ -589,15 +628,35 @@ impl App {
         if grab_now {
             press.grabbed_sent = true;
         }
+        let stretching = press.target == PressTarget::Feet;
         if self.drag {
             self.margin_left += dx;
             self.margin_top += dy;
             self.clamp_margins();
             self.reposition();
+        } else if stretching {
+            // Dragging the feet stretches/squashes the clay body. Local presentation
+            // preference only — nothing is reported to the soul.
+            self.set_body_len(self.body_len + dy as f32);
         }
         if grab_now {
             self.emit_grabbed();
         }
+    }
+
+    /// Apply a new torso stretch: clamp, resize the surface to fit, and keep the
+    /// input region in step. The compositor acks the new size on the next configure.
+    fn set_body_len(&mut self, len: f32) {
+        let len = len.clamp(render::BODY_LEN_MIN, render::BODY_LEN_MAX);
+        if (len - self.body_len).abs() < 0.5 {
+            return;
+        }
+        self.body_len = len;
+        if let Some(layer) = self.layer.as_ref() {
+            layer.set_size(render::SURFACE_W, self.layout().surface_h());
+            layer.commit();
+        }
+        self.update_input_region();
     }
 
     fn on_release(&mut self) {
@@ -613,27 +672,27 @@ impl App {
         }
 
         if press.dist > CLICK_SLOP {
-            // It was a drag. If it came to rest near an edge, tuck it there; otherwise
-            // report where it landed so the placement can be persisted and restored.
-            if let Some(edge) = self.nearest_edge_within_threshold() {
-                self.tuck_to(edge);
-            } else {
-                self.emit_dropped();
+            // A head drag ended. If it came to rest near an edge, tuck it there;
+            // otherwise report where it landed so the placement can be persisted.
+            // (Feet drags are local resizes — nothing to tuck or report.)
+            if press.target == PressTarget::Head {
+                if let Some(edge) = self.nearest_edge_within_threshold() {
+                    self.tuck_to(edge);
+                } else {
+                    self.emit_dropped();
+                }
             }
             return;
         }
         match press.target {
             PressTarget::Head => {
-                self.input_focused = false;
                 self.emit_clicked();
-                self.toggle_menu();
+                self.toggle_chat();
             }
             PressTarget::Input => self.input_focused = true,
-            PressTarget::MenuItem(i) => {
+            PressTarget::Feet | PressTarget::Bump | PressTarget::Outside => {
                 self.input_focused = false;
-                self.activate_menu_item(i);
             }
-            PressTarget::Bump | PressTarget::Outside => self.input_focused = false,
         }
     }
 
@@ -667,7 +726,7 @@ impl App {
     fn tuck_along(&self, edge: presence::Edge) -> f64 {
         match edge {
             presence::Edge::Left | presence::Edge::Right => self.margin_top + render::HEAD_CY as f64,
-            presence::Edge::Top | presence::Edge::Bottom => self.margin_left + render::HEAD_CX as f64,
+            presence::Edge::Top | presence::Edge::Bottom => self.margin_left + render::FIG_CX as f64,
         }
     }
 
@@ -683,12 +742,12 @@ impl App {
     /// Enter (or restore, from a hydrate) the tucked state: snap the surface flush to
     /// the edge, place the bump at `along`, shrink the input region to the bump.
     fn enter_tuck(&mut self, edge: presence::Edge, along: f64) {
-        self.menu_open = false;
+        self.chat_open = false;
+        self.input_focused = false;
         self.speech = None;
         self.tucked = Some(edge);
         let (sw, sh) = self.screen.unwrap_or((f64::MAX, f64::MAX));
-        let surface_w = render::SURFACE_W as f64;
-        let surface_h = render::SURFACE_H as f64;
+        let (surface_w, surface_h) = self.surface_size();
 
         // Flush axis → snap the surface to the edge; along axis → from `along`.
         match edge {
@@ -702,11 +761,11 @@ impl App {
             }
             presence::Edge::Top => {
                 self.margin_top = 0.0;
-                self.margin_left = along - render::HEAD_CX as f64;
+                self.margin_left = along - render::FIG_CX as f64;
             }
             presence::Edge::Bottom => {
                 self.margin_top = sh - surface_h;
-                self.margin_left = along - render::HEAD_CX as f64;
+                self.margin_left = along - render::FIG_CX as f64;
             }
         }
         self.clamp_tucked(edge);
@@ -744,7 +803,7 @@ impl App {
             Some(s) => s,
             None => return,
         };
-        let bump = render::bump_rect(edge_to_bump(edge));
+        let bump = self.layout().bump_rect(edge_to_bump(edge));
         match edge {
             presence::Edge::Left | presence::Edge::Right => {
                 let min_top = -(bump.y as f64);
@@ -779,23 +838,6 @@ impl App {
 
     fn emit_dropped(&self) {
         self.send_to_soul(presence::dropped_json(&self.buddy, self.margin_left, self.margin_top));
-    }
-}
-
-fn next_emotion(current: Emotion) -> Emotion {
-    let cycle = Emotion::CYCLE;
-    let idx = cycle.iter().position(|e| *e == current).unwrap_or(0);
-    cycle[(idx + 1) % cycle.len()]
-}
-
-fn emotion_name(emotion: Emotion) -> &'static str {
-    match emotion {
-        Emotion::Neutral => "neutral",
-        Emotion::Happy => "happy",
-        Emotion::Thinking => "thinking",
-        Emotion::Curious => "curious",
-        Emotion::Alert => "alert",
-        Emotion::Sleepy => "sleepy",
     }
 }
 

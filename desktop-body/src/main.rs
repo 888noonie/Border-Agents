@@ -30,12 +30,13 @@ use calloop_wayland_source::WaylandSource;
 use render::{BodyView, BumpEdge, Emotion, Sprite};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, Region},
-    delegate_compositor, delegate_layer, delegate_output, delegate_pointer, delegate_registry,
-    delegate_seat, delegate_shm,
+    delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
+    delegate_registry, delegate_seat, delegate_shm,
     output::{OutputHandler, OutputState},
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
     seat::{
+        keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers},
         pointer::{PointerEvent, PointerEventKind, PointerHandler},
         Capability, SeatHandler, SeatState,
     },
@@ -50,7 +51,7 @@ use smithay_client_toolkit::{
 };
 use smithay_client_toolkit::reexports::client::{
     globals::registry_queue_init,
-    protocol::{wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
+    protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
     Connection, Dispatch, Proxy, QueueHandle,
 };
 use wayland_protocols::wp::relative_pointer::zv1::client::{
@@ -118,6 +119,9 @@ fn main() {
         exit: false,
         presence_out: None,
         tucked: None,
+        keyboard: None,
+        input_text: String::new(),
+        input_focused: false,
     };
 
     // Let outputs (and their xdg-output logical size) arrive before we create the
@@ -150,7 +154,10 @@ fn main() {
     layer.set_anchor(Anchor::TOP | Anchor::LEFT);
     layer.set_size(app.width, app.height);
     layer.set_margin(app.margin_top as i32, 0, 0, app.margin_left as i32);
-    layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+    // OnDemand: the surface takes keyboard focus when the user clicks it (e.g. the
+    // input box), and the compositor returns focus when they click elsewhere. Keys are
+    // still only consumed while `input_focused`, so this never hijacks global typing.
+    layer.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
     layer.commit();
 
     app.pool = Some(
@@ -218,6 +225,7 @@ struct PressState {
 #[derive(Clone, Copy, PartialEq)]
 enum PressTarget {
     Head,
+    Input,
     MenuItem(usize),
     Bump,
     Outside,
@@ -258,6 +266,13 @@ struct App {
     /// When `Some`, the buddy is tucked against this edge — shown as a minimized bump,
     /// input shrunk to the bump, clicking it summons the buddy back out.
     tucked: Option<presence::Edge>,
+    /// Keyboard, acquired when the seat advertises the capability. Drives the on-body
+    /// text input that replaces the old "Say hello" button.
+    keyboard: Option<wl_keyboard::WlKeyboard>,
+    /// The text the user is typing to the buddy (only mutated while `input_focused`).
+    input_text: String,
+    /// Whether the input box has focus — gates keystrokes and shows the caret.
+    input_focused: bool,
 }
 
 /// Map a presence-protocol edge onto the renderer's bump edge.
@@ -314,6 +329,8 @@ impl App {
             speech: self.speech.as_deref(),
             menu_open: self.menu_open,
             tucked: self.tucked.map(edge_to_bump),
+            input_text: &self.input_text,
+            input_focused: self.input_focused,
         };
 
         let buffer = match pool.create_buffer(w as i32, h as i32, stride, wl_shm::Format::Argb8888) {
@@ -470,23 +487,56 @@ impl App {
             self.speech = Some("Hey — I'm Hermes, living on your desktop now.".to_string());
         } else {
             self.speech = None;
+            // Closing the menu drops any half-typed input and the caret.
+            self.input_focused = false;
+            self.input_text.clear();
         }
         self.update_input_region();
     }
 
     fn activate_menu_item(&mut self, index: usize) {
+        // The input box took slot 0 (the old "Say hello"); the remaining action button
+        // is "Cycle mood". Indices map to render::MENU_ITEMS.
         match index {
             0 => {
-                self.set_emotion(Emotion::Happy);
-                self.say("Hello there! Good to finally stand on the desktop.");
-            }
-            1 => {
                 let next = next_emotion(self.emotion);
                 self.set_emotion(next);
                 self.say(format!("Mood: {}", emotion_name(next)));
             }
             _ => {}
         }
+    }
+
+    /// Handle a keystroke while the input box is focused: submit on Enter, edit on
+    /// Backspace, defocus on Escape, otherwise append printable text.
+    fn on_key(&mut self, event: KeyEvent) {
+        let ks = event.keysym;
+        if ks == Keysym::Return || ks == Keysym::KP_Enter {
+            self.submit_input();
+        } else if ks == Keysym::BackSpace {
+            self.input_text.pop();
+        } else if ks == Keysym::Escape {
+            self.input_focused = false;
+        } else if let Some(text) = event.utf8 {
+            for ch in text.chars() {
+                if !ch.is_control() {
+                    self.input_text.push(ch);
+                }
+            }
+        }
+    }
+
+    /// Send what the user typed to the soul as a `said` event and echo it locally so
+    /// they see it land. The reply arrives as a `say` cue from the soul.
+    fn submit_input(&mut self) {
+        let text = self.input_text.trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        self.send_to_soul(presence::said_json(&self.buddy, &text));
+        self.set_emotion(Emotion::Thinking);
+        self.say(format!("You: {text}"));
+        self.input_text.clear();
     }
 
     fn on_press(&mut self, x: f64, y: f64) {
@@ -506,10 +556,14 @@ impl App {
             PressTarget::Head
         } else if self.menu_open {
             let mut hit = PressTarget::Outside;
-            for i in 0..render::MENU_ITEMS.len() {
-                if render::menu_item_rect(i).contains(x, y) {
-                    hit = PressTarget::MenuItem(i);
-                    break;
+            if render::input_box_rect().contains(x, y) {
+                hit = PressTarget::Input;
+            } else {
+                for i in 0..render::MENU_ITEMS.len() {
+                    if render::menu_item_rect(i).contains(x, y) {
+                        hit = PressTarget::MenuItem(i);
+                        break;
+                    }
                 }
             }
             hit
@@ -570,11 +624,16 @@ impl App {
         }
         match press.target {
             PressTarget::Head => {
+                self.input_focused = false;
                 self.emit_clicked();
                 self.toggle_menu();
             }
-            PressTarget::MenuItem(i) => self.activate_menu_item(i),
-            PressTarget::Bump | PressTarget::Outside => {}
+            PressTarget::Input => self.input_focused = true,
+            PressTarget::MenuItem(i) => {
+                self.input_focused = false;
+                self.activate_menu_item(i);
+            }
+            PressTarget::Bump | PressTarget::Outside => self.input_focused = false,
         }
     }
 
@@ -826,6 +885,12 @@ impl SeatHandler for App {
                 Err(err) => eprintln!("[bb-desktop-body] could not get pointer: {err}"),
             }
         }
+        if capability == Capability::Keyboard && self.keyboard.is_none() {
+            match self.seat_state.get_keyboard(qh, &seat, None) {
+                Ok(keyboard) => self.keyboard = Some(keyboard),
+                Err(err) => eprintln!("[bb-desktop-body] could not get keyboard: {err}"),
+            }
+        }
     }
     fn remove_capability(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _s: wl_seat::WlSeat, capability: Capability) {
         if capability == Capability::Pointer {
@@ -833,8 +898,69 @@ impl SeatHandler for App {
                 pointer.release();
             }
         }
+        if capability == Capability::Keyboard {
+            if let Some(keyboard) = self.keyboard.take() {
+                keyboard.release();
+            }
+        }
     }
     fn remove_seat(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _s: wl_seat::WlSeat) {}
+}
+
+impl KeyboardHandler for App {
+    fn enter(
+        &mut self,
+        _c: &Connection,
+        _q: &QueueHandle<Self>,
+        _kb: &wl_keyboard::WlKeyboard,
+        _surface: &wl_surface::WlSurface,
+        _serial: u32,
+        _raw: &[u32],
+        _keysyms: &[Keysym],
+    ) {
+    }
+    fn leave(
+        &mut self,
+        _c: &Connection,
+        _q: &QueueHandle<Self>,
+        _kb: &wl_keyboard::WlKeyboard,
+        _surface: &wl_surface::WlSurface,
+        _serial: u32,
+    ) {
+        // Lost keyboard focus (user clicked another window): drop the caret.
+        self.input_focused = false;
+    }
+    fn press_key(
+        &mut self,
+        _c: &Connection,
+        _q: &QueueHandle<Self>,
+        _kb: &wl_keyboard::WlKeyboard,
+        _serial: u32,
+        event: KeyEvent,
+    ) {
+        if self.input_focused {
+            self.on_key(event);
+        }
+    }
+    fn release_key(
+        &mut self,
+        _c: &Connection,
+        _q: &QueueHandle<Self>,
+        _kb: &wl_keyboard::WlKeyboard,
+        _serial: u32,
+        _event: KeyEvent,
+    ) {
+    }
+    fn update_modifiers(
+        &mut self,
+        _c: &Connection,
+        _q: &QueueHandle<Self>,
+        _kb: &wl_keyboard::WlKeyboard,
+        _serial: u32,
+        _modifiers: Modifiers,
+        _layout: u32,
+    ) {
+    }
 }
 
 impl PointerHandler for App {
@@ -917,6 +1043,7 @@ delegate_compositor!(App);
 delegate_output!(App);
 delegate_shm!(App);
 delegate_seat!(App);
+delegate_keyboard!(App);
 delegate_pointer!(App);
 delegate_layer!(App);
 delegate_registry!(App);

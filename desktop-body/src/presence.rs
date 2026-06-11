@@ -242,6 +242,13 @@ pub fn summoned_json(buddy: &str) -> String {
     to_soul("summoned", buddy, json!({}))
 }
 
+/// The user typed a message to the buddy through the on-body input box. This is the
+/// one to-soul event that carries free text — still presentation-in only: the body
+/// reports what was typed, it never acts on it.
+pub fn said_json(buddy: &str, text: &str) -> String {
+    to_soul("said", buddy, json!({ "text": text }))
+}
+
 /// Set a read timeout on the underlying TCP stream (plain ws:// only).
 fn set_read_timeout(socket: &WebSocket<MaybeTlsStream<TcpStream>>, dur: Option<Duration>) {
     match socket.get_ref() {
@@ -451,7 +458,7 @@ mod tests {
 
     #[test]
     fn to_soul_and_attention_fixtures_are_not_body_cues() {
-        for kind in ["attached", "clicked", "grabbed", "dropped", "summoned", "dismissed", "attention"] {
+        for kind in ["attached", "clicked", "grabbed", "dropped", "summoned", "dismissed", "said", "attention"] {
             assert!(parse_to_body(&fixture(kind)).is_none(), "{kind} should not be a body cue");
         }
     }
@@ -503,6 +510,11 @@ mod tests {
         assert_eq!(d["kind"], "dropped");
         assert_eq!(d["at"]["x"], 3.0);
         assert_eq!(d["at"]["y"], 4.0);
+
+        let s: Value = serde_json::from_str(&said_json("hermes", "hello buddy")).unwrap();
+        assert_eq!(s["kind"], "said");
+        assert_eq!(s["buddy"], "hermes");
+        assert_eq!(s["text"], "hello buddy");
     }
 
     #[test]

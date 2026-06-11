@@ -69,6 +69,7 @@ describe("presence protocol round-trips", () => {
     presence.dropped("hermes", ANCHORED, { onTarget: "trash", ts: 12 }),
     presence.summoned("hermes", { ts: 13 }),
     presence.dismissed("hermes", { ts: 14 }),
+    presence.said("hermes", "what's the weather?", { ts: 15 }),
   ];
 
   test.each(cases)("survives JSON serialization: $kind", (message) => {

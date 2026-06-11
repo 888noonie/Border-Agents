@@ -181,6 +181,28 @@ function handlePresenceInteraction(socket, message) {
     case "dismissed":
       socket.send(presenceEnvelope("express", buddy, { emotion: "sleepy" }));
       return;
+    case "said": {
+      // The user typed to the buddy through the on-body input box. Route the text to
+      // the connected provider (or echo) and reply as a `say` cue.
+      const text = typeof message.text === "string" ? message.text.trim() : "";
+      if (!text) {
+        return;
+      }
+      socket.send(presenceEnvelope("express", buddy, { emotion: "thinking" }));
+      void (async () => {
+        try {
+          const reply = await askHermes(text);
+          socket.send(presenceEnvelope("express", buddy, { emotion: "happy" }));
+          socket.send(presenceEnvelope("say", buddy, { text: reply }));
+        } catch (error) {
+          const errorMessage = error instanceof Error ? error.message : String(error);
+          logError("said handler failed", errorMessage);
+          socket.send(presenceEnvelope("express", buddy, { emotion: "alert" }));
+          socket.send(presenceEnvelope("say", buddy, { text: "I couldn't reach my brain just now." }));
+        }
+      })();
+      return;
+    }
     default:
       return;
   }
@@ -220,6 +242,18 @@ function wizardHostAct0(socket, message) {
       socket.send(presenceEnvelope("express", buddy, { emotion: "happy" }));
       socket.send(presenceEnvelope("say", buddy, { text: "Great — opening setup…" }));
       log("wizard: Act 0 complete; open panel at Act 1 (connect)", { buddy });
+      return;
+    }
+    case "said": {
+      // Onboarding is pre-connection, so the Host doesn't route to a provider yet —
+      // it just acknowledges and keeps the user moving through setup.
+      const text = typeof message.text === "string" ? message.text.trim() : "";
+      socket.send(presenceEnvelope("express", buddy, { emotion: "happy" }));
+      socket.send(
+        presenceEnvelope("say", buddy, {
+          text: text ? `Got it — "${text}". Let's finish setup first.` : "Let's finish setup first.",
+        }),
+      );
       return;
     }
     default:

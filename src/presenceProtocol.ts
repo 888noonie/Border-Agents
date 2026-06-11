@@ -168,6 +168,9 @@ export type PresenceSummoned = PresenceEnvelope<"summoned", Record<never, never>
 /** User dismissed the buddy's chat/menu surface. */
 export type PresenceDismissed = PresenceEnvelope<"dismissed", Record<never, never>>;
 
+/** User typed a message to the buddy through its on-body input box. */
+export type PresenceSaid = PresenceEnvelope<"said", { text: string }>;
+
 export type PresenceToSoulMessage =
   | PresenceAttached
   | PresenceClicked
@@ -175,7 +178,8 @@ export type PresenceToSoulMessage =
   | PresenceDragged
   | PresenceDropped
   | PresenceSummoned
-  | PresenceDismissed;
+  | PresenceDismissed
+  | PresenceSaid;
 
 export type PresenceMessage = PresenceToBodyMessage | PresenceToSoulMessage;
 
@@ -197,6 +201,7 @@ export const PRESENCE_TO_SOUL_KINDS: readonly PresenceToSoulMessage["kind"][] = 
   "dropped",
   "summoned",
   "dismissed",
+  "said",
 ];
 
 export function presenceDirection(kind: PresenceKind): PresenceDirection {
@@ -321,6 +326,8 @@ function isValidForKind(kind: PresenceKind, raw: Record<string, unknown>): boole
     case "summoned":
     case "dismissed":
       return true;
+    case "said":
+      return typeof raw.text === "string" && raw.text.length > 0;
     default:
       return false;
   }
@@ -457,5 +464,8 @@ export const presence = {
   },
   dismissed(buddy: string, opts: EnvelopeOptions = {}): PresenceDismissed {
     return envelope("dismissed", buddy, {}, opts) as PresenceDismissed;
+  },
+  said(buddy: string, text: string, opts: EnvelopeOptions = {}): PresenceSaid {
+    return envelope("said", buddy, { text }, opts) as PresenceSaid;
   },
 };

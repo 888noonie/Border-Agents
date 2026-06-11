@@ -146,5 +146,13 @@
     "kind": "dismissed",
     "buddy": "hermes",
     "ts": 1011
+  },
+  "said": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "said",
+    "buddy": "hermes",
+    "ts": 1012,
+    "text": "what's on my calendar today?"
   }
 }

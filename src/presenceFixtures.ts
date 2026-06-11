@@ -31,6 +31,7 @@ export const PRESENCE_FIXTURES = {
   dropped: presence.dropped(BUDDY, TUCKED, { onTarget: "dock", ts: 1009 }),
   summoned: presence.summoned(BUDDY, { ts: 1010 }),
   dismissed: presence.dismissed(BUDDY, { ts: 1011 }),
+  said: presence.said(BUDDY, "what's on my calendar today?", { ts: 1012 }),
 } as const;
 
 /** Canonical serialization (drops `undefined`, stable 2-space indent, trailing nl). */

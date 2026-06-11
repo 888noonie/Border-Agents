@@ -22,9 +22,17 @@ pub const HEAD_R: f32 = 64.0;
 // The drawn bubble auto-sizes its height to the text (see `paint`); this const fixes
 // its origin/width and a max height that the input region covers (≈6 lines @ 16px).
 pub const BUBBLE: Rect = Rect { x: 184.0, y: 34.0, w: 200.0, h: 172.0 };
-pub const MENU: Rect = Rect { x: 38.0, y: 214.0, w: 168.0, h: 122.0 };
+pub const MENU: Rect = Rect { x: 38.0, y: 196.0, w: 244.0, h: 150.0 };
 pub const MENU_ITEM_H: f32 = 44.0;
-pub const MENU_ITEMS: [&str; 2] = ["Say hello", "Cycle mood"];
+// The old "Say hello" became the input box (drawn separately); only action buttons
+// remain here, laid out below the input box.
+pub const MENU_ITEMS: [&str; 1] = ["Cycle mood"];
+const INPUT_H: f32 = 46.0;
+
+/// The on-body text input, at the top of the open menu. Clicking it focuses typing.
+pub fn input_box_rect() -> Rect {
+    Rect { x: MENU.x + 12.0, y: MENU.y + 12.0, w: MENU.w - 24.0, h: INPUT_H }
+}
 
 /// Radius of the tucked "bump" — the minimized half-disc the buddy shows when parked
 /// flush against a screen edge. Smaller than the head so it frees screen space.
@@ -93,10 +101,12 @@ pub fn head_rect() -> Rect {
 }
 
 pub fn menu_item_rect(index: usize) -> Rect {
+    // Action buttons start below the input box (input top pad + INPUT_H + gap).
+    let top = MENU.y + 12.0 + INPUT_H + 12.0;
     Rect {
-        x: MENU.x + 10.0,
-        y: MENU.y + 12.0 + index as f32 * MENU_ITEM_H,
-        w: MENU.w - 20.0,
+        x: MENU.x + 12.0,
+        y: top + index as f32 * MENU_ITEM_H,
+        w: MENU.w - 24.0,
         h: MENU_ITEM_H - 8.0,
     }
 }
@@ -175,6 +185,10 @@ pub struct BodyView<'a> {
     /// When `Some`, the buddy is tucked against this edge: draw the minimized bump
     /// instead of the full figure (and the body shows neither menu nor speech).
     pub tucked: Option<BumpEdge>,
+    /// Current text in the on-body input box (shown when the menu is open).
+    pub input_text: &'a str,
+    /// Whether the input box has focus — brightens it and shows a blinking caret.
+    pub input_focused: bool,
 }
 
 pub struct Sprite {
@@ -239,6 +253,16 @@ impl Sprite {
 
         if view.menu_open {
             draw_round_rect(&mut pixmap, MENU, Color::from_rgba8(12, 18, 40, 235));
+            if let Some(font) = &self.font {
+                draw_input(
+                    &mut pixmap,
+                    font,
+                    input_box_rect(),
+                    view.input_text,
+                    view.input_focused,
+                    view.t,
+                );
+            }
             for (i, label) in MENU_ITEMS.iter().enumerate() {
                 let item = menu_item_rect(i);
                 draw_round_rect(&mut pixmap, item, Color::from_rgba8(47, 125, 255, 235));
@@ -420,6 +444,50 @@ fn draw_bubble_tail(pixmap: &mut Pixmap, _bob: f32) {
             None,
         );
     }
+}
+
+// The on-body text input: a light field showing the typed text (or a placeholder),
+// brighter when focused, with a blinking caret at the end of the text.
+fn draw_input(pixmap: &mut Pixmap, font: &Font, rect: Rect, text: &str, focused: bool, t: f32) {
+    let bg = if focused {
+        Color::from_rgba8(255, 255, 255, 250)
+    } else {
+        Color::from_rgba8(226, 233, 243, 235)
+    };
+    draw_round_rect(pixmap, rect, bg);
+
+    let px = 16.0;
+    let baseline = rect.y + rect.h * 0.5 + px * 0.34;
+    let pad = 12.0;
+    let max_w = rect.w - pad * 2.0;
+
+    let (shown, color) = if text.is_empty() && !focused {
+        ("Type to me…".to_string(), [120, 130, 150])
+    } else {
+        // Show the tail so the latest characters stay visible as the field overflows.
+        (clip_text_tail(font, text, px, max_w), [16, 24, 44])
+    };
+    draw_line(pixmap, font, &shown, rect.x + pad, baseline, px, color);
+
+    // Blinking caret (~1.4 Hz) at the end of the visible text.
+    if focused && ((t * 1.4) as i32) % 2 == 0 {
+        let caret_x = rect.x + pad + measure(font, &shown, px) + 2.0;
+        let caret = Rect { x: caret_x, y: rect.y + 10.0, w: 2.0, h: rect.h - 20.0 };
+        draw_round_rect(pixmap, caret, Color::from_rgba8(47, 125, 255, 255));
+    }
+}
+
+// Drop leading characters until the text fits `max_w`, so an overflowing input shows
+// its end (where the caret is) rather than its beginning.
+fn clip_text_tail(font: &Font, text: &str, px: f32, max_w: f32) -> String {
+    if measure(font, text, px) <= max_w {
+        return text.to_string();
+    }
+    let mut chars: Vec<char> = text.chars().collect();
+    while chars.len() > 1 && measure(font, &chars.iter().collect::<String>(), px) > max_w {
+        chars.remove(0);
+    }
+    chars.into_iter().collect()
 }
 
 fn draw_round_rect(pixmap: &mut Pixmap, rect: Rect, color: Color) {

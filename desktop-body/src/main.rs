@@ -28,7 +28,7 @@ use calloop::channel::Event as ChannelEvent;
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{EventLoop, LoopSignal};
 use calloop_wayland_source::WaylandSource;
-use render::{BodyView, BumpEdge, Emotion, Facing, Sprite};
+use render::{BodyView, BumpEdge, Emotion, Facing, Sprite, TorsoAction};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, Region},
     delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
@@ -372,6 +372,7 @@ struct PressState {
 enum PressTarget {
     Head,
     Input,
+    TorsoAction(TorsoAction),
     /// The legs/feet zone — dragging it vertically stretches the body.
     Feet,
     Bump,
@@ -689,7 +690,7 @@ impl App {
         } else {
             let layout = self.layout();
             // Head = move/dock handle; feet = stretch handle. The torso stays
-            // click-through — the figure shows, the desktop underneath still works.
+            // mostly click-through — only the small torso action points catch input.
             let mut rects = vec![render::head_rect().as_i32(), layout.feet_rect().as_i32()];
             if self.speech.is_some() {
                 rects.push(layout.bubble_rect().as_i32());
@@ -697,6 +698,8 @@ impl App {
             if self.chat_open {
                 rects.push(layout.input_region_rect().as_i32());
             }
+            rects.push(layout.torso_action_rect(TorsoAction::Expand).as_i32());
+            rects.push(layout.torso_action_rect(TorsoAction::Scroll).as_i32());
             rects
         };
         for (x, y, w, h) in rects {
@@ -861,6 +864,8 @@ impl App {
             PressTarget::Head
         } else if self.chat_open && layout.input_region_rect().contains(x, y) {
             PressTarget::Input
+        } else if let Some(action) = render::torso_action_at(&layout, x, y) {
+            PressTarget::TorsoAction(action)
         } else if layout.feet_rect().contains(x, y) {
             PressTarget::Feet
         } else {
@@ -947,10 +952,22 @@ impl App {
                 self.toggle_chat();
             }
             PressTarget::Input => self.input_focused = true,
+            PressTarget::TorsoAction(action) => {
+                self.input_focused = false;
+                self.on_torso_action(action);
+            }
             PressTarget::Feet | PressTarget::Bump | PressTarget::Outside => {
                 self.input_focused = false;
             }
         }
+    }
+
+    fn on_torso_action(&mut self, action: TorsoAction) {
+        self.speech = Some(match action {
+            TorsoAction::Expand => "Fullscreen image open will land here.".to_string(),
+            TorsoAction::Scroll => "Torso scroll controls will land here.".to_string(),
+        });
+        self.update_input_region();
     }
 
     // --- tuck / summon -------------------------------------------------------

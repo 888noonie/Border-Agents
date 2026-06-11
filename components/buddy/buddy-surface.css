@@ -202,7 +202,7 @@
 
 .buddy-ui-bubble__tabs {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
   gap: 0.25rem;
 }
 
@@ -226,6 +226,10 @@
 
 .buddy-ui-bubble__tab--message {
   background: #edf5ff;
+}
+
+.buddy-ui-bubble__tab--setup {
+  background: #fff1e3;
 }
 
 .buddy-ui-bubble__tab--settings {
@@ -636,6 +640,192 @@
   padding: 0.35rem 0.72rem;
   font-size: 0.72rem;
   font-weight: 650;
+}
+
+.onboarding-panel {
+  display: grid;
+  gap: 0.72rem;
+}
+
+.onboarding-panel__header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.onboarding-panel__header h3,
+.onboarding-panel__header p {
+  margin: 0;
+}
+
+.onboarding-panel__eyebrow {
+  color: #607089;
+  font-size: 0.7rem;
+  font-weight: 760;
+}
+
+.onboarding-panel__mode {
+  display: inline-flex;
+  align-items: center;
+  min-height: 1.7rem;
+  border: 1px solid rgb(21 38 60 / 0.12);
+  border-radius: 999px;
+  padding: 0 0.62rem;
+  background: #f7fbff;
+  color: #41556f;
+  font-size: 0.68rem;
+  font-weight: 760;
+}
+
+.onboarding-panel__nav {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(5rem, 1fr));
+  gap: 0.35rem;
+}
+
+.onboarding-panel__nav-item,
+.onboarding-panel__provider,
+.onboarding-panel__card,
+.onboarding-panel__primary {
+  border: 1px solid rgb(21 38 60 / 0.12);
+  border-radius: 0.8rem;
+  background: #fff;
+  color: #172033;
+  font: inherit;
+}
+
+.onboarding-panel__nav-item {
+  min-height: 2rem;
+  padding: 0 0.55rem;
+  font-size: 0.7rem;
+  font-weight: 760;
+}
+
+.onboarding-panel__nav-item--active {
+  border-color: #2f7dff;
+  background: #edf5ff;
+}
+
+.onboarding-panel__nav-item:disabled {
+  opacity: 0.45;
+}
+
+.onboarding-panel__body,
+.onboarding-panel__fields,
+.onboarding-panel__cards,
+.onboarding-panel__summary,
+.onboarding-panel__placement-list,
+.onboarding-panel__providers {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.onboarding-panel__provider,
+.onboarding-panel__card {
+  display: grid;
+  gap: 0.22rem;
+  padding: 0.65rem 0.72rem;
+  text-align: left;
+}
+
+.onboarding-panel__provider--active,
+.onboarding-panel__card--active {
+  border-color: #2f7dff;
+  background: #f8fbff;
+}
+
+.onboarding-panel__provider strong,
+.onboarding-panel__card strong {
+  font-size: 0.75rem;
+}
+
+.onboarding-panel__provider span,
+.onboarding-panel__card span,
+.onboarding-panel__card small,
+.onboarding-panel__summary-row span,
+.onboarding-panel__note,
+.onboarding-panel__intro {
+  color: #5a6a82;
+  font-size: 0.7rem;
+  line-height: 1.3;
+}
+
+.onboarding-panel__field {
+  display: grid;
+  gap: 0.22rem;
+}
+
+.onboarding-panel__field span {
+  color: #41556f;
+  font-size: 0.68rem;
+  font-weight: 720;
+}
+
+.onboarding-panel__field input,
+.onboarding-panel__field textarea,
+.onboarding-panel__field select,
+.onboarding-panel__placement-row select {
+  width: 100%;
+  border: 1px solid rgb(208 220 235);
+  border-radius: 0.72rem;
+  padding: 0.48rem 0.58rem;
+  background: #fff;
+  color: #172033;
+  font: inherit;
+  font-size: 0.74rem;
+}
+
+.onboarding-panel__placement-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 7rem;
+  gap: 0.55rem;
+  align-items: center;
+}
+
+.onboarding-panel__check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-width: 0;
+  font-size: 0.74rem;
+}
+
+.onboarding-panel__summary-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border: 1px solid rgb(21 38 60 / 0.08);
+  border-radius: 0.8rem;
+  padding: 0.58rem 0.65rem;
+  background: #fbfdff;
+}
+
+.onboarding-panel__summary-row strong,
+.onboarding-panel__summary-row em {
+  font-size: 0.72rem;
+}
+
+.onboarding-panel__summary-row em {
+  color: #41556f;
+  font-style: normal;
+  font-weight: 720;
+}
+
+.onboarding-panel__primary {
+  min-height: 2.2rem;
+  padding: 0 0.82rem;
+  background: #182033;
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 780;
+}
+
+.onboarding-panel__primary:disabled {
+  background: rgb(24 32 51 / 0.32);
+  color: rgb(255 255 255 / 0.78);
+  cursor: not-allowed;
 }
 
 .buddy-panel__gateway-pill {

@@ -151,13 +151,25 @@ impl Layout {
 
     pub fn output_panel_rect(&self) -> Rect {
         let torso = self.torso_rect();
-        let pad = 10.0;
+        let pad_x = 7.0;
+        let pad_y = 8.0;
         Rect {
-            x: torso.x + pad,
-            y: torso.y + pad,
-            w: torso.w - pad * 2.0,
-            h: (torso.h - pad * 2.0).max(0.0),
+            x: torso.x + pad_x,
+            y: torso.y + pad_y,
+            w: torso.w - pad_x * 2.0,
+            h: (torso.h - pad_y * 2.0).max(0.0),
         }
+    }
+
+    pub fn torso_action_rect(&self, action: TorsoAction) -> Rect {
+        let panel = self.output_panel_rect();
+        let size = 18.0_f32.min(panel.w.max(0.0)).min((panel.h / 2.0).max(0.0));
+        let x = panel.x + panel.w - size - 5.0;
+        let y = match action {
+            TorsoAction::Expand => panel.y + 5.0,
+            TorsoAction::Scroll => panel.y + panel.h - size - 5.0,
+        };
+        Rect { x, y, w: size, h: size }
     }
 
 }
@@ -211,6 +223,12 @@ pub fn point_in_bump(edge: BumpEdge, w: u32, h: u32, px: f64, py: f64) -> bool {
     let dx = px as f32 - cx;
     let dy = py as f32 - cy;
     dx * dx + dy * dy <= BUMP_R * BUMP_R
+}
+
+pub fn torso_action_at(layout: &Layout, px: f64, py: f64) -> Option<TorsoAction> {
+    [TorsoAction::Expand, TorsoAction::Scroll]
+        .into_iter()
+        .find(|action| layout.torso_action_rect(*action).contains(px, py))
 }
 
 /// Radius of the tucked "bump" — smaller than the head so it frees screen space.
@@ -427,6 +445,12 @@ pub enum TorsoOutput<'a> {
     Image(ImageCard),
     ImageStub(MediaStubCard<'a>),
     FileStub(MediaStubCard<'a>),
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TorsoAction {
+    Expand,
+    Scroll,
 }
 
 pub struct BodyView<'a> {
@@ -834,21 +858,26 @@ fn draw_torso_output(
     }
 
     let bg = Color::from_rgba8(246, 249, 250, 226);
-    let rim = solid(Color::from_rgba8(103, 69, 48, 95));
+    let rim = solid(Color::from_rgba8(0, 0, 0, 153));
     draw_round_rect(pixmap, rect, bg);
     if let Some(path) = round_rect_path(rect, 8.0) {
         let mut stroke = Stroke::default();
-        stroke.width = 1.5;
+        stroke.width = 1.0;
         pixmap.stroke_path(&path, &rim, &stroke, Transform::identity(), None);
     }
 
+    let content = inset_rect(rect, 5.0, 5.0);
+
     match output {
-        TorsoOutput::Session(card) => draw_session_card(pixmap, font, rect, card),
-        TorsoOutput::Text(card) => draw_text_card(pixmap, font, rect, card),
-        TorsoOutput::Image(card) => draw_image_card(pixmap, rect, card, eiffel_tower),
-        TorsoOutput::ImageStub(card) => draw_media_stub(pixmap, font, rect, card, true),
-        TorsoOutput::FileStub(card) => draw_media_stub(pixmap, font, rect, card, false),
+        TorsoOutput::Session(card) => draw_session_card(pixmap, font, content, card),
+        TorsoOutput::Text(card) => draw_text_card(pixmap, font, content, card),
+        TorsoOutput::Image(card) => draw_image_card(pixmap, content, card, eiffel_tower),
+        TorsoOutput::ImageStub(card) => draw_media_stub(pixmap, font, content, card, true),
+        TorsoOutput::FileStub(card) => draw_media_stub(pixmap, font, content, card, false),
     }
+
+    draw_torso_action(pixmap, layout, TorsoAction::Expand);
+    draw_torso_action(pixmap, layout, TorsoAction::Scroll);
 }
 
 fn draw_session_card(pixmap: &mut Pixmap, font: &Font, rect: Rect, card: &SessionCard) {
@@ -1007,13 +1036,21 @@ fn draw_image_card(
     card: &ImageCard,
     eiffel_tower: Option<&Pixmap>,
 ) {
-    let pad = 8.0;
-    let image_rect = Rect {
-        x: rect.x + pad,
-        y: rect.y + pad + 6.0,
-        w: rect.w - pad * 2.0,
-        h: rect.h - pad * 2.0 - 6.0,
-    };
+    let frame = inset_rect(rect, 1.5, 1.5);
+    draw_round_rect(pixmap, frame, Color::from_rgba8(255, 252, 248, 240));
+    if let Some(path) = round_rect_path(frame, 8.0) {
+        let mut stroke = Stroke::default();
+        stroke.width = 1.0;
+        pixmap.stroke_path(
+            &path,
+            &solid(Color::from_rgba8(0, 0, 0, 155)),
+            &stroke,
+            Transform::identity(),
+            None,
+        );
+    }
+
+    let image_rect = inset_rect(frame, 4.0, 4.0);
     draw_round_rect(pixmap, image_rect, Color::from_rgba8(236, 232, 228, 255));
     if let Some(asset) = builtin_image_pixmap(card.asset, eiffel_tower) {
         draw_fitted_image(pixmap, asset, image_rect);
@@ -1023,11 +1060,79 @@ fn draw_image_card(
         stroke.width = 1.0;
         pixmap.stroke_path(
             &path,
-            &solid(Color::from_rgba8(103, 69, 48, 95)),
+            &solid(Color::from_rgba8(0, 0, 0, 135)),
             &stroke,
             Transform::identity(),
             None,
         );
+    }
+}
+
+fn draw_torso_action(pixmap: &mut Pixmap, layout: &Layout, action: TorsoAction) {
+    let rect = layout.torso_action_rect(action);
+    if rect.w <= 0.0 || rect.h <= 0.0 {
+        return;
+    }
+
+    draw_round_rect(pixmap, rect, Color::from_rgba8(0, 0, 0, 140));
+    if let Some(path) = round_rect_path(rect, rect.w.min(rect.h) / 2.0) {
+        let mut stroke = Stroke::default();
+        stroke.width = 1.0;
+        pixmap.stroke_path(
+            &path,
+            &solid(Color::from_rgba8(255, 255, 255, 175)),
+            &stroke,
+            Transform::identity(),
+            None,
+        );
+    }
+
+    let icon = solid(Color::from_rgba8(255, 255, 255, 225));
+    match action {
+        TorsoAction::Expand => {
+            let inset = 5.0;
+            let mut pb = PathBuilder::new();
+            pb.move_to(rect.x + inset, rect.y + rect.h * 0.52);
+            pb.line_to(rect.x + inset, rect.y + inset);
+            pb.line_to(rect.x + rect.w * 0.52, rect.y + inset);
+            pb.move_to(rect.x + rect.w - inset, rect.y + rect.h * 0.48);
+            pb.line_to(rect.x + rect.w - inset, rect.y + rect.h - inset);
+            pb.line_to(rect.x + rect.w * 0.48, rect.y + rect.h - inset);
+            if let Some(path) = pb.finish() {
+                let mut stroke = Stroke::default();
+                stroke.width = 1.35;
+                stroke.line_cap = tiny_skia::LineCap::Round;
+                stroke.line_join = tiny_skia::LineJoin::Round;
+                pixmap.stroke_path(&path, &icon, &stroke, Transform::identity(), None);
+            }
+        }
+        TorsoAction::Scroll => {
+            let cx = rect.x + rect.w / 2.0;
+            let up_y = rect.y + 5.0;
+            let down_y = rect.y + rect.h - 5.0;
+            let mid = rect.y + rect.h / 2.0;
+
+            let mut pb = PathBuilder::new();
+            pb.move_to(cx - 4.0, up_y + 4.0);
+            pb.line_to(cx, up_y);
+            pb.line_to(cx + 4.0, up_y + 4.0);
+            pb.move_to(cx, up_y + 1.0);
+            pb.line_to(cx, down_y - 1.0);
+            pb.move_to(cx - 4.0, down_y - 4.0);
+            pb.line_to(cx, down_y);
+            pb.line_to(cx + 4.0, down_y - 4.0);
+            if let Some(path) = pb.finish() {
+                let mut stroke = Stroke::default();
+                stroke.width = 1.3;
+                stroke.line_cap = tiny_skia::LineCap::Round;
+                stroke.line_join = tiny_skia::LineJoin::Round;
+                pixmap.stroke_path(&path, &icon, &stroke, Transform::identity(), None);
+            }
+
+            if let Some(dot) = PathBuilder::from_circle(cx, mid, 1.25) {
+                pixmap.fill_path(&dot, &icon, FillRule::Winding, Transform::identity(), None);
+            }
+        }
     }
 }
 
@@ -1109,6 +1214,7 @@ fn draw_bubble(pixmap: &mut Pixmap, font: &Font, layout: &Layout, text: &str) {
     let rect = Rect { x: max.x, y: max.y, w: max.w, h };
 
     let bg = Color::from_rgba8(247, 251, 255, 245);
+    let border = solid(Color::from_rgba8(0, 0, 0, 175));
     draw_round_rect(pixmap, rect, bg);
 
     // Tail on the head-facing edge.
@@ -1123,6 +1229,15 @@ fn draw_bubble(pixmap: &mut Pixmap, font: &Font, layout: &Layout, text: &str) {
     pb.close();
     if let Some(path) = pb.finish() {
         pixmap.fill_path(&path, &solid(bg), FillRule::Winding, Transform::identity(), None);
+        let mut stroke = Stroke::default();
+        stroke.width = 1.0;
+        stroke.line_join = tiny_skia::LineJoin::Round;
+        pixmap.stroke_path(&path, &border, &stroke, Transform::identity(), None);
+    }
+    if let Some(path) = round_rect_path(rect, 14.0) {
+        let mut stroke = Stroke::default();
+        stroke.width = 1.0;
+        pixmap.stroke_path(&path, &border, &stroke, Transform::identity(), None);
     }
 
     let mut baseline = rect.y + pad_top;
@@ -1149,7 +1264,13 @@ fn draw_input(pixmap: &mut Pixmap, font: &Font, layout: &Layout, text: &str, foc
     } else {
         Color::from_rgba8(232, 226, 220, 235)
     };
+    let border = solid(Color::from_rgba8(0, 0, 0, 175));
     draw_round_rect(pixmap, rect, bg);
+    if let Some(path) = round_rect_path(rect, 14.0) {
+        let mut stroke = Stroke::default();
+        stroke.width = 1.0;
+        pixmap.stroke_path(&path, &border, &stroke, Transform::identity(), None);
+    }
 
     let mut baseline = rect.y + 8.0 + TEXT_PX;
     if text.is_empty() {
@@ -1178,6 +1299,12 @@ fn draw_input(pixmap: &mut Pixmap, font: &Font, layout: &Layout, text: &str, foc
 fn draw_round_rect(pixmap: &mut Pixmap, rect: Rect, color: Color) {
     let r = 14.0_f32.min(rect.w / 2.0).min(rect.h / 2.0);
     fill_round_rect(pixmap, rect, r, &solid(color));
+}
+
+fn inset_rect(rect: Rect, dx: f32, dy: f32) -> Rect {
+    let w = (rect.w - dx * 2.0).max(0.0);
+    let h = (rect.h - dy * 2.0).max(0.0);
+    Rect { x: rect.x + dx, y: rect.y + dy, w, h }
 }
 
 fn fill_round_rect(pixmap: &mut Pixmap, rect: Rect, radius: f32, paint: &Paint) {
@@ -1470,6 +1597,19 @@ mod tests {
         assert!(panel.x + panel.w < torso.x + torso.w);
         assert!(panel.y + panel.h < torso.y + torso.h);
         assert!(tall.output_panel_rect().h > short.output_panel_rect().h);
+    }
+
+    #[test]
+    fn torso_actions_live_inside_output_panel() {
+        let layout = Layout { facing: Facing::Right, body_len: BODY_LEN_DEFAULT };
+        let panel = layout.output_panel_rect();
+        for action in [TorsoAction::Expand, TorsoAction::Scroll] {
+            let rect = layout.torso_action_rect(action);
+            assert!(rect.x >= panel.x);
+            assert!(rect.y >= panel.y);
+            assert!(rect.x + rect.w <= panel.x + panel.w);
+            assert!(rect.y + rect.h <= panel.y + panel.h);
+        }
     }
 
     #[test]

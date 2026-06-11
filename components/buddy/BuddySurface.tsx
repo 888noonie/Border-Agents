@@ -113,6 +113,7 @@ type BuddySurfaceProps = {
   onSendChat: (payload: { text: string; purpose?: string; context?: string }) => boolean;
   onSettingsChange: (settings: BuddySettings) => void;
   onPostureChange?: (posture: UserPosture) => void;
+  onPlacementChange?: (placement: { enabledBuddyIds: readonly string[]; buddyEdges: Readonly<Record<string, string>> }) => void;
   onGovernanceSnapshotChange?: (snapshot: BuddyGovernanceSnapshot | null) => void;
 };
 
@@ -187,6 +188,7 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
     onSendChat,
     onSettingsChange,
     onPostureChange,
+    onPlacementChange,
     onGovernanceSnapshotChange,
   },
   ref,
@@ -645,6 +647,12 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
     }
     if (event === "panel:posture_set") {
       onPostureChange?.(onboardingSurface.draft.posture);
+    }
+    if (event === "panel:next" && onboardingModel?.act.id === "place_buddies") {
+      onPlacementChange?.({
+        enabledBuddyIds: onboardingSurface.draft.enabledBuddyIds,
+        buddyEdges: onboardingSurface.draft.buddyEdges,
+      });
     }
     if (nextState.completed) {
       setOnboardingHubSection("summary");

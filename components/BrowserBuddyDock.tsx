@@ -2080,6 +2080,26 @@ export function BrowserBuddyDock() {
                     }))
                   }
                   onPostureChange={(posture: UserPosture) => switchUserMode(postureToUserMode(posture))}
+                  onPlacementChange={({ enabledBuddyIds, buddyEdges }) => {
+                    setPlacements((current) =>
+                      buddies.reduce<AgentPlacements>((next, b) => {
+                        const existing = current[b.id] ?? defaultPlacements[b.id];
+                        const edge = (buddyEdges[b.id] ?? existing.edge) as Edge;
+                        next[b.id] = { ...existing, edge };
+                        return next;
+                      }, { ...current }),
+                    );
+                    setBuddySettings((current) =>
+                      buddies.reduce<BuddySettingsMap>((next, b) => {
+                        const existing = current[b.id] ?? defaultBuddySettings[b.id];
+                        next[b.id] = normalizeBuddySettings(BUDDY_PROFILES[b.id], {
+                          ...existing,
+                          enabled: enabledBuddyIds.includes(b.id),
+                        });
+                        return next;
+                      }, { ...current }),
+                    );
+                  }}
                 />
               );
             })
@@ -2429,6 +2449,7 @@ function BuddyHotspot({
   settings,
   onSettingsChange,
   onPostureChange,
+  onPlacementChange,
   headForceKey,
 }: {
   active: boolean;
@@ -2461,6 +2482,7 @@ function BuddyHotspot({
   settings: BuddySettings;
   onSettingsChange: (settings: BuddySettings) => void;
   onPostureChange?: (posture: UserPosture) => void;
+  onPlacementChange?: (placement: { enabledBuddyIds: readonly string[]; buddyEdges: Readonly<Record<string, string>> }) => void;
   headForceKey?: number;
 }) {
 
@@ -2635,6 +2657,7 @@ function BuddyHotspot({
           onSendChat={onSendChat}
           onSettingsChange={onSettingsChange}
           onPostureChange={onPostureChange}
+          onPlacementChange={onPlacementChange}
           settings={settings}
         />
 

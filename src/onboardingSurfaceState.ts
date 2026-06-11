@@ -1,5 +1,6 @@
 import { DEFAULT_HERMES_SYSTEM_PROMPT, HERMES_PROVIDER_PRESETS, type HermesProviderPresetId } from "./onboardingPanelModel";
 import { DEFAULT_USER_POSTURE, isUserPosture, type UserPosture } from "./core/userPosture";
+import { lifecycleReceiptKinds, readLifecycleReceipts } from "./lifecycleReceipts";
 import { INITIAL_ONBOARDING_STATE, type OnboardingState } from "./wizardOnboarding";
 
 export const ONBOARDING_SURFACE_STATE_KEY = "border-agents:onboarding-surface:v1";
@@ -20,6 +21,9 @@ export interface OnboardingSurfaceDraft {
 
 export interface OnboardingSurfaceState {
   progress: OnboardingState;
+  // Derived (not persisted in this blob): the unique milestone kinds recorded in the
+  // durable lifecycle receipt ledger. Seeded on load, refreshed as the wizard records
+  // real milestones. This is what decides linear-vs-hub entry and marks summary rows.
   receiptKinds: string[];
   draft: OnboardingSurfaceDraft;
 }
@@ -51,14 +55,17 @@ export function loadStoredOnboardingSurfaceState(
   storage: Storage = window.localStorage,
 ): OnboardingSurfaceState {
   const fallback = createDefaultOnboardingSurfaceState();
+  // Receipt kinds are authoritative from the durable lifecycle ledger, never the
+  // surface blob — so a cleared/edited UI blob can't fake completion or lose it.
+  const receiptKinds = lifecycleReceiptKinds(readLifecycleReceipts(storage));
   try {
     const raw = storage.getItem(ONBOARDING_SURFACE_STATE_KEY);
     if (!raw) {
-      return fallback;
+      return { ...fallback, receiptKinds };
     }
-    return normalizeOnboardingSurfaceState(JSON.parse(raw), fallback);
+    return { ...normalizeOnboardingSurfaceState(JSON.parse(raw), fallback), receiptKinds };
   } catch {
-    return fallback;
+    return { ...fallback, receiptKinds };
   }
 }
 

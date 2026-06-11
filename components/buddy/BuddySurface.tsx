@@ -22,7 +22,8 @@ import {
   saveStoredOnboardingSurfaceState,
   type OnboardingSurfaceDraft,
 } from "../../src/onboardingSurfaceState";
-import { advanceOnboarding, currentAct, type OnboardingEvent } from "../../src/wizardOnboarding";
+import { advanceOnboarding, currentAct, type OnboardingAct, type OnboardingEvent } from "../../src/wizardOnboarding";
+import { lifecycleReceiptKinds, recordLifecycleReceipt } from "../../src/lifecycleReceipts";
 import { type UserPosture } from "../../src/core/userPosture";
 import { connectionLabelForState } from "../../src/useBuddyGateway";
 import { BuddyActionMenu } from "./BuddyActionMenu";
@@ -636,22 +637,30 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
       return;
     }
 
-    // Progress + receipts are computed inside the functional update so a delayed
-    // caller (the find_me auto-advance timer) can never clobber state written
-    // after its closure was captured.
-    setOnboardingSurface((current) => {
-      const act = currentAct(current.progress);
-      const advances = act.advanceOn.includes(event as OnboardingEvent);
-      const receiptKinds =
-        act.receipt && advances && !current.receiptKinds.includes(act.receipt)
-          ? [...current.receiptKinds, act.receipt]
-          : current.receiptKinds;
-      return {
-        ...current,
-        progress: advanceOnboarding(current.progress, event as OnboardingEvent),
-        receiptKinds,
-      };
-    });
+    // Record a real, durable lifecycle milestone — but only when the act genuinely
+    // advances AND carries a receipt (first_contact/find_me carry none). The ledger
+    // is append-only, so re-running a step in the hub honestly logs a fresh dated
+    // milestone; `lifecycleReceiptKinds` collapses it for the linear-vs-hub decision.
+    const advancingAct = currentAct(onboardingSurface.progress);
+    const advances = advancingAct.advanceOn.includes(event as OnboardingEvent);
+    const recordedKinds =
+      advancingAct.receipt && advances
+        ? lifecycleReceiptKinds(
+            recordLifecycleReceipt({
+              kind: advancingAct.receipt,
+              detail: receiptDetail(advancingAct, onboardingSurface.draft),
+            }),
+          )
+        : null;
+
+    // Progress is advanced inside the functional update so a delayed caller (the
+    // find_me auto-advance timer) can never clobber state written after its closure
+    // was captured. Receipt kinds come from the durable ledger we just wrote.
+    setOnboardingSurface((current) => ({
+      ...current,
+      progress: advanceOnboarding(current.progress, event as OnboardingEvent),
+      receiptKinds: recordedKinds ?? current.receiptKinds,
+    }));
 
     // Settings writes are keyed on the panel event itself — each event is only ever
     // emitted by its own section, in both linear and hub mode.
@@ -685,6 +694,29 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
 
   function presetProvider(id: HermesProviderPresetId) {
     return HERMES_PROVIDER_PRESETS.find((p) => p.id === id)?.buddyProvider ?? "custom";
+  }
+
+  // Honest, minimal detail captured alongside each milestone — what was actually set,
+  // never the secret itself (the API key is recorded as present/absent, not its value).
+  function receiptDetail(
+    act: OnboardingAct,
+    draft: OnboardingSurfaceDraft,
+  ): Record<string, string | number | boolean> | undefined {
+    switch (act.receipt) {
+      case "credential.stored":
+        return {
+          provider: presetProvider(draft.provider),
+          model: draft.model,
+          apiBase: draft.apiBase,
+          apiKeyPresent: draft.apiKey.trim().length > 0,
+        };
+      case "posture.set":
+        return { posture: draft.posture };
+      case "placement.set":
+        return { enabledBuddyCount: draft.enabledBuddyIds.length };
+      default:
+        return undefined;
+    }
   }
 
   function selectWizardSection(section: OnboardingPanelSection) {

@@ -126,6 +126,13 @@ function presenceEnvelope(kind, buddy, payload) {
   });
 }
 
+// The body's last persisted placement, per buddy. A real soul keeps this in durable
+// memory behind the governance boundary; the dev soul keeps it in process so the
+// restart-restores-placement loop (incl. tucked) can be demonstrated end-to-end.
+const lastPosition = new Map();
+
+const DEFAULT_HYDRATE_POSITION = { mode: "anchored", edge: "right", offset: { x: 24, y: 48 } };
+
 // Dev-only "soul": react to body interaction events with presence cues so both
 // directions of the protocol can be exercised against the browser body that
 // already works. A real soul replaces this with the LLM presence-tool loop.
@@ -133,19 +140,26 @@ function handlePresenceInteraction(socket, message) {
   const buddy = String(message.buddy);
 
   switch (message.kind) {
-    case "attached":
+    case "attached": {
       // Complete the handshake: a real soul replies to `attached` with a `hydrate`
-      // snapshot. The dev soul sends a friendly one so a freshly-connected body
-      // visibly comes online. (The full Wizard onboarding script is a later step.)
+      // snapshot. Restore the buddy's last placement if we have one (so a tucked
+      // buddy comes back tucked after a restart); otherwise greet it onto the desktop.
+      const saved = lastPosition.get(buddy);
+      const position = saved ?? DEFAULT_HYDRATE_POSITION;
+      const tucked = position.mode === "tucked";
       socket.send(
         presenceEnvelope("hydrate", buddy, {
-          position: { mode: "anchored", edge: "right", offset: { x: 24, y: 48 } },
-          emotion: "happy",
-          speech: "Wired up — hello from the gateway.",
+          position,
+          emotion: tucked ? "sleepy" : "happy",
+          speech: tucked ? undefined : "Wired up — hello from the gateway.",
         }),
       );
       return;
+    }
     case "summoned":
+      // Popped back out of a tuck — forget the tucked placement so it doesn't re-tuck
+      // on the next reconnect.
+      lastPosition.delete(buddy);
       socket.send(presenceEnvelope("express", buddy, { emotion: "happy" }));
       socket.send(presenceEnvelope("say", buddy, { text: "You called?" }));
       return;
@@ -153,6 +167,11 @@ function handlePresenceInteraction(socket, message) {
       socket.send(presenceEnvelope("express", buddy, { emotion: "alert" }));
       return;
     case "dropped":
+      // Persist where the buddy came to rest (free point or tucked-to-edge), so the
+      // next hydrate puts it back there.
+      if (message.at && typeof message.at === "object") {
+        lastPosition.set(buddy, message.at);
+      }
       socket.send(presenceEnvelope("express", buddy, { emotion: "neutral" }));
       return;
     case "dismissed":

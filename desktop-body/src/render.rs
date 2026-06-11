@@ -24,6 +24,50 @@ pub const MENU: Rect = Rect { x: 38.0, y: 214.0, w: 168.0, h: 122.0 };
 pub const MENU_ITEM_H: f32 = 44.0;
 pub const MENU_ITEMS: [&str; 2] = ["Say hello", "Cycle mood"];
 
+/// Radius of the tucked "bump" — the minimized half-disc the buddy shows when parked
+/// flush against a screen edge. Smaller than the head so it frees screen space.
+pub const BUMP_R: f32 = 34.0;
+
+/// Which screen edge a tucked buddy is parked against. (Render-side mirror of the
+/// presence protocol's edge; `main.rs` maps `presence::Edge` onto it.)
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BumpEdge {
+    Top,
+    Right,
+    Bottom,
+    Left,
+}
+
+/// Centre of the bump's full circle — sits ON the surface edge so only the on-surface
+/// half shows (the other half clips against the pixmap bounds = the "split in half").
+fn bump_center(edge: BumpEdge) -> (f32, f32) {
+    match edge {
+        BumpEdge::Left => (0.0, HEAD_CY),
+        BumpEdge::Right => (SURFACE_W as f32, HEAD_CY),
+        BumpEdge::Top => (HEAD_CX, 0.0),
+        BumpEdge::Bottom => (HEAD_CX, SURFACE_H as f32),
+    }
+}
+
+/// Bounding box of the *visible* (on-surface) half of the bump — used for the input
+/// region and for keeping the bump on-screen when tucked.
+pub fn bump_rect(edge: BumpEdge) -> Rect {
+    let (cx, cy) = bump_center(edge);
+    match edge {
+        BumpEdge::Left => Rect { x: 0.0, y: cy - BUMP_R, w: BUMP_R, h: BUMP_R * 2.0 },
+        BumpEdge::Right => Rect { x: cx - BUMP_R, y: cy - BUMP_R, w: BUMP_R, h: BUMP_R * 2.0 },
+        BumpEdge::Top => Rect { x: cx - BUMP_R, y: 0.0, w: BUMP_R * 2.0, h: BUMP_R },
+        BumpEdge::Bottom => Rect { x: cx - BUMP_R, y: cy - BUMP_R, w: BUMP_R * 2.0, h: BUMP_R },
+    }
+}
+
+pub fn point_in_bump(edge: BumpEdge, px: f64, py: f64) -> bool {
+    let (cx, cy) = bump_center(edge);
+    let dx = px as f32 - cx;
+    let dy = py as f32 - cy;
+    dx * dx + dy * dy <= BUMP_R * BUMP_R
+}
+
 #[derive(Clone, Copy)]
 pub struct Rect {
     pub x: f32,
@@ -126,6 +170,9 @@ pub struct BodyView<'a> {
     pub emotion: Emotion,
     pub speech: Option<&'a str>,
     pub menu_open: bool,
+    /// When `Some`, the buddy is tucked against this edge: draw the minimized bump
+    /// instead of the full figure (and the body shows neither menu nor speech).
+    pub tucked: Option<BumpEdge>,
 }
 
 pub struct Sprite {
@@ -147,6 +194,14 @@ impl Sprite {
         let Some(mut pixmap) = Pixmap::new(w, h) else {
             return;
         };
+
+        // Tucked: draw only the minimized bump (no bob, no face, no menu/bubble) — a
+        // dormant buddy hugging the edge, waiting to be summoned with a click.
+        if let Some(edge) = view.tucked {
+            draw_bump(&mut pixmap, edge);
+            blit_premultiplied_bgra(pixmap.data(), canvas);
+            return;
+        }
 
         let bob = (view.t * std::f32::consts::TAU / 3.6).sin() * 4.0;
         // A ~150ms blink every 4s.
@@ -219,6 +274,33 @@ fn draw_head(pixmap: &mut Pixmap, bob: f32) {
 
     if let Some(circle) = PathBuilder::from_circle(HEAD_CX, HEAD_CY + bob, HEAD_R) {
         pixmap.fill_path(&circle, &paint, FillRule::Winding, Transform::identity(), None);
+    }
+}
+
+/// The tucked bump: a half-disc hugging the edge (the off-surface half clips away),
+/// with a cyan "presence" dot toward the visible side so it reads as alive, not dead.
+fn draw_bump(pixmap: &mut Pixmap, edge: BumpEdge) {
+    let (cx, cy) = bump_center(edge);
+
+    let outer = solid(Color::from_rgba8(47, 125, 255, 255));
+    if let Some(c) = PathBuilder::from_circle(cx, cy, BUMP_R) {
+        pixmap.fill_path(&c, &outer, FillRule::Winding, Transform::identity(), None);
+    }
+    let inner = solid(Color::from_rgba8(17, 27, 52, 255));
+    if let Some(c) = PathBuilder::from_circle(cx, cy, BUMP_R - 7.0) {
+        pixmap.fill_path(&c, &inner, FillRule::Winding, Transform::identity(), None);
+    }
+
+    // Nudge the dot toward the on-screen side of the bump.
+    let (dx, dy) = match edge {
+        BumpEdge::Left => (BUMP_R * 0.45, 0.0),
+        BumpEdge::Right => (-BUMP_R * 0.45, 0.0),
+        BumpEdge::Top => (0.0, BUMP_R * 0.45),
+        BumpEdge::Bottom => (0.0, -BUMP_R * 0.45),
+    };
+    let cyan = solid(Color::from_rgba8(125, 249, 255, 255));
+    if let Some(c) = PathBuilder::from_circle(cx + dx, cy + dy, 5.0) {
+        pixmap.fill_path(&c, &cyan, FillRule::Winding, Transform::identity(), None);
     }
 }
 

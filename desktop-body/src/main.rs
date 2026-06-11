@@ -27,7 +27,7 @@ use calloop::channel::Event as ChannelEvent;
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{EventLoop, LoopSignal};
 use calloop_wayland_source::WaylandSource;
-use render::{BodyView, Emotion, Sprite};
+use render::{BodyView, BumpEdge, Emotion, Sprite};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, Region},
     delegate_compositor, delegate_layer, delegate_output, delegate_pointer, delegate_registry,
@@ -59,6 +59,10 @@ use wayland_protocols::wp::relative_pointer::zv1::client::{
 };
 
 const CLICK_SLOP: f64 = 5.0;
+
+/// Drop the buddy with its head within this many pixels of a screen edge and it tucks
+/// against that edge.
+const TUCK_THRESHOLD: f64 = 40.0;
 
 fn env_i32(key: &str, fallback: i32) -> i32 {
     std::env::var(key).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(fallback)
@@ -113,6 +117,7 @@ fn main() {
         drag: false,
         exit: false,
         presence_out: None,
+        tucked: None,
     };
 
     // Let outputs (and their xdg-output logical size) arrive before we create the
@@ -214,6 +219,7 @@ struct PressState {
 enum PressTarget {
     Head,
     MenuItem(usize),
+    Bump,
     Outside,
 }
 
@@ -249,6 +255,19 @@ struct App {
     /// Outbound to-soul events (clicked/grabbed/dropped). Best-effort: `None` until the
     /// presence thread starts, and sends are dropped when no soul is connected.
     presence_out: Option<std::sync::mpsc::Sender<String>>,
+    /// When `Some`, the buddy is tucked against this edge — shown as a minimized bump,
+    /// input shrunk to the bump, clicking it summons the buddy back out.
+    tucked: Option<presence::Edge>,
+}
+
+/// Map a presence-protocol edge onto the renderer's bump edge.
+fn edge_to_bump(edge: presence::Edge) -> BumpEdge {
+    match edge {
+        presence::Edge::Top => BumpEdge::Top,
+        presence::Edge::Right => BumpEdge::Right,
+        presence::Edge::Bottom => BumpEdge::Bottom,
+        presence::Edge::Left => BumpEdge::Left,
+    }
 }
 
 fn pick_output(app: &App) -> Option<wl_output::WlOutput> {
@@ -294,6 +313,7 @@ impl App {
             emotion: self.emotion,
             speech: self.speech.as_deref(),
             menu_open: self.menu_open,
+            tucked: self.tucked.map(edge_to_bump),
         };
 
         let buffer = match pool.create_buffer(w as i32, h as i32, stride, wl_shm::Format::Argb8888) {
@@ -346,13 +366,20 @@ impl App {
         let Some(layer) = self.layer.as_ref() else { return };
         let Ok(region) = Region::new(&self.compositor) else { return };
 
-        let mut rects = vec![render::head_rect().as_i32()];
-        if self.speech.is_some() {
-            rects.push(render::BUBBLE.as_i32());
-        }
-        if self.menu_open {
-            rects.push(render::MENU.as_i32());
-        }
+        // Tucked: only the bump catches the pointer — everything else is click-through,
+        // so the screen space the buddy stepped aside from is truly freed.
+        let rects = if let Some(edge) = self.tucked {
+            vec![render::bump_rect(edge_to_bump(edge)).as_i32()]
+        } else {
+            let mut rects = vec![render::head_rect().as_i32()];
+            if self.speech.is_some() {
+                rects.push(render::BUBBLE.as_i32());
+            }
+            if self.menu_open {
+                rects.push(render::MENU.as_i32());
+            }
+            rects
+        };
         for (x, y, w, h) in rects {
             region.add(x, y, w, h);
         }
@@ -392,15 +419,21 @@ impl App {
         }
     }
 
-    /// Place the body at an abstract presence position. Shares the margin + clamp +
-    /// reposition path with dragging, so move_to and drag can never drift apart.
+    /// Place the body at an abstract presence position. Anchored/Free share the margin
+    /// + clamp + reposition path with dragging, so move_to and drag can never drift
+    /// apart; Tucked enters the tucked state so a persisted tuck round-trips through
+    /// `hydrate` and comes back as a bump.
     fn apply_position(&mut self, position: presence::Position) {
         let (left, top) = match position {
-            // Tucked shares the anchor+margin math with Anchored for now (a flush-axis
-            // offset of 0 parks it against the edge); the minimized bump rendering and
-            // shrunk input region land in a later commit.
-            presence::Position::Anchored { edge, ox, oy }
-            | presence::Position::Tucked { edge, ox, oy } => presence::anchored_to_margins(
+            presence::Position::Tucked { edge, ox, oy } => {
+                let along = match edge {
+                    presence::Edge::Left | presence::Edge::Right => oy,
+                    presence::Edge::Top | presence::Edge::Bottom => ox,
+                };
+                self.enter_tuck(edge, along);
+                return;
+            }
+            presence::Position::Anchored { edge, ox, oy } => presence::anchored_to_margins(
                 edge,
                 ox,
                 oy,
@@ -409,9 +442,14 @@ impl App {
             ),
             presence::Position::Free { x, y } => (x, y),
         };
+        // A non-tucked position pops the buddy back to the full figure.
+        let was_tucked = self.tucked.take().is_some();
         self.margin_left = left;
         self.margin_top = top;
         self.clamp_margins();
+        if was_tucked {
+            self.update_input_region();
+        }
         self.reposition();
     }
 
@@ -452,6 +490,18 @@ impl App {
     }
 
     fn on_press(&mut self, x: f64, y: f64) {
+        // While tucked, the only live target is the bump; a click on it summons the
+        // buddy back out. The bump is not draggable in v1.
+        if let Some(edge) = self.tucked {
+            let target = if render::point_in_bump(edge_to_bump(edge), x, y) {
+                PressTarget::Bump
+            } else {
+                PressTarget::Outside
+            };
+            self.press = Some(PressState { target, dist: 0.0, grabbed_sent: false });
+            return;
+        }
+
         let target = if render::point_in_head(x, y) {
             PressTarget::Head
         } else if self.menu_open {
@@ -499,10 +549,23 @@ impl App {
     fn on_release(&mut self) {
         let Some(press) = self.press.take() else { return };
         self.drag = false;
+
+        // A click on the tucked bump summons the buddy back out.
+        if press.target == PressTarget::Bump {
+            if press.dist <= CLICK_SLOP {
+                self.summon();
+            }
+            return;
+        }
+
         if press.dist > CLICK_SLOP {
-            // It was a drag: tell the soul where the buddy came to rest, so the
-            // placement can be persisted and restored on the next hydrate.
-            self.emit_dropped();
+            // It was a drag. If it came to rest near an edge, tuck it there; otherwise
+            // report where it landed so the placement can be persisted and restored.
+            if let Some(edge) = self.nearest_edge_within_threshold() {
+                self.tuck_to(edge);
+            } else {
+                self.emit_dropped();
+            }
             return;
         }
         match press.target {
@@ -511,7 +574,129 @@ impl App {
                 self.toggle_menu();
             }
             PressTarget::MenuItem(i) => self.activate_menu_item(i),
-            PressTarget::Outside => {}
+            PressTarget::Bump | PressTarget::Outside => {}
+        }
+    }
+
+    // --- tuck / summon -------------------------------------------------------
+
+    /// If the head currently sits within `TUCK_THRESHOLD` of a screen edge, which edge
+    /// (the nearest). Needs known screen bounds; without them, never tucks.
+    fn nearest_edge_within_threshold(&self) -> Option<presence::Edge> {
+        let (sw, sh) = self.screen?;
+        let head = render::head_rect();
+        let left = self.margin_left + head.x as f64;
+        let top = self.margin_top + head.y as f64;
+        let right = sw - (self.margin_left + (head.x + head.w) as f64);
+        let bottom = sh - (self.margin_top + (head.y + head.h) as f64);
+
+        let candidates = [
+            (presence::Edge::Left, left),
+            (presence::Edge::Right, right),
+            (presence::Edge::Top, top),
+            (presence::Edge::Bottom, bottom),
+        ];
+        candidates
+            .into_iter()
+            .filter(|(_, d)| *d < TUCK_THRESHOLD)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(edge, _)| edge)
+    }
+
+    /// The along-edge coordinate (screen px) of the head's centre — what we report and
+    /// persist so the bump returns to the same spot along the edge.
+    fn tuck_along(&self, edge: presence::Edge) -> f64 {
+        match edge {
+            presence::Edge::Left | presence::Edge::Right => self.margin_top + render::HEAD_CY as f64,
+            presence::Edge::Top | presence::Edge::Bottom => self.margin_left + render::HEAD_CX as f64,
+        }
+    }
+
+    /// Tuck against `edge` from a user drag: enter the tucked state, then tell the soul
+    /// (dropped = persist tucked placement; dismissed = lifecycle "now away").
+    fn tuck_to(&mut self, edge: presence::Edge) {
+        let along = self.tuck_along(edge);
+        self.enter_tuck(edge, along);
+        self.send_to_soul(presence::dropped_tucked_json(&self.buddy, edge, along));
+        self.send_to_soul(presence::dismissed_json(&self.buddy));
+    }
+
+    /// Enter (or restore, from a hydrate) the tucked state: snap the surface flush to
+    /// the edge, place the bump at `along`, shrink the input region to the bump.
+    fn enter_tuck(&mut self, edge: presence::Edge, along: f64) {
+        self.menu_open = false;
+        self.speech = None;
+        self.tucked = Some(edge);
+        let (sw, sh) = self.screen.unwrap_or((f64::MAX, f64::MAX));
+        let surface_w = render::SURFACE_W as f64;
+        let surface_h = render::SURFACE_H as f64;
+
+        // Flush axis → snap the surface to the edge; along axis → from `along`.
+        match edge {
+            presence::Edge::Left => {
+                self.margin_left = 0.0;
+                self.margin_top = along - render::HEAD_CY as f64;
+            }
+            presence::Edge::Right => {
+                self.margin_left = sw - surface_w;
+                self.margin_top = along - render::HEAD_CY as f64;
+            }
+            presence::Edge::Top => {
+                self.margin_top = 0.0;
+                self.margin_left = along - render::HEAD_CX as f64;
+            }
+            presence::Edge::Bottom => {
+                self.margin_top = sh - surface_h;
+                self.margin_left = along - render::HEAD_CX as f64;
+            }
+        }
+        self.clamp_tucked(edge);
+        self.update_input_region();
+        self.reposition();
+    }
+
+    /// Summon the buddy back out of a tuck (user clicked the bump): pop the full figure
+    /// inward off the edge, restore full input, and tell the soul.
+    fn summon(&mut self) {
+        let Some(edge) = self.tucked.take() else { return };
+        let head = render::head_rect();
+        let inset = TUCK_THRESHOLD; // land clear of the tuck zone so it doesn't re-tuck
+        let (sw, sh) = self.screen.unwrap_or((f64::MAX, f64::MAX));
+        match edge {
+            presence::Edge::Left => self.margin_left = -(head.x as f64) + inset,
+            presence::Edge::Right => {
+                self.margin_left = sw - (head.x + head.w) as f64 - inset;
+            }
+            presence::Edge::Top => self.margin_top = -(head.y as f64) + inset,
+            presence::Edge::Bottom => {
+                self.margin_top = sh - (head.y + head.h) as f64 - inset;
+            }
+        }
+        self.clamp_margins();
+        self.update_input_region();
+        self.reposition();
+        self.send_to_soul(presence::summoned_json(&self.buddy));
+    }
+
+    /// Keep the *bump* on-screen along its free axis (the flush axis is pinned to the
+    /// edge). The untucked `clamp_margins` keeps the head on-screen instead.
+    fn clamp_tucked(&mut self, edge: presence::Edge) {
+        let (sw, sh) = match self.screen {
+            Some(s) => s,
+            None => return,
+        };
+        let bump = render::bump_rect(edge_to_bump(edge));
+        match edge {
+            presence::Edge::Left | presence::Edge::Right => {
+                let min_top = -(bump.y as f64);
+                let max_top = (sh - (bump.y + bump.h) as f64).max(min_top);
+                self.margin_top = self.margin_top.clamp(min_top, max_top);
+            }
+            presence::Edge::Top | presence::Edge::Bottom => {
+                let min_left = -(bump.x as f64);
+                let max_left = (sw - (bump.x + bump.w) as f64).max(min_left);
+                self.margin_left = self.margin_left.clamp(min_left, max_left);
+            }
         }
     }
 

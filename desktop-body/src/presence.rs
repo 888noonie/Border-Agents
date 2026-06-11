@@ -207,6 +207,41 @@ pub fn dropped_json(buddy: &str, x: f64, y: f64) -> String {
     to_soul("dropped", buddy, json!({ "at": free_at(x, y) }))
 }
 
+fn edge_wire(edge: Edge) -> &'static str {
+    match edge {
+        Edge::Top => "top",
+        Edge::Right => "right",
+        Edge::Bottom => "bottom",
+        Edge::Left => "left",
+    }
+}
+
+fn tucked_at(edge: Edge, along: f64) -> Value {
+    // Offset's along-edge axis carries the position; the flush axis is ignored.
+    let offset = match edge {
+        Edge::Left | Edge::Right => json!({ "x": 0.0, "y": along }),
+        Edge::Top | Edge::Bottom => json!({ "x": along, "y": 0.0 }),
+    };
+    json!({ "mode": "tucked", "edge": edge_wire(edge), "offset": offset })
+}
+
+/// The user dropped the buddy against an edge — it tucked. `at` is a tucked position
+/// the soul persists so the next `hydrate` brings the buddy back tucked.
+pub fn dropped_tucked_json(buddy: &str, edge: Edge, along: f64) -> String {
+    to_soul("dropped", buddy, json!({ "at": tucked_at(edge, along), "onTarget": "edge" }))
+}
+
+/// The buddy was tucked away (user pushed it to an edge). Distinct from `dropped`:
+/// dropped persists placement; dismissed is the lifecycle signal that it's now away.
+pub fn dismissed_json(buddy: &str) -> String {
+    to_soul("dismissed", buddy, json!({}))
+}
+
+/// The user clicked a tucked bump to bring the buddy back out.
+pub fn summoned_json(buddy: &str) -> String {
+    to_soul("summoned", buddy, json!({}))
+}
+
 /// Set a read timeout on the underlying TCP stream (plain ws:// only).
 fn set_read_timeout(socket: &WebSocket<MaybeTlsStream<TcpStream>>, dur: Option<Duration>) {
     match socket.get_ref() {
@@ -468,5 +503,33 @@ mod tests {
         assert_eq!(d["kind"], "dropped");
         assert_eq!(d["at"]["x"], 3.0);
         assert_eq!(d["at"]["y"], 4.0);
+    }
+
+    #[test]
+    fn tuck_summon_builders_emit_valid_envelopes() {
+        // Tucked to the left edge: along-axis is y, flush axis (x) is 0.
+        let dl: Value = serde_json::from_str(&dropped_tucked_json("hermes", Edge::Left, 400.0)).unwrap();
+        assert_eq!(dl["kind"], "dropped");
+        assert_eq!(dl["at"]["mode"], "tucked");
+        assert_eq!(dl["at"]["edge"], "left");
+        assert_eq!(dl["at"]["offset"]["x"], 0.0);
+        assert_eq!(dl["at"]["offset"]["y"], 400.0);
+
+        // Tucked to the top edge: along-axis is x.
+        let dt: Value = serde_json::from_str(&dropped_tucked_json("hermes", Edge::Top, 250.0)).unwrap();
+        assert_eq!(dt["at"]["edge"], "top");
+        assert_eq!(dt["at"]["offset"]["x"], 250.0);
+        assert_eq!(dt["at"]["offset"]["y"], 0.0);
+
+        // A tucked drop round-trips back through the inbound parser as Tucked.
+        let restored = parse_position(&dl["at"]).unwrap();
+        assert_eq!(restored, Position::Tucked { edge: Edge::Left, ox: 0.0, oy: 400.0 });
+
+        let s: Value = serde_json::from_str(&summoned_json("hermes")).unwrap();
+        assert_eq!(s["kind"], "summoned");
+        assert_eq!(s["buddy"], "hermes");
+
+        let dm: Value = serde_json::from_str(&dismissed_json("hermes")).unwrap();
+        assert_eq!(dm["kind"], "dismissed");
     }
 }

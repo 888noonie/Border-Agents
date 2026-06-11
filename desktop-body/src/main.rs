@@ -345,10 +345,24 @@ impl App {
         render::Layout { facing: self.facing, body_len: self.body_len }
     }
 
-    /// Surface size for geometry math (margins, tucking). Uses the compositor-acked
-    /// size, which tracks `set_size` requests one configure later.
+    /// Actual compositor-acked surface size. Drawing, hit-testing, and tucked input
+    /// regions use this so they hug the buffer that really exists.
     fn surface_size(&self) -> (f64, f64) {
         (self.width as f64, self.height as f64)
+    }
+
+    /// Requested full-body surface size. Edge placement uses this deterministic size
+    /// when tucking so transient compositor shrinkage cannot park the bump off-buffer.
+    fn requested_surface_size(&self) -> (f64, f64) {
+        (render::SURFACE_W as f64, self.layout().surface_h() as f64)
+    }
+
+    fn tucked_bump_rect(&self, edge: presence::Edge) -> render::Rect {
+        render::bump_rect(edge_to_bump(edge), self.width, self.height)
+    }
+
+    fn point_in_tucked_bump(&self, edge: presence::Edge, x: f64, y: f64) -> bool {
+        render::point_in_bump(edge_to_bump(edge), self.width, self.height, x, y)
     }
 
     fn draw(&mut self) {
@@ -439,10 +453,10 @@ impl App {
 
         // Tucked: only the bump catches the pointer — everything else is click-through,
         // so the screen space the buddy stepped aside from is truly freed.
-        let layout = self.layout();
         let rects = if let Some(edge) = self.tucked {
-            vec![layout.bump_rect(edge_to_bump(edge)).as_i32()]
+            vec![self.tucked_bump_rect(edge).as_i32()]
         } else {
+            let layout = self.layout();
             // Head = move/dock handle; feet = stretch handle. The torso stays
             // click-through — the figure shows, the desktop underneath still works.
             let mut rects = vec![render::head_rect().as_i32(), layout.feet_rect().as_i32()];
@@ -587,11 +601,10 @@ impl App {
     }
 
     fn on_press(&mut self, x: f64, y: f64) {
-        let layout = self.layout();
         // While tucked, the only live target is the bump; a click on it summons the
         // buddy back out. The bump is not draggable in v1.
         if let Some(edge) = self.tucked {
-            let target = if layout.point_in_bump(edge_to_bump(edge), x, y) {
+            let target = if self.point_in_tucked_bump(edge, x, y) {
                 PressTarget::Bump
             } else {
                 PressTarget::Outside
@@ -600,6 +613,7 @@ impl App {
             return;
         }
 
+        let layout = self.layout();
         let target = if render::point_in_head(x, y) {
             PressTarget::Head
         } else if self.chat_open && layout.input_region_rect().contains(x, y) {
@@ -747,7 +761,11 @@ impl App {
         self.speech = None;
         self.tucked = Some(edge);
         let (sw, sh) = self.screen.unwrap_or((f64::MAX, f64::MAX));
-        let (surface_w, surface_h) = self.surface_size();
+        let (surface_w, surface_h) = self.requested_surface_size();
+        if let Some(layer) = self.layer.as_ref() {
+            layer.set_size(render::SURFACE_W, self.layout().surface_h());
+            layer.commit();
+        }
 
         // Flush axis → snap the surface to the edge; along axis → from `along`.
         match edge {
@@ -803,7 +821,7 @@ impl App {
             Some(s) => s,
             None => return,
         };
-        let bump = self.layout().bump_rect(edge_to_bump(edge));
+        let bump = self.tucked_bump_rect(edge);
         match edge {
             presence::Edge::Left | presence::Edge::Right => {
                 let min_top = -(bump.y as f64);
@@ -868,7 +886,11 @@ impl CompositorHandler for App {
         self.screen = Some(new_screen);
         // Re-clamp against the real screen and push the corrected margins, so a buddy
         // that started life clamped to the wrong output snaps onto this one.
-        self.clamp_margins();
+        if let Some(edge) = self.tucked {
+            self.clamp_tucked(edge);
+        } else {
+            self.clamp_margins();
+        }
         self.reposition();
     }
     fn surface_leave(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _s: &wl_surface::WlSurface, _o: &wl_output::WlOutput) {}
@@ -891,7 +913,8 @@ impl LayerShellHandler for App {
         _serial: u32,
     ) {
         let (nw, nh) = configure.new_size;
-        if nw != 0 && nh != 0 && (nw != self.width || nh != self.height) {
+        let size_changed = (nw != 0 && nw != self.width) || (nh != 0 && nh != self.height);
+        if nw != 0 && nh != 0 && size_changed {
             eprintln!("[bb-desktop-body] surface resized by compositor to {nw}x{nh}");
         }
         if nw != 0 {
@@ -902,7 +925,11 @@ impl LayerShellHandler for App {
         }
         let first = !self.configured;
         self.configured = true;
-        if first {
+        if let Some(edge) = self.tucked {
+            self.clamp_tucked(edge);
+            self.update_input_region();
+            self.reposition();
+        } else if first || size_changed {
             self.update_input_region();
         }
         self.draw();

@@ -134,38 +134,57 @@ impl Layout {
         }
     }
 
-    // --- tucked bump (minimized, parked flush against a screen edge) ---
+}
 
-    /// Centre of the bump's full circle — ON the surface edge so only the
-    /// on-surface half shows (the off-surface half clips = the "split in half").
-    fn bump_center(&self, edge: BumpEdge) -> (f32, f32) {
-        let h = self.surface_h() as f32;
-        match edge {
-            BumpEdge::Left => (0.0, HEAD_CY),
-            BumpEdge::Right => (SURFACE_W as f32, HEAD_CY),
-            BumpEdge::Top => (FIG_CX, 0.0),
-            BumpEdge::Bottom => (FIG_CX, h),
-        }
-    }
+// --- tucked bump (minimized, parked flush against a screen edge) -------------------
+//
+// Bump geometry takes the *actual* surface size explicitly rather than reading
+// layout constants: the compositor can transiently shrink the surface while it
+// crosses a screen edge, and the tab must hug the buffer edge that really exists
+// - never a theoretical one - or the buddy vanishes off the side of its own
+// buffer with nothing left to click.
 
-    /// Bounding box of the visible half of the bump — input region + on-screen
-    /// clamping while tucked.
-    pub fn bump_rect(&self, edge: BumpEdge) -> Rect {
-        let (cx, cy) = self.bump_center(edge);
-        match edge {
-            BumpEdge::Left => Rect { x: 0.0, y: cy - BUMP_R, w: BUMP_R, h: BUMP_R * 2.0 },
-            BumpEdge::Right => Rect { x: cx - BUMP_R, y: cy - BUMP_R, w: BUMP_R, h: BUMP_R * 2.0 },
-            BumpEdge::Top => Rect { x: cx - BUMP_R, y: 0.0, w: BUMP_R * 2.0, h: BUMP_R },
-            BumpEdge::Bottom => Rect { x: cx - BUMP_R, y: cy - BUMP_R, w: BUMP_R * 2.0, h: BUMP_R },
-        }
+/// Centre of the bump's full circle - ON the surface edge so only the
+/// on-surface half shows (the off-surface half clips = the "split in half").
+fn bump_center(edge: BumpEdge, w: u32, h: u32) -> (f32, f32) {
+    let (w, h) = (w as f32, h as f32);
+    let cy = if h >= BUMP_R * 2.0 { HEAD_CY.clamp(BUMP_R, h - BUMP_R) } else { h / 2.0 };
+    let cx = if w >= BUMP_R * 2.0 { FIG_CX.clamp(BUMP_R, w - BUMP_R) } else { w / 2.0 };
+    match edge {
+        BumpEdge::Left => (0.0, cy),
+        BumpEdge::Right => (w, cy),
+        BumpEdge::Top => (cx, 0.0),
+        BumpEdge::Bottom => (cx, h),
     }
+}
 
-    pub fn point_in_bump(&self, edge: BumpEdge, px: f64, py: f64) -> bool {
-        let (cx, cy) = self.bump_center(edge);
-        let dx = px as f32 - cx;
-        let dy = py as f32 - cy;
-        dx * dx + dy * dy <= BUMP_R * BUMP_R
-    }
+/// Bounding box of the visible half of the bump - input region + on-screen
+/// clamping while tucked.
+pub fn bump_rect(edge: BumpEdge, w: u32, h: u32) -> Rect {
+    let (cx, cy) = bump_center(edge, w, h);
+    let rect = match edge {
+        BumpEdge::Left => Rect { x: 0.0, y: cy - BUMP_R, w: BUMP_R, h: BUMP_R * 2.0 },
+        BumpEdge::Right => Rect { x: cx - BUMP_R, y: cy - BUMP_R, w: BUMP_R, h: BUMP_R * 2.0 },
+        BumpEdge::Top => Rect { x: cx - BUMP_R, y: 0.0, w: BUMP_R * 2.0, h: BUMP_R },
+        BumpEdge::Bottom => Rect { x: cx - BUMP_R, y: cy - BUMP_R, w: BUMP_R * 2.0, h: BUMP_R },
+    };
+    clip_rect_to_surface(rect, w, h)
+}
+
+fn clip_rect_to_surface(rect: Rect, w: u32, h: u32) -> Rect {
+    let (w, h) = (w as f32, h as f32);
+    let x1 = rect.x.clamp(0.0, w);
+    let y1 = rect.y.clamp(0.0, h);
+    let x2 = (rect.x + rect.w).clamp(0.0, w);
+    let y2 = (rect.y + rect.h).clamp(0.0, h);
+    Rect { x: x1, y: y1, w: (x2 - x1).max(0.0), h: (y2 - y1).max(0.0) }
+}
+
+pub fn point_in_bump(edge: BumpEdge, w: u32, h: u32, px: f64, py: f64) -> bool {
+    let (cx, cy) = bump_center(edge, w, h);
+    let dx = px as f32 - cx;
+    let dy = py as f32 - cy;
+    dx * dx + dy * dy <= BUMP_R * BUMP_R
 }
 
 /// Radius of the tucked "bump" — smaller than the head so it frees screen space.
@@ -383,7 +402,7 @@ impl Sprite {
 
         // Tucked: only the minimized bump — a dormant buddy hugging the edge.
         if let Some(edge) = view.tucked {
-            draw_bump(&mut pixmap, &view.layout, edge, view.color);
+            draw_bump(&mut pixmap, edge, w, h, view.color);
             blit_premultiplied_bgra(pixmap.data(), canvas);
             return;
         }
@@ -572,10 +591,9 @@ fn draw_clay_texture(pixmap: &mut Pixmap, layout: &Layout, color: [u8; 3], bob: 
     }
 }
 
-/// The tucked bump: a half-disc in the buddy's clay colour hugging the edge,
-/// with a cyan "presence" dot toward the visible side so it reads as alive.
-fn draw_bump(pixmap: &mut Pixmap, layout: &Layout, edge: BumpEdge, color: [u8; 3]) {
-    let (cx, cy) = layout.bump_center(edge);
+/// The tucked bump: a sleeping clay head half-disc hugging the actual buffer edge.
+fn draw_bump(pixmap: &mut Pixmap, edge: BumpEdge, w: u32, h: u32, color: [u8; 3]) {
+    let (cx, cy) = bump_center(edge, w, h);
 
     let outer = solid(rgb(color));
     if let Some(c) = PathBuilder::from_circle(cx, cy, BUMP_R) {
@@ -586,16 +604,28 @@ fn draw_bump(pixmap: &mut Pixmap, layout: &Layout, edge: BumpEdge, color: [u8; 3
         pixmap.fill_path(&c, &inner, FillRule::Winding, Transform::identity(), None);
     }
 
-    // Nudge the dot toward the on-screen side of the bump.
+    // Nudge the sleeping face toward the on-screen side of the bump.
     let (dx, dy) = match edge {
         BumpEdge::Left => (BUMP_R * 0.45, 0.0),
         BumpEdge::Right => (-BUMP_R * 0.45, 0.0),
         BumpEdge::Top => (0.0, BUMP_R * 0.45),
         BumpEdge::Bottom => (0.0, -BUMP_R * 0.45),
     };
-    let cyan = solid(Color::from_rgba8(125, 249, 255, 255));
-    if let Some(c) = PathBuilder::from_circle(cx + dx, cy + dy, 5.0) {
-        pixmap.fill_path(&c, &cyan, FillRule::Winding, Transform::identity(), None);
+    draw_closed_eyes(pixmap, cx + dx, cy + dy - 2.0);
+}
+
+fn draw_closed_eyes(pixmap: &mut Pixmap, x: f32, y: f32) {
+    let dark = solid(Color::from_rgba8(38, 28, 22, 230));
+    let mut stroke = Stroke::default();
+    stroke.width = 3.0;
+    stroke.line_cap = tiny_skia::LineCap::Round;
+    for eye_x in [x - 8.0, x + 8.0] {
+        let mut pb = PathBuilder::new();
+        pb.move_to(eye_x - 5.0, y);
+        pb.quad_to(eye_x, y + 3.0, eye_x + 5.0, y);
+        if let Some(path) = pb.finish() {
+            pixmap.stroke_path(&path, &dark, &stroke, Transform::identity(), None);
+        }
     }
 }
 
@@ -964,6 +994,29 @@ mod tests {
     fn feet_sit_below_the_torso() {
         let l = Layout::initial();
         assert!(l.feet_rect().y >= TORSO_TOP + l.body_len - 8.0);
+    }
+
+    #[test]
+    fn bump_hugs_actual_surface_edge() {
+        let right = bump_rect(BumpEdge::Right, 160, 120);
+        assert_eq!(right.x + right.w, 160.0);
+        assert!(point_in_bump(BumpEdge::Right, 160, 120, 159.0, right.y as f64 + 8.0));
+
+        let bottom = bump_rect(BumpEdge::Bottom, 160, 90);
+        assert_eq!(bottom.y + bottom.h, 90.0);
+        assert!(point_in_bump(BumpEdge::Bottom, 160, 90, bottom.x as f64 + 8.0, 89.0));
+    }
+
+    #[test]
+    fn bump_survives_tiny_transient_surface() {
+        let rect = bump_rect(BumpEdge::Left, 40, 40);
+        assert!(rect.x >= 0.0);
+        assert!(rect.y >= 0.0);
+        assert!(rect.x + rect.w <= 40.0);
+        assert!(rect.y + rect.h <= 40.0);
+        assert!(rect.w > 0.0);
+        assert!(rect.h > 0.0);
+        assert!(point_in_bump(BumpEdge::Left, 40, 40, 1.0, 20.0));
     }
 
     #[test]

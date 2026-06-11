@@ -666,7 +666,14 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
     // emitted by its own section, in both linear and hub mode.
     if (event === "panel:connection_ok") {
       const draft = onboardingSurface.draft;
-      onGatewaySettingsChange({ url: draft.apiBase, autoConnect: true });
+      // Layering: the browser only ever connects to the LOCAL gateway over its
+      // WebSocket URL — it never talks to the provider directly. The provider
+      // endpoint + API key the user entered here belong gateway-side in `.env`
+      // (the gateway holds the secret and makes the HTTPS call). So we keep the
+      // existing gateway URL and only enable/trigger autoConnect; writing
+      // draft.apiBase into GatewaySettings.url would point the socket at the
+      // provider's REST endpoint and break the connection.
+      onGatewaySettingsChange({ url: gatewayUrl, autoConnect: true });
       const presetBuddyProvider = presetProvider(draft.provider);
       onSettingsChange({ ...settings, provider: presetBuddyProvider, modelLabel: draft.model });
       if (hasGateway && !gatewayOnline) {

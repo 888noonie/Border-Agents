@@ -34,6 +34,15 @@ describe("onboarding panel model", () => {
     expect(byId.ollama.requiresApiKey).toBe(false);
   });
 
+  it("maps each preset id to a distinct BuddyProvider for settings writes", () => {
+    const byId = Object.fromEntries(HERMES_PROVIDER_PRESETS.map((preset) => [preset.id, preset]));
+
+    expect(byId.xai.buddyProvider).toBe("grok");
+    expect(byId.openrouter.buddyProvider).toBe("openrouter");
+    expect(byId.lm_studio.buddyProvider).toBe("lm_studio");
+    expect(byId.ollama.buddyProvider).toBe("ollama");
+  });
+
   it("surfaces posture cards with trust and interaction summaries", () => {
     const model = buildOnboardingPanelModel({
       state: { actIndex: 2, completed: false },

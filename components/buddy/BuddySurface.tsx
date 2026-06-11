@@ -16,13 +16,14 @@ import {
 import type { GatewayConnectionState } from "../../src/gatewayProtocol";
 import type { GatewaySettings } from "../../src/gatewaySettings";
 import { buildBuddyGovernanceSnapshot, type BuddyGovernanceSnapshot } from "../../src/liveGovernance";
-import { buildOnboardingPanelModel, type OnboardingPanelSection } from "../../src/onboardingPanelModel";
+import { buildOnboardingPanelModel, type OnboardingPanelSection, type HermesProviderPresetId, HERMES_PROVIDER_PRESETS } from "../../src/onboardingPanelModel";
 import {
   loadStoredOnboardingSurfaceState,
   saveStoredOnboardingSurfaceState,
   type OnboardingSurfaceDraft,
 } from "../../src/onboardingSurfaceState";
 import { advanceOnboarding, type OnboardingEvent } from "../../src/wizardOnboarding";
+import { type UserPosture } from "../../src/core/userPosture";
 import { connectionLabelForState } from "../../src/useBuddyGateway";
 import { BuddyActionMenu } from "./BuddyActionMenu";
 import { BuddyPanel, type BuddyChatLine } from "./BuddyPanel";
@@ -111,6 +112,7 @@ type BuddySurfaceProps = {
   onRequestDock?: () => void;
   onSendChat: (payload: { text: string; purpose?: string; context?: string }) => boolean;
   onSettingsChange: (settings: BuddySettings) => void;
+  onPostureChange?: (posture: UserPosture) => void;
   onGovernanceSnapshotChange?: (snapshot: BuddyGovernanceSnapshot | null) => void;
 };
 
@@ -184,6 +186,7 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
     onRequestDock,
     onSendChat,
     onSettingsChange,
+    onPostureChange,
     onGovernanceSnapshotChange,
   },
   ref,
@@ -631,12 +634,25 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
       receiptKinds: nextReceipts,
     }));
 
-    if (event === "panel:connection_ok" && hasGateway && !gatewayOnline) {
-      onGatewayConnect();
+    if (event === "panel:connection_ok") {
+      const draft = onboardingSurface.draft;
+      onGatewaySettingsChange({ url: draft.apiBase, autoConnect: true });
+      const presetBuddyProvider = presetProvider(draft.provider);
+      onSettingsChange({ ...settings, provider: presetBuddyProvider, modelLabel: draft.model });
+      if (hasGateway && !gatewayOnline) {
+        onGatewayConnect();
+      }
+    }
+    if (event === "panel:posture_set") {
+      onPostureChange?.(onboardingSurface.draft.posture);
     }
     if (nextState.completed) {
       setOnboardingHubSection("summary");
     }
+  }
+
+  function presetProvider(id: HermesProviderPresetId) {
+    return HERMES_PROVIDER_PRESETS.find((p) => p.id === id)?.buddyProvider ?? "custom";
   }
 
   function selectWizardSection(section: OnboardingPanelSection) {

@@ -158,14 +158,14 @@ function ConnectSection({
             ) : field.control === "textarea" ? (
               <textarea
                 rows={3}
-                value={fieldValue(draft, field.key)}
+                value={fieldValue(draft, field.key, model.providers)}
                 placeholder={field.placeholder}
                 onChange={(event) => onDraftChange({ [field.key]: event.target.value } as Partial<OnboardingSurfaceDraft>)}
               />
             ) : (
               <input
                 type={field.control === "password" ? "password" : "text"}
-                value={fieldValue(draft, field.key)}
+                value={fieldValue(draft, field.key, model.providers)}
                 placeholder={field.placeholder}
                 onChange={(event) => onDraftChange({ [field.key]: event.target.value } as Partial<OnboardingSurfaceDraft>)}
               />
@@ -335,10 +335,16 @@ function SummarySection({
   );
 }
 
-function fieldValue(draft: OnboardingSurfaceDraft, key: ConnectSectionModel["fields"][number]["key"]) {
+function fieldValue(
+  draft: OnboardingSurfaceDraft,
+  key: ConnectSectionModel["fields"][number]["key"],
+  providers: ConnectSectionModel["providers"],
+) {
   switch (key) {
-    case "provider":
-      return BUDDY_PROVIDER_LABELS[draft.provider === "xai" ? "grok" : draft.provider];
+    case "provider": {
+      const buddyProvider = providers.find((p) => p.id === draft.provider)?.buddyProvider ?? "custom";
+      return BUDDY_PROVIDER_LABELS[buddyProvider];
+    }
     case "apiBase":
       return draft.apiBase;
     case "apiKey":

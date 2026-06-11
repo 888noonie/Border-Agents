@@ -73,6 +73,7 @@ import {
   type UserMode,
   type UserModeState,
 } from "../src/userModes";
+import { type UserPosture } from "../src/core/userPosture";
 import "./BorderDock.css";
 
 export interface Hitbox {
@@ -1820,6 +1821,12 @@ export function BrowserBuddyDock() {
     }
   }
 
+  function postureToUserMode(posture: UserPosture): UserMode {
+    if (posture === "private") return "adjust";
+    if (posture === "play") return "play";
+    return "work";
+  }
+
   function switchUserMode(nextMode: UserMode) {
     markActivity();
 
@@ -2072,6 +2079,7 @@ export function BrowserBuddyDock() {
                       [buddy.id]: normalizeBuddySettings(BUDDY_PROFILES[buddy.id], settings),
                     }))
                   }
+                  onPostureChange={(posture: UserPosture) => switchUserMode(postureToUserMode(posture))}
                 />
               );
             })
@@ -2420,6 +2428,7 @@ function BuddyHotspot({
   renderMode,
   settings,
   onSettingsChange,
+  onPostureChange,
   headForceKey,
 }: {
   active: boolean;
@@ -2451,6 +2460,7 @@ function BuddyHotspot({
   renderMode: DockRenderMode;
   settings: BuddySettings;
   onSettingsChange: (settings: BuddySettings) => void;
+  onPostureChange?: (posture: UserPosture) => void;
   headForceKey?: number;
 }) {
 
@@ -2624,6 +2634,7 @@ function BuddyHotspot({
           onRequestDock={onManualTuck}
           onSendChat={onSendChat}
           onSettingsChange={onSettingsChange}
+          onPostureChange={onPostureChange}
           settings={settings}
         />
 

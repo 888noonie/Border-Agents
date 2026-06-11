@@ -1,4 +1,4 @@
-import { BUDDY_PROFILES } from "./buddyProfiles";
+import { BUDDY_PROFILES, type BuddyProvider } from "./buddyProfiles";
 import {
   DEFAULT_USER_POSTURE,
   USER_POSTURES,
@@ -27,6 +27,8 @@ export interface HermesProviderPreset {
   // Hosted providers authenticate with an API key; local OpenAI-compatible
   // servers (LM Studio, Ollama) accept connections without one.
   requiresApiKey: boolean;
+  // The BuddyProvider value this preset maps to (used when writing BuddySettings on connect).
+  buddyProvider: BuddyProvider;
 }
 
 export const HERMES_PROVIDER_PRESETS: readonly HermesProviderPreset[] = [
@@ -37,6 +39,7 @@ export const HERMES_PROVIDER_PRESETS: readonly HermesProviderPreset[] = [
     modelPlaceholder: "grok-4",
     helper: "Hosted Grok via the OpenAI-compatible xAI endpoint.",
     requiresApiKey: true,
+    buddyProvider: "grok",
   },
   {
     id: "openrouter",
@@ -45,6 +48,7 @@ export const HERMES_PROVIDER_PRESETS: readonly HermesProviderPreset[] = [
     modelPlaceholder: "openai/gpt-5",
     helper: "Route Hermes through a hosted OpenRouter model.",
     requiresApiKey: true,
+    buddyProvider: "openrouter",
   },
   {
     id: "lm_studio",
@@ -53,6 +57,7 @@ export const HERMES_PROVIDER_PRESETS: readonly HermesProviderPreset[] = [
     modelPlaceholder: "loaded-model-name",
     helper: "Use a local LM Studio model exposed on localhost.",
     requiresApiKey: false,
+    buddyProvider: "lm_studio",
   },
   {
     id: "ollama",
@@ -61,6 +66,7 @@ export const HERMES_PROVIDER_PRESETS: readonly HermesProviderPreset[] = [
     modelPlaceholder: "llama3.1",
     helper: "Use Ollama's OpenAI-compatible local endpoint.",
     requiresApiKey: false,
+    buddyProvider: "ollama",
   },
 ] as const;
 

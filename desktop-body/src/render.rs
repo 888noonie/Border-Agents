@@ -430,19 +430,20 @@ pub struct MediaStubCard<'a> {
     pub hint: &'a str,
 }
 
-#[derive(Clone, Copy)]
-pub enum BuiltinImageAsset {
-    EiffelTower,
-}
+/// A decoded raster image ready to blit into the torso. Decode provider bytes with
+/// [`decode_image_bytes`]; the body owns the Pixmap and lends it to the card.
+pub type TorsoImage = Pixmap;
 
-pub struct ImageCard {
-    pub asset: BuiltinImageAsset,
+pub struct ImageCard<'a> {
+    /// The decoded image to fit into the pane; `None` draws an empty frame (e.g. while
+    /// bytes are still arriving or failed to decode).
+    pub image: Option<&'a TorsoImage>,
 }
 
 pub enum TorsoOutput<'a> {
     Session(SessionCard<'a>),
     Text(TextCard<'a>),
-    Image(ImageCard),
+    Image(ImageCard<'a>),
     ImageStub(MediaStubCard<'a>),
     FileStub(MediaStubCard<'a>),
 }
@@ -475,14 +476,12 @@ pub struct BodyView<'a> {
 
 pub struct Sprite {
     font: Option<Font>,
-    eiffel_tower: Option<Pixmap>,
 }
 
 impl Sprite {
     pub fn new() -> Self {
         Sprite {
             font: load_font(),
-            eiffel_tower: load_builtin_image(include_bytes!("../assets/eiffel-tower.jpg")),
         }
     }
 
@@ -510,13 +509,7 @@ impl Sprite {
 
         draw_figure(&mut pixmap, &view.layout, view.color, bob, &pose);
         if let Some(font) = &self.font {
-            draw_torso_output(
-                &mut pixmap,
-                font,
-                &view.layout,
-                &view.torso_output,
-                self.eiffel_tower.as_ref(),
-            );
+            draw_torso_output(&mut pixmap, font, &view.layout, &view.torso_output);
         }
         draw_eyes(&mut pixmap, bob, eye_open, face.pupil_dy);
         draw_mouth(&mut pixmap, bob, &face.mouth);
@@ -850,7 +843,6 @@ fn draw_torso_output(
     font: &Font,
     layout: &Layout,
     output: &TorsoOutput,
-    eiffel_tower: Option<&Pixmap>,
 ) {
     let rect = layout.output_panel_rect();
     if rect.w <= 0.0 || rect.h <= 0.0 {
@@ -871,7 +863,7 @@ fn draw_torso_output(
     match output {
         TorsoOutput::Session(card) => draw_session_card(pixmap, font, content, card),
         TorsoOutput::Text(card) => draw_text_card(pixmap, font, content, card),
-        TorsoOutput::Image(card) => draw_image_card(pixmap, content, card, eiffel_tower),
+        TorsoOutput::Image(card) => draw_image_card(pixmap, content, card),
         TorsoOutput::ImageStub(card) => draw_media_stub(pixmap, font, content, card, true),
         TorsoOutput::FileStub(card) => draw_media_stub(pixmap, font, content, card, false),
     }
@@ -1030,12 +1022,7 @@ fn draw_media_stub(
     }
 }
 
-fn draw_image_card(
-    pixmap: &mut Pixmap,
-    rect: Rect,
-    card: &ImageCard,
-    eiffel_tower: Option<&Pixmap>,
-) {
+fn draw_image_card(pixmap: &mut Pixmap, rect: Rect, card: &ImageCard) {
     let frame = inset_rect(rect, 1.5, 1.5);
     draw_round_rect(pixmap, frame, Color::from_rgba8(255, 252, 248, 240));
     if let Some(path) = round_rect_path(frame, 8.0) {
@@ -1052,8 +1039,8 @@ fn draw_image_card(
 
     let image_rect = inset_rect(frame, 4.0, 4.0);
     draw_round_rect(pixmap, image_rect, Color::from_rgba8(236, 232, 228, 255));
-    if let Some(asset) = builtin_image_pixmap(card.asset, eiffel_tower) {
-        draw_fitted_image(pixmap, asset, image_rect);
+    if let Some(image) = card.image {
+        draw_fitted_image(pixmap, image, image_rect);
     }
     if let Some(path) = round_rect_path(image_rect, 8.0) {
         let mut stroke = Stroke::default();
@@ -1133,12 +1120,6 @@ fn draw_torso_action(pixmap: &mut Pixmap, layout: &Layout, action: TorsoAction) 
                 pixmap.fill_path(&dot, &icon, FillRule::Winding, Transform::identity(), None);
             }
         }
-    }
-}
-
-fn builtin_image_pixmap<'a>(asset: BuiltinImageAsset, eiffel_tower: Option<&'a Pixmap>) -> Option<&'a Pixmap> {
-    match asset {
-        BuiltinImageAsset::EiffelTower => eiffel_tower,
     }
 }
 
@@ -1349,7 +1330,10 @@ fn title_case(text: &str) -> String {
     out
 }
 
-fn load_builtin_image(bytes: &[u8]) -> Option<Pixmap> {
+/// Decode encoded image bytes (PNG/JPEG) into a premultiplied-alpha Pixmap ready to
+/// blit into the torso. Returns None on any decode failure — the body shows an empty
+/// frame rather than crashing. Used for provider images delivered as inline bytes.
+pub fn decode_image_bytes(bytes: &[u8]) -> Option<Pixmap> {
     let decoded = image::load_from_memory(bytes).ok()?.to_rgba8();
     let (w, h) = decoded.dimensions();
     let mut rgba = decoded.into_raw();
@@ -1546,6 +1530,33 @@ fn blit_premultiplied_bgra(rgba: &[u8], canvas: &mut [u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decodes_encoded_image_into_pixmap() {
+        // Any format the `image` features cover; the on-disk JPEG stands in for a
+        // provider-delivered image. decode_image_bytes is the path inline `output`
+        // bytes take before reaching the torso.
+        let pixmap = decode_image_bytes(include_bytes!("../assets/eiffel-tower.jpg"))
+            .expect("decodes a real jpeg");
+        assert!(pixmap.width() > 0 && pixmap.height() > 0);
+    }
+
+    #[test]
+    fn rejects_garbage_image_bytes() {
+        assert!(decode_image_bytes(b"definitely not an image").is_none());
+    }
+
+    #[test]
+    fn image_card_draws_a_decoded_image_without_panicking() {
+        // Drives the real draw path with a decoded image fitted into the output pane.
+        let image = decode_image_bytes(include_bytes!("../assets/eiffel-tower.jpg")).unwrap();
+        let layout = Layout { facing: Facing::Right, body_len: BODY_LEN_MIN };
+        let rect = layout.output_panel_rect();
+        let mut pixmap = Pixmap::new(SURFACE_W, layout.surface_h()).unwrap();
+        draw_image_card(&mut pixmap, rect, &ImageCard { image: Some(&image) });
+        // And the empty-frame branch (bytes still arriving / undecodable) is safe too.
+        draw_image_card(&mut pixmap, rect, &ImageCard { image: None });
+    }
 
     #[test]
     fn surface_grows_with_body_stretch() {

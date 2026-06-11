@@ -13,7 +13,7 @@ import {
   BUDDY_PROFILES,
   type BuddySettings,
 } from "../../src/buddyProfiles";
-import type { GatewayConnectionState } from "../../src/gatewayProtocol";
+import type { GatewayConnectionState, GatewayMedia } from "../../src/gatewayProtocol";
 import type { GatewaySettings } from "../../src/gatewaySettings";
 import { buildBuddyGovernanceSnapshot, type BuddyGovernanceSnapshot } from "../../src/liveGovernance";
 import { buildOnboardingPanelModel, type OnboardingPanelSection, type HermesProviderPresetId, HERMES_PROVIDER_PRESETS } from "../../src/onboardingPanelModel";
@@ -102,6 +102,8 @@ type BuddySurfaceProps = {
   gatewayUrl: string;
   gatewayAutoConnect: boolean;
   message: string;
+  /** Rich media (image/file) attached to the latest reply, rendered in the panel. */
+  messageMedia?: GatewayMedia | null;
   settings: BuddySettings;
   onGatewayConnect: () => void;
   onGatewayDisconnect: () => void;
@@ -179,6 +181,7 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
     gatewayUrl,
     gatewayAutoConnect,
     message,
+    messageMedia,
     settings,
     onGatewayConnect,
     onGatewayDisconnect,
@@ -364,9 +367,14 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
     lastMessageRef.current = trimmed;
     setHistory((current) => [
       ...current,
-      { id: createLineId(), role: "assistant", text: trimmed },
+      {
+        id: createLineId(),
+        role: "assistant",
+        text: trimmed,
+        media: messageMedia ?? undefined,
+      },
     ]);
-  }, [message]);
+  }, [message, messageMedia]);
 
   useEffect(() => {
     if (gatewayDetail && gatewayState === "connected") {

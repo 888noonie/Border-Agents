@@ -24,7 +24,7 @@ import {
   normalizeBuddySettings,
 } from "../src/buddyProfiles";
 import { bbLog } from "../src/bbDiagnostics";
-import type { GatewayConnectionState } from "../src/gatewayProtocol";
+import type { GatewayConnectionState, GatewayMedia } from "../src/gatewayProtocol";
 import {
   DEFAULT_GATEWAY_SETTINGS,
   GATEWAY_SETTINGS_STORAGE_KEY,
@@ -330,6 +330,8 @@ type DockBuddy = {
   color: string;
   accentColor?: string;
   message?: string;
+  // Rich media attached to the latest reply (an image/file), rendered in the panel.
+  media?: GatewayMedia | null;
   visible: "primary" | "faint";
 };
 
@@ -577,6 +579,7 @@ export function BrowserBuddyDock() {
     initialUserModeState.modes[initialUserModeState.activeMode].gateway,
   );
   const [buddyMessages, setBuddyMessages] = useState<Record<string, string>>({});
+  const [buddyMedia, setBuddyMedia] = useState<Record<string, GatewayMedia | null>>({});
   const [governanceSnapshots, setGovernanceSnapshots] = useState<Record<string, BuddyGovernanceSnapshot | null>>({});
   const [ledgerSummary, setLedgerSummary] = useState<ReceiptLedgerSummary>(() =>
     summarizeReceiptLedger(readReceiptLedger()),
@@ -660,10 +663,14 @@ export function BrowserBuddyDock() {
     settings: gatewaySettings,
     source: gatewaySource,
     enabled: gatewayEnabled,
-    onBubble: (buddyId, text) => {
+    onBubble: (buddyId, text, media) => {
       setBuddyMessages((current) => ({
         ...current,
         [buddyId]: text,
+      }));
+      setBuddyMedia((current) => ({
+        ...current,
+        [buddyId]: media ?? null,
       }));
       setActiveAgentId(buddyId);
     },
@@ -2001,6 +2008,7 @@ export function BrowserBuddyDock() {
                       buddyMessages[buddy.id] ??
                       governanceSurfaceCopy.buddyMessages?.[buddy.id as keyof NonNullable<typeof governanceSurfaceCopy.buddyMessages>] ??
                       buddy.message,
+                    media: buddyMedia[buddy.id] ?? null,
                   }}
                   active={buddy.id === activeAgentId}
                   collapsed={dockCollapsed}
@@ -2647,6 +2655,7 @@ function BuddyHotspot({
           interactive={surfaceInteractive}
           preferCenterFit={perBuddyWindow}
           message={buddy.message ?? ""}
+          messageMedia={buddy.media ?? null}
           onGatewayConnect={onGatewayConnect}
           onGatewayDisconnect={onGatewayDisconnect}
           onGatewaySettingsChange={onGatewaySettingsChange}

@@ -95,7 +95,9 @@ fn buddy_env(buddy: &str, suffix: &str) -> Option<String> {
 enum TorsoSurface {
     Session,
     Text { title: String, body: String },
-    Image { asset: render::BuiltinImageAsset, title: String, caption: String, hint: String },
+    // A decoded provider image is held separately on `App.torso_image`; this variant
+    // just marks that the torso is in image mode and carries its caption/hint.
+    Image { title: String, caption: String, hint: String },
     ImageStub { title: String, caption: String, hint: String },
     FileStub { title: String, caption: String, hint: String },
 }
@@ -113,8 +115,9 @@ enum TorsoSurfaceSnapshot {
         title: String,
         body: String,
     },
+    // The decoded image lives on App.torso_image and is lent into `as_render` as a
+    // separate (disjoint) field borrow, so this owned snapshot doesn't borrow self.
     Image {
-        asset: render::BuiltinImageAsset,
         title: String,
         caption: String,
         hint: String,
@@ -132,7 +135,10 @@ enum TorsoSurfaceSnapshot {
 }
 
 impl TorsoSurfaceSnapshot {
-    fn as_render(&self) -> render::TorsoOutput<'_> {
+    fn as_render<'a>(
+        &'a self,
+        image: Option<&'a render::TorsoImage>,
+    ) -> render::TorsoOutput<'a> {
         match self {
             TorsoSurfaceSnapshot::Session { buddy, provider, model, gateway, status, note } => {
                 render::TorsoOutput::Session(render::SessionCard {
@@ -147,9 +153,9 @@ impl TorsoSurfaceSnapshot {
             TorsoSurfaceSnapshot::Text { title, body } => {
                 render::TorsoOutput::Text(render::TextCard { title, body })
             }
-            TorsoSurfaceSnapshot::Image { asset, title, caption, hint } => {
+            TorsoSurfaceSnapshot::Image { title, caption, hint } => {
                 let _ = (title, caption, hint);
-                render::TorsoOutput::Image(render::ImageCard { asset: *asset })
+                render::TorsoOutput::Image(render::ImageCard { image })
             }
             TorsoSurfaceSnapshot::ImageStub { title, caption, hint } => {
                 render::TorsoOutput::ImageStub(render::MediaStubCard { title, caption, hint })
@@ -204,6 +210,18 @@ impl IfEmpty for &str {
     }
 }
 
+/// Decode a base64 image payload. Tolerates a `data:…;base64,` URL prefix (so an
+/// inlined data URL from a provider reply decodes too) and surrounding whitespace.
+fn decode_base64(data: &str) -> Option<Vec<u8>> {
+    use base64::Engine;
+    let trimmed = data.trim();
+    let payload = trimmed
+        .rsplit_once("base64,")
+        .map(|(_, rest)| rest)
+        .unwrap_or(trimmed);
+    base64::engine::general_purpose::STANDARD.decode(payload).ok()
+}
+
 fn main() {
     let conn = Connection::connect_to_env()
         .expect("could not connect to a Wayland compositor (is WAYLAND_DISPLAY set?)");
@@ -248,6 +266,7 @@ fn main() {
         emotion: Emotion::Neutral,
         speech: None,
         torso_surface: TorsoSurface::Session,
+        torso_image: None,
         provider_label: String::new(),
         model_label: String::new(),
         gateway_label: String::new(),
@@ -404,6 +423,10 @@ struct App {
     emotion: Emotion,
     speech: Option<String>,
     torso_surface: TorsoSurface,
+    /// Decoded image currently shown when `torso_surface` is `Image` — held here (not
+    /// in the enum) so a redraw blits it without re-decoding, and so the snapshot stays
+    /// owned. Set from an `output` cue's inline bytes via `decode_image_bytes`.
+    torso_image: Option<render::TorsoImage>,
     provider_label: String,
     model_label: String,
     gateway_label: String,
@@ -478,17 +501,9 @@ impl App {
             .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty())
             .unwrap_or_else(|| "ws://127.0.0.1:17387/border-buddies".to_string());
-        self.torso_surface = TorsoSurface::Image {
-            asset: render::BuiltinImageAsset::EiffelTower,
-            title: "Image preview".to_string(),
-            caption: "Eiffel Tower, Paris".to_string(),
-            hint: "Real raster photo scaled to the torso pane for containment testing.".to_string(),
-        };
-        self.session_note = "Image preview loaded in torso.".to_string();
-        self.speech = Some(
-            "Here is your picture of the Eiffel Tower. Click to open. Tell me what next?"
-                .to_string(),
-        );
+        self.torso_surface = TorsoSurface::Session;
+        self.session_note =
+            "Speech bubble carries quick updates. Provider text, images, and files land here.".to_string();
     }
 
     fn tick(&mut self) {
@@ -528,6 +543,9 @@ impl App {
         }
         let layout = self.layout();
         let torso_output = self.snapshot_torso_output();
+        // Direct field borrow, disjoint from self.pool/self.sprite below — lets the
+        // decoded image blit zero-copy without the snapshot borrowing all of self.
+        let torso_image = self.torso_image.as_ref();
         let speech = self.speech.clone();
         let input_text = self.input_text.clone();
         let (Some(pool), Some(layer)) = (self.pool.as_mut(), self.layer.as_ref()) else {
@@ -540,7 +558,7 @@ impl App {
             t: self.start.elapsed().as_secs_f32(),
             emotion: self.emotion,
             speech: speech.as_deref(),
-            torso_output: torso_output.as_render(),
+            torso_output: torso_output.as_render(torso_image),
             chat_open: self.chat_open,
             tucked: self.tucked.map(edge_to_bump),
             input_text: &input_text,
@@ -567,6 +585,7 @@ impl App {
     }
 
     fn snapshot_torso_output(&self) -> TorsoSurfaceSnapshot {
+        // Owned snapshot — the decoded image is lent separately in draw() (see torso_image).
         match &self.torso_surface {
             TorsoSurface::Session => TorsoSurfaceSnapshot::Session {
                 buddy: self.buddy.clone(),
@@ -580,9 +599,8 @@ impl App {
                 title: title.clone(),
                 body: body.clone(),
             },
-            TorsoSurface::Image { asset, title, caption, hint } => {
+            TorsoSurface::Image { title, caption, hint } => {
                 TorsoSurfaceSnapshot::Image {
-                    asset: *asset,
                     title: title.clone(),
                     caption: caption.clone(),
                     hint: hint.clone(),
@@ -627,8 +645,8 @@ impl App {
         surface: &str,
         text: Option<String>,
         caption: Option<String>,
-        _media_type: Option<String>,
-        _data_base64: Option<String>,
+        media_type: Option<String>,
+        data_base64: Option<String>,
     ) {
         self.awaiting_reply = false;
         match surface {
@@ -646,17 +664,41 @@ impl App {
                     "Output cleared. Speech bubble carries quick updates.".to_string();
             }
             "image" => {
-                self.torso_surface = TorsoSurface::ImageStub {
-                    title: "Image output".to_string(),
-                    caption: caption.unwrap_or_else(|| "Image received".to_string()),
-                    hint: "Decoding inline image bytes lands in the next slice.".to_string(),
-                };
+                let decoded = data_base64
+                    .as_deref()
+                    .and_then(decode_base64)
+                    .and_then(|bytes| render::decode_image_bytes(&bytes));
+                match decoded {
+                    Some(pixmap) => {
+                        self.torso_image = Some(pixmap);
+                        self.torso_surface = TorsoSurface::Image {
+                            title: "Image output".to_string(),
+                            caption: caption.unwrap_or_else(|| "Generated image".to_string()),
+                            hint: String::new(),
+                        };
+                        self.session_note = "Image rendered in the torso.".to_string();
+                    }
+                    None => {
+                        // Honest failure: we received an image we couldn't decode — say so
+                        // rather than show a blank or fake frame.
+                        self.torso_image = None;
+                        self.torso_surface = TorsoSurface::ImageStub {
+                            title: "Image output".to_string(),
+                            caption: caption.unwrap_or_else(|| "Image received".to_string()),
+                            hint: "Could not decode the image bytes (unsupported format?)."
+                                .to_string(),
+                        };
+                    }
+                }
             }
             "file" => {
+                // Files aren't raster-rendered; present them honestly as a typed stub.
                 self.torso_surface = TorsoSurface::FileStub {
                     title: "File output".to_string(),
                     caption: caption.unwrap_or_else(|| "File received".to_string()),
-                    hint: "Inline file payload rendering lands in the next slice.".to_string(),
+                    hint: media_type
+                        .map(|mt| format!("Provider file ({mt})."))
+                        .unwrap_or_else(|| "Provider file artifact.".to_string()),
                 };
             }
             _ => {}

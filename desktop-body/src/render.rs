@@ -18,21 +18,22 @@
 
 use fontdue::Font;
 use tiny_skia::{
-    Color, FillRule, Mask, Paint, PathBuilder, Pixmap, Shader, Stroke, Transform,
+    Color, FillRule, FilterQuality, Mask, Paint, PathBuilder, Pixmap, PixmapPaint, Shader,
+    Stroke, Transform,
 };
 
 // --- figure geometry -------------------------------------------------------------
 
-pub const SURFACE_W: u32 = 480;
+pub const SURFACE_W: u32 = 560;
 /// Figure centreline. UI (bubble/input) flips to either side of this.
-pub const FIG_CX: f32 = 240.0;
+pub const FIG_CX: f32 = 280.0;
 pub const HEAD_CY: f32 = 58.0;
 pub const HEAD_R: f32 = 44.0;
 /// Torso top — tucks up under the chin (Morph has no neck).
 const TORSO_TOP: f32 = HEAD_CY + HEAD_R - 12.0;
-/// Slender clay torso; the rounded rectangle the user asked for, 10px sides.
-pub const TORSO_W: f32 = 54.0;
-const TORSO_R: f32 = 10.0;
+/// Stretchable clay torso; wide enough to host the provider output pane.
+pub const TORSO_W: f32 = 142.0;
+const TORSO_R: f32 = 14.0;
 pub const BODY_LEN_MIN: f32 = 70.0;
 pub const BODY_LEN_MAX: f32 = 300.0;
 pub const BODY_LEN_DEFAULT: f32 = 140.0;
@@ -57,9 +58,12 @@ const BUBBLE_MAX_LINES: usize = 6;
 const INPUT_Y: f32 = 196.0;
 const TEXT_PX: f32 = 16.0;
 const LINE_H: f32 = TEXT_PX * 1.3;
+const PANEL_TEXT_PX: f32 = 12.0;
+const PANEL_LINE_H: f32 = PANEL_TEXT_PX * 1.25;
 pub const INPUT_MAX_LINES: usize = 3;
 /// Gap between the figure and its UI column.
 const UI_GAP: f32 = 16.0;
+const PANEL_LABEL_PX: f32 = 10.0;
 
 /// Default clay colour — Morph terracotta. Override per-buddy with `BB_COLOR`.
 pub const CLAY_DEFAULT: [u8; 3] = [201, 109, 60];
@@ -99,9 +103,10 @@ impl Layout {
     }
 
     fn ui_x(&self, w: f32) -> f32 {
+        let figure_half = (TORSO_W / 2.0).max(HEAD_R);
         match self.facing {
-            Facing::Right => FIG_CX + HEAD_R + UI_GAP,
-            Facing::Left => FIG_CX - HEAD_R - UI_GAP - w,
+            Facing::Right => FIG_CX + figure_half + UI_GAP,
+            Facing::Left => FIG_CX - figure_half - UI_GAP - w,
         }
     }
 
@@ -126,11 +131,32 @@ impl Layout {
 
     /// Grab zone over the legs/feet — dragging it vertically stretches the body.
     pub fn feet_rect(&self) -> Rect {
+        let w = TORSO_W + 24.0;
         Rect {
-            x: FIG_CX - 56.0,
+            x: FIG_CX - w / 2.0,
             y: self.hips_y() - 6.0,
-            w: 112.0,
+            w,
             h: LEG_H + FOOT_H + BOTTOM_PAD + 6.0,
+        }
+    }
+
+    pub fn torso_rect(&self) -> Rect {
+        Rect {
+            x: FIG_CX - TORSO_W / 2.0,
+            y: TORSO_TOP,
+            w: TORSO_W,
+            h: self.body_len,
+        }
+    }
+
+    pub fn output_panel_rect(&self) -> Rect {
+        let torso = self.torso_rect();
+        let pad = 10.0;
+        Rect {
+            x: torso.x + pad,
+            y: torso.y + pad,
+            w: torso.w - pad * 2.0,
+            h: (torso.h - pad * 2.0).max(0.0),
         }
     }
 
@@ -366,11 +392,51 @@ pub fn viseme_spec(v: Viseme) -> MouthSpec {
 
 // --- view + sprite ---------------------------------------------------------------
 
+pub struct SessionCard<'a> {
+    pub buddy: &'a str,
+    pub provider: &'a str,
+    pub model: &'a str,
+    pub gateway: &'a str,
+    pub status: &'a str,
+    pub note: &'a str,
+}
+
+pub struct TextCard<'a> {
+    pub title: &'a str,
+    pub body: &'a str,
+}
+
+pub struct MediaStubCard<'a> {
+    pub title: &'a str,
+    pub caption: &'a str,
+    pub hint: &'a str,
+}
+
+#[derive(Clone, Copy)]
+pub enum BuiltinImageAsset {
+    EiffelTower,
+}
+
+pub struct ImageCard {
+    pub asset: BuiltinImageAsset,
+}
+
+pub enum TorsoOutput<'a> {
+    Session(SessionCard<'a>),
+    Text(TextCard<'a>),
+    Image(ImageCard),
+    ImageStub(MediaStubCard<'a>),
+    FileStub(MediaStubCard<'a>),
+}
+
 pub struct BodyView<'a> {
     /// Seconds since start — drives bob, blink, and limb sway.
     pub t: f32,
     pub emotion: Emotion,
     pub speech: Option<&'a str>,
+    /// Provider output rendered into the body torso. Output-only; it never grants the
+    /// body authority to act or run provider tools.
+    pub torso_output: TorsoOutput<'a>,
     /// Whether the chat input is open (replaces the old menu).
     pub chat_open: bool,
     /// When `Some`, the buddy is tucked against this edge: draw the minimized
@@ -385,11 +451,15 @@ pub struct BodyView<'a> {
 
 pub struct Sprite {
     font: Option<Font>,
+    eiffel_tower: Option<Pixmap>,
 }
 
 impl Sprite {
     pub fn new() -> Self {
-        Sprite { font: load_font() }
+        Sprite {
+            font: load_font(),
+            eiffel_tower: load_builtin_image(include_bytes!("../assets/eiffel-tower.jpg")),
+        }
     }
 
     /// Render the body into a premultiplied-BGRA `wl_shm` canvas of size `w`×`h`.
@@ -415,6 +485,15 @@ impl Sprite {
         let pose = FigurePose::idle(view.t);
 
         draw_figure(&mut pixmap, &view.layout, view.color, bob, &pose);
+        if let Some(font) = &self.font {
+            draw_torso_output(
+                &mut pixmap,
+                font,
+                &view.layout,
+                &view.torso_output,
+                self.eiffel_tower.as_ref(),
+            );
+        }
         draw_eyes(&mut pixmap, bob, eye_open, face.pupil_dy);
         draw_mouth(&mut pixmap, bob, &face.mouth);
 
@@ -490,12 +569,7 @@ fn draw_figure(pixmap: &mut Pixmap, layout: &Layout, color: [u8; 3], bob: f32, p
     }
 
     // Torso: the stretchable rounded rectangle (10px sides), vertical clay shading.
-    let torso = Rect {
-        x: FIG_CX - TORSO_W / 2.0,
-        y: TORSO_TOP,
-        w: TORSO_W,
-        h: layout.body_len,
-    };
+    let torso = layout.torso_rect();
     let mut torso_paint = Paint::default();
     torso_paint.anti_alias = true;
     torso_paint.shader = tiny_skia::LinearGradient::new(
@@ -747,6 +821,283 @@ fn draw_mouth_spec(pixmap: &mut Pixmap, cx: f32, cy: f32, spec: &MouthSpec) {
 
 // --- bubble + input ----------------------------------------------------------------
 
+fn draw_torso_output(
+    pixmap: &mut Pixmap,
+    font: &Font,
+    layout: &Layout,
+    output: &TorsoOutput,
+    eiffel_tower: Option<&Pixmap>,
+) {
+    let rect = layout.output_panel_rect();
+    if rect.w <= 0.0 || rect.h <= 0.0 {
+        return;
+    }
+
+    let bg = Color::from_rgba8(246, 249, 250, 226);
+    let rim = solid(Color::from_rgba8(103, 69, 48, 95));
+    draw_round_rect(pixmap, rect, bg);
+    if let Some(path) = round_rect_path(rect, 8.0) {
+        let mut stroke = Stroke::default();
+        stroke.width = 1.5;
+        pixmap.stroke_path(&path, &rim, &stroke, Transform::identity(), None);
+    }
+
+    match output {
+        TorsoOutput::Session(card) => draw_session_card(pixmap, font, rect, card),
+        TorsoOutput::Text(card) => draw_text_card(pixmap, font, rect, card),
+        TorsoOutput::Image(card) => draw_image_card(pixmap, rect, card, eiffel_tower),
+        TorsoOutput::ImageStub(card) => draw_media_stub(pixmap, font, rect, card, true),
+        TorsoOutput::FileStub(card) => draw_media_stub(pixmap, font, rect, card, false),
+    }
+}
+
+fn draw_session_card(pixmap: &mut Pixmap, font: &Font, rect: Rect, card: &SessionCard) {
+    let pad = 8.0;
+    let mut y = rect.y + pad + 12.0;
+    let text_w = rect.w - pad * 2.0;
+
+    y = draw_wrapped_block(
+        pixmap,
+        font,
+        rect.x + pad,
+        y,
+        PANEL_LABEL_PX,
+        PANEL_LINE_H - 1.0,
+        text_w,
+        1,
+        &format!("{} surface", title_case(card.buddy)),
+        [102, 88, 76],
+    ) + 4.0;
+    y = draw_wrapped_block(
+        pixmap,
+        font,
+        rect.x + pad,
+        y,
+        14.0,
+        15.0,
+        text_w,
+        2,
+        card.status,
+        [38, 34, 32],
+    ) + 5.0;
+
+    for (line, max_lines) in [
+        (format!("Provider: {}", card.provider), 1usize),
+        (format!("Model: {}", card.model), 2usize),
+        (format!("Link: {}", card.gateway), 3usize),
+    ] {
+        y = draw_wrapped_block(
+            pixmap,
+            font,
+            rect.x + pad,
+            y,
+            PANEL_TEXT_PX,
+            PANEL_LINE_H,
+            text_w,
+            max_lines,
+            &line,
+            [63, 56, 52],
+        ) + 2.0;
+    }
+
+    let note_y = y + 4.0;
+    let note_h = (rect.y + rect.h - pad - note_y).max(0.0);
+    if note_h >= PANEL_TEXT_PX + 10.0 {
+        let note_rect = Rect {
+            x: rect.x + pad,
+            y: note_y,
+            w: text_w,
+            h: note_h,
+        };
+        let note_bg = Color::from_rgba8(255, 255, 255, 186);
+        draw_round_rect(pixmap, note_rect, note_bg);
+        let note_lines = ((note_rect.h - 10.0) / PANEL_LINE_H).floor().max(1.0) as usize;
+        let _ = draw_wrapped_block(
+            pixmap,
+            font,
+            note_rect.x + 5.0,
+            note_rect.y + 7.0,
+            PANEL_TEXT_PX,
+            PANEL_LINE_H,
+            note_rect.w - 10.0,
+            note_lines,
+            card.note,
+            [88, 74, 64],
+        );
+    }
+}
+
+fn draw_text_card(pixmap: &mut Pixmap, font: &Font, rect: Rect, card: &TextCard) {
+    let pad = 8.0;
+    let mut y = rect.y + pad + 12.0;
+    draw_line(pixmap, font, card.title, rect.x + pad, y, PANEL_LABEL_PX, [102, 88, 76]);
+    y += PANEL_LABEL_PX + 8.0;
+    let max_lines = ((rect.h - (y - rect.y) - pad) / PANEL_LINE_H).floor().max(1.0) as usize;
+    let lines = wrap(font, card.body, PANEL_TEXT_PX, rect.w - pad * 2.0, usize::MAX);
+    let start = lines.len().saturating_sub(max_lines);
+    let mut baseline = y + PANEL_TEXT_PX;
+    for line in &lines[start..] {
+        draw_line(pixmap, font, line, rect.x + pad, baseline, PANEL_TEXT_PX, [30, 26, 24]);
+        baseline += PANEL_LINE_H;
+    }
+}
+
+fn draw_wrapped_block(
+    pixmap: &mut Pixmap,
+    font: &Font,
+    x: f32,
+    top: f32,
+    px: f32,
+    line_h: f32,
+    max_w: f32,
+    max_lines: usize,
+    text: &str,
+    color: [u8; 3],
+) -> f32 {
+    let lines = wrap(font, text, px, max_w, max_lines);
+    let mut baseline = top + px;
+    for line in &lines {
+        draw_line(pixmap, font, line, x, baseline, px, color);
+        baseline += line_h;
+    }
+    if lines.is_empty() {
+        top
+    } else {
+        baseline - line_h
+    }
+}
+
+fn draw_media_stub(
+    pixmap: &mut Pixmap,
+    font: &Font,
+    rect: Rect,
+    card: &MediaStubCard,
+    is_image: bool,
+) {
+    let pad = 8.0;
+    let thumb = Rect {
+        x: rect.x + pad,
+        y: rect.y + pad + 6.0,
+        w: rect.w - pad * 2.0,
+        h: (rect.h * 0.42).min(50.0).max(34.0),
+    };
+    draw_round_rect(pixmap, thumb, Color::from_rgba8(238, 233, 228, 255));
+    if is_image {
+        draw_image_stub_icon(pixmap, thumb);
+    } else {
+        draw_file_stub_icon(pixmap, thumb);
+    }
+
+    let mut y = thumb.y + thumb.h + 14.0;
+    draw_line(pixmap, font, card.title, rect.x + pad, y, PANEL_LABEL_PX, [102, 88, 76]);
+    y += PANEL_LABEL_PX + 8.0;
+    for line in wrap(font, card.caption, PANEL_TEXT_PX, rect.w - pad * 2.0, 2) {
+        draw_line(pixmap, font, &line, rect.x + pad, y, PANEL_TEXT_PX, [30, 26, 24]);
+        y += PANEL_LINE_H;
+    }
+    for line in wrap(font, card.hint, PANEL_TEXT_PX, rect.w - pad * 2.0, 2) {
+        draw_line(pixmap, font, &line, rect.x + pad, y, PANEL_TEXT_PX, [102, 88, 76]);
+        y += PANEL_LINE_H;
+    }
+}
+
+fn draw_image_card(
+    pixmap: &mut Pixmap,
+    rect: Rect,
+    card: &ImageCard,
+    eiffel_tower: Option<&Pixmap>,
+) {
+    let pad = 8.0;
+    let image_rect = Rect {
+        x: rect.x + pad,
+        y: rect.y + pad + 6.0,
+        w: rect.w - pad * 2.0,
+        h: rect.h - pad * 2.0 - 6.0,
+    };
+    draw_round_rect(pixmap, image_rect, Color::from_rgba8(236, 232, 228, 255));
+    if let Some(asset) = builtin_image_pixmap(card.asset, eiffel_tower) {
+        draw_fitted_image(pixmap, asset, image_rect);
+    }
+    if let Some(path) = round_rect_path(image_rect, 8.0) {
+        let mut stroke = Stroke::default();
+        stroke.width = 1.0;
+        pixmap.stroke_path(
+            &path,
+            &solid(Color::from_rgba8(103, 69, 48, 95)),
+            &stroke,
+            Transform::identity(),
+            None,
+        );
+    }
+}
+
+fn builtin_image_pixmap<'a>(asset: BuiltinImageAsset, eiffel_tower: Option<&'a Pixmap>) -> Option<&'a Pixmap> {
+    match asset {
+        BuiltinImageAsset::EiffelTower => eiffel_tower,
+    }
+}
+
+fn draw_fitted_image(pixmap: &mut Pixmap, image: &Pixmap, rect: Rect) {
+    let scale = (rect.w / image.width() as f32).min(rect.h / image.height() as f32);
+    let draw_w = image.width() as f32 * scale;
+    let draw_h = image.height() as f32 * scale;
+    let dx = rect.x + (rect.w - draw_w) / 2.0;
+    let dy = rect.y + (rect.h - draw_h) / 2.0;
+    let mut paint = PixmapPaint::default();
+    paint.quality = FilterQuality::Bilinear;
+    pixmap.draw_pixmap(
+        0,
+        0,
+        image.as_ref(),
+        &paint,
+        Transform::from_row(scale, 0.0, 0.0, scale, dx, dy),
+        None,
+    );
+}
+
+fn draw_image_stub_icon(pixmap: &mut Pixmap, rect: Rect) {
+    let stroke = solid(Color::from_rgba8(166, 136, 112, 255));
+    let mut pb = PathBuilder::new();
+    pb.move_to(rect.x + 8.0, rect.y + rect.h - 10.0);
+    pb.line_to(rect.x + rect.w * 0.34, rect.y + rect.h * 0.48);
+    pb.line_to(rect.x + rect.w * 0.54, rect.y + rect.h - 16.0);
+    pb.line_to(rect.x + rect.w * 0.72, rect.y + rect.h * 0.38);
+    pb.line_to(rect.x + rect.w - 8.0, rect.y + rect.h - 10.0);
+    if let Some(path) = pb.finish() {
+        let mut line = Stroke::default();
+        line.width = 2.0;
+        line.line_cap = tiny_skia::LineCap::Round;
+        line.line_join = tiny_skia::LineJoin::Round;
+        pixmap.stroke_path(&path, &stroke, &line, Transform::identity(), None);
+    }
+    if let Some(dot) = PathBuilder::from_circle(rect.x + rect.w - 18.0, rect.y + 14.0, 4.0) {
+        pixmap.fill_path(&dot, &stroke, FillRule::Winding, Transform::identity(), None);
+    }
+}
+
+fn draw_file_stub_icon(pixmap: &mut Pixmap, rect: Rect) {
+    let doc = Rect {
+        x: rect.x + rect.w * 0.32,
+        y: rect.y + 7.0,
+        w: rect.w * 0.36,
+        h: rect.h - 14.0,
+    };
+    draw_round_rect(pixmap, doc, Color::from_rgba8(255, 255, 255, 225));
+    let ink = solid(Color::from_rgba8(166, 136, 112, 255));
+    for i in 0..3 {
+        let y = doc.y + 12.0 + i as f32 * 8.0;
+        let mut pb = PathBuilder::new();
+        pb.move_to(doc.x + 8.0, y);
+        pb.line_to(doc.x + doc.w - 8.0, y);
+        if let Some(path) = pb.finish() {
+            let mut line = Stroke::default();
+            line.width = 1.5;
+            line.line_cap = tiny_skia::LineCap::Round;
+            pixmap.stroke_path(&path, &ink, &line, Transform::identity(), None);
+        }
+    }
+}
+
 /// Speech bubble: auto-sizes its height to the wrapped text (≤6 lines) and faces
 /// inward, with the tail pointing at the head.
 fn draw_bubble(pixmap: &mut Pixmap, font: &Font, layout: &Layout, text: &str) {
@@ -830,6 +1181,11 @@ fn draw_round_rect(pixmap: &mut Pixmap, rect: Rect, color: Color) {
 }
 
 fn fill_round_rect(pixmap: &mut Pixmap, rect: Rect, radius: f32, paint: &Paint) {
+    let Some(path) = round_rect_path(rect, radius) else { return };
+    pixmap.fill_path(&path, paint, FillRule::Winding, Transform::identity(), None);
+}
+
+fn round_rect_path(rect: Rect, radius: f32) -> Option<tiny_skia::Path> {
     let r = radius.min(rect.w / 2.0).min(rect.h / 2.0);
     let (x, y, w, h) = (rect.x, rect.y, rect.w, rect.h);
     let mut pb = PathBuilder::new();
@@ -843,9 +1199,7 @@ fn fill_round_rect(pixmap: &mut Pixmap, rect: Rect, radius: f32, paint: &Paint) 
     pb.line_to(x, y + r);
     pb.quad_to(x, y, x + r, y);
     pb.close();
-    if let Some(path) = pb.finish() {
-        pixmap.fill_path(&path, paint, FillRule::Winding, Transform::identity(), None);
-    }
+    pb.finish()
 }
 
 fn ellipse_path(cx: f32, cy: f32, rx: f32, ry: f32) -> Option<tiny_skia::Path> {
@@ -858,6 +1212,28 @@ fn solid(color: Color) -> Paint<'static> {
     paint.anti_alias = true;
     paint.shader = Shader::SolidColor(color);
     paint
+}
+
+fn title_case(text: &str) -> String {
+    let mut chars = text.chars();
+    let Some(first) = chars.next() else { return String::new() };
+    let mut out = first.to_uppercase().to_string();
+    out.push_str(chars.as_str());
+    out
+}
+
+fn load_builtin_image(bytes: &[u8]) -> Option<Pixmap> {
+    let decoded = image::load_from_memory(bytes).ok()?.to_rgba8();
+    let (w, h) = decoded.dimensions();
+    let mut rgba = decoded.into_raw();
+    for px in rgba.chunks_exact_mut(4) {
+        let alpha = px[3] as u16;
+        px[0] = ((px[0] as u16 * alpha) / 255) as u8;
+        px[1] = ((px[1] as u16 * alpha) / 255) as u8;
+        px[2] = ((px[2] as u16 * alpha) / 255) as u8;
+    }
+    let size = tiny_skia::IntSize::from_wh(w, h)?;
+    Pixmap::from_vec(rgba, size)
 }
 
 // --- text ----------------------------------------------------------------------
@@ -882,19 +1258,52 @@ fn load_font() -> Option<Font> {
 fn wrap(font: &Font, text: &str, px: f32, max_w: f32, max_lines: usize) -> Vec<String> {
     let mut lines: Vec<String> = Vec::new();
     let mut current = String::new();
-    for word in text.split_whitespace() {
-        let candidate = if current.is_empty() { word.to_string() } else { format!("{current} {word}") };
-        if measure(font, &candidate, px) <= max_w || current.is_empty() {
-            current = candidate;
+    let mut last_break: Option<usize> = None;
+
+    for ch in text.chars() {
+        if ch == '\n' {
+            push_wrapped_line(&mut lines, &mut current, &mut last_break, max_lines);
+            if lines.len() == max_lines {
+                break;
+            }
+            continue;
+        }
+
+        current.push(ch);
+        if ch.is_whitespace() {
+            last_break = Some(current.len());
+        }
+
+        if measure(font, &current, px) <= max_w {
+            continue;
+        }
+
+        if let Some(idx) = last_break {
+            let mut overflow = current[idx..].trim_start().to_string();
+            current.truncate(idx);
+            trim_line_end(&mut current);
+            push_wrapped_line(&mut lines, &mut current, &mut last_break, max_lines);
+            if lines.len() == max_lines {
+                break;
+            }
+            current = std::mem::take(&mut overflow);
+            last_break = find_break_idx(&current);
+            while measure(font, &current, px) > max_w && !current.is_empty() {
+                hard_wrap_current(font, px, max_w, &mut lines, &mut current, &mut last_break, max_lines);
+                if lines.len() == max_lines {
+                    break;
+                }
+            }
         } else {
-            lines.push(std::mem::take(&mut current));
-            current = word.to_string();
+            hard_wrap_current(font, px, max_w, &mut lines, &mut current, &mut last_break, max_lines);
             if lines.len() == max_lines {
                 break;
             }
         }
     }
+
     if lines.len() < max_lines && !current.is_empty() {
+        trim_line_end(&mut current);
         lines.push(current);
     }
     if lines.len() == max_lines {
@@ -906,6 +1315,57 @@ fn wrap(font: &Font, text: &str, px: f32, max_w: f32, max_lines: usize) -> Vec<S
         }
     }
     lines
+}
+
+fn hard_wrap_current(
+    font: &Font,
+    px: f32,
+    max_w: f32,
+    lines: &mut Vec<String>,
+    current: &mut String,
+    last_break: &mut Option<usize>,
+    max_lines: usize,
+) {
+    let mut carry_rev = String::new();
+    while measure(font, current, px) > max_w {
+        let Some(ch) = current.pop() else { break };
+        carry_rev.push(ch);
+    }
+    trim_line_end(current);
+    push_wrapped_line(lines, current, last_break, max_lines);
+    if lines.len() == max_lines {
+        return;
+    }
+    *current = carry_rev.chars().rev().collect::<String>().trim_start().to_string();
+    *last_break = find_break_idx(current);
+}
+
+fn push_wrapped_line(
+    lines: &mut Vec<String>,
+    current: &mut String,
+    last_break: &mut Option<usize>,
+    max_lines: usize,
+) {
+    trim_line_end(current);
+    if !current.is_empty() && lines.len() < max_lines {
+        lines.push(std::mem::take(current));
+    } else {
+        current.clear();
+    }
+    *last_break = None;
+}
+
+fn trim_line_end(current: &mut String) {
+    while current.chars().last().map(|ch| ch.is_whitespace()).unwrap_or(false) {
+        current.pop();
+    }
+}
+
+fn find_break_idx(text: &str) -> Option<usize> {
+    text.char_indices()
+        .rev()
+        .find(|(_, ch)| ch.is_whitespace())
+        .map(|(idx, ch)| idx + ch.len_utf8())
 }
 
 fn measure(font: &Font, text: &str, px: f32) -> f32 {
@@ -978,6 +1438,8 @@ mod tests {
         assert!(left.bubble_rect().x + left.bubble_rect().w < FIG_CX);
         assert!(right.input_rect(1).x > FIG_CX);
         assert!(left.input_rect(1).x + left.input_rect(1).w < FIG_CX);
+        assert!(right.bubble_rect().x + right.bubble_rect().w <= SURFACE_W as f32);
+        assert!(left.bubble_rect().x >= 0.0);
     }
 
     #[test]
@@ -994,6 +1456,34 @@ mod tests {
     fn feet_sit_below_the_torso() {
         let l = Layout::initial();
         assert!(l.feet_rect().y >= TORSO_TOP + l.body_len - 8.0);
+    }
+
+    #[test]
+    fn output_panel_lives_inside_stretchable_torso() {
+        let short = Layout { facing: Facing::Right, body_len: BODY_LEN_MIN };
+        let tall = Layout { facing: Facing::Right, body_len: BODY_LEN_MAX };
+        let torso = tall.torso_rect();
+        let panel = tall.output_panel_rect();
+
+        assert!(panel.x > torso.x);
+        assert!(panel.y > torso.y);
+        assert!(panel.x + panel.w < torso.x + torso.w);
+        assert!(panel.y + panel.h < torso.y + torso.h);
+        assert!(tall.output_panel_rect().h > short.output_panel_rect().h);
+    }
+
+    #[test]
+    fn wrap_breaks_long_unspaced_tokens_to_fit_width() {
+        let font = load_font().expect("system font available for wrap test");
+        let lines = wrap(
+            &font,
+            "ws://127.0.0.1:17387/border-buddies",
+            PANEL_TEXT_PX,
+            68.0,
+            8,
+        );
+        assert!(lines.len() > 1);
+        assert!(lines.iter().all(|line| measure(&font, line, PANEL_TEXT_PX) <= 68.0));
     }
 
     #[test]

@@ -84,6 +84,126 @@ fn env_color(key: &str) -> [u8; 3] {
     }
 }
 
+fn buddy_env_key(buddy: &str, suffix: &str) -> String {
+    format!("{}_{}", buddy.trim().to_ascii_uppercase().replace('-', "_"), suffix)
+}
+
+fn buddy_env(buddy: &str, suffix: &str) -> Option<String> {
+    std::env::var(buddy_env_key(buddy, suffix)).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
+
+enum TorsoSurface {
+    Session,
+    Text { title: String, body: String },
+    Image { asset: render::BuiltinImageAsset, title: String, caption: String, hint: String },
+    ImageStub { title: String, caption: String, hint: String },
+    FileStub { title: String, caption: String, hint: String },
+}
+
+enum TorsoSurfaceSnapshot {
+    Session {
+        buddy: String,
+        provider: String,
+        model: String,
+        gateway: String,
+        status: String,
+        note: String,
+    },
+    Text {
+        title: String,
+        body: String,
+    },
+    Image {
+        asset: render::BuiltinImageAsset,
+        title: String,
+        caption: String,
+        hint: String,
+    },
+    ImageStub {
+        title: String,
+        caption: String,
+        hint: String,
+    },
+    FileStub {
+        title: String,
+        caption: String,
+        hint: String,
+    },
+}
+
+impl TorsoSurfaceSnapshot {
+    fn as_render(&self) -> render::TorsoOutput<'_> {
+        match self {
+            TorsoSurfaceSnapshot::Session { buddy, provider, model, gateway, status, note } => {
+                render::TorsoOutput::Session(render::SessionCard {
+                    buddy,
+                    provider,
+                    model,
+                    gateway,
+                    status,
+                    note,
+                })
+            }
+            TorsoSurfaceSnapshot::Text { title, body } => {
+                render::TorsoOutput::Text(render::TextCard { title, body })
+            }
+            TorsoSurfaceSnapshot::Image { asset, title, caption, hint } => {
+                let _ = (title, caption, hint);
+                render::TorsoOutput::Image(render::ImageCard { asset: *asset })
+            }
+            TorsoSurfaceSnapshot::ImageStub { title, caption, hint } => {
+                render::TorsoOutput::ImageStub(render::MediaStubCard { title, caption, hint })
+            }
+            TorsoSurfaceSnapshot::FileStub { title, caption, hint } => {
+                render::TorsoOutput::FileStub(render::MediaStubCard { title, caption, hint })
+            }
+        }
+    }
+}
+
+fn classify_torso_surface(text: &str) -> TorsoSurface {
+    let trimmed = text.trim();
+    if let Some(caption) = trimmed.strip_prefix("[image]") {
+        return TorsoSurface::ImageStub {
+            title: "Image output".to_string(),
+            caption: caption.trim().if_empty("Provider image placeholder"),
+            hint: "Swap this stub for real image payload rendering when the provider sends media metadata.".to_string(),
+        };
+    }
+    if let Some(caption) = trimmed.strip_prefix("[file]") {
+        return TorsoSurface::FileStub {
+            title: "File output".to_string(),
+            caption: caption.trim().if_empty("Provider file placeholder"),
+            hint: "Use this slot for documents, receipts, or other downloadable provider artifacts.".to_string(),
+        };
+    }
+    if trimmed.starts_with("![") {
+        return TorsoSurface::ImageStub {
+            title: "Image output".to_string(),
+            caption: "Markdown image placeholder".to_string(),
+            hint: "The torso can reserve image space before we wire a richer payload channel.".to_string(),
+        };
+    }
+    TorsoSurface::Text {
+        title: "Text output".to_string(),
+        body: trimmed.to_string(),
+    }
+}
+
+trait IfEmpty {
+    fn if_empty(self, fallback: &str) -> String;
+}
+
+impl IfEmpty for &str {
+    fn if_empty(self, fallback: &str) -> String {
+        if self.is_empty() {
+            fallback.to_string()
+        } else {
+            self.to_string()
+        }
+    }
+}
+
 fn main() {
     let conn = Connection::connect_to_env()
         .expect("could not connect to a Wayland compositor (is WAYLAND_DISPLAY set?)");
@@ -127,6 +247,13 @@ fn main() {
         start: Instant::now(),
         emotion: Emotion::Neutral,
         speech: None,
+        torso_surface: TorsoSurface::Session,
+        provider_label: String::new(),
+        model_label: String::new(),
+        gateway_label: String::new(),
+        presence_status: "Connecting".to_string(),
+        session_note: "Speech bubble carries quick updates. Usage and richer provider output land in the torso.".to_string(),
+        awaiting_reply: false,
         chat_open: false,
         configured: false,
         press: None,
@@ -141,6 +268,7 @@ fn main() {
         body_len: render::BODY_LEN_DEFAULT,
         color: env_color("BB_COLOR"),
     };
+    app.init_hermes_surface();
 
     // Let outputs (and their xdg-output logical size) arrive before we create the
     // surface. Two roundtrips: the first binds wl_output, the second delivers the
@@ -274,6 +402,13 @@ struct App {
     start: Instant,
     emotion: Emotion,
     speech: Option<String>,
+    torso_surface: TorsoSurface,
+    provider_label: String,
+    model_label: String,
+    gateway_label: String,
+    presence_status: String,
+    session_note: String,
+    awaiting_reply: bool,
     chat_open: bool,
     configured: bool,
     press: Option<PressState>,
@@ -334,6 +469,27 @@ fn output_label(app: &App) -> String {
 }
 
 impl App {
+    fn init_hermes_surface(&mut self) {
+        self.provider_label = buddy_env(&self.buddy, "PROVIDER").unwrap_or_else(|| "echo".to_string());
+        self.model_label = buddy_env(&self.buddy, "MODEL").unwrap_or_else(|| "not configured".to_string());
+        self.gateway_label = std::env::var("BB_PRESENCE_URL")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "ws://127.0.0.1:17387/border-buddies".to_string());
+        self.torso_surface = TorsoSurface::Image {
+            asset: render::BuiltinImageAsset::EiffelTower,
+            title: "Image preview".to_string(),
+            caption: "Eiffel Tower, Paris".to_string(),
+            hint: "Real raster photo scaled to the torso pane for containment testing.".to_string(),
+        };
+        self.session_note = "Image preview loaded in torso.".to_string();
+        self.speech = Some(
+            "Here is your picture of the Eiffel Tower. Click to open. Tell me what next?"
+                .to_string(),
+        );
+    }
+
     fn tick(&mut self) {
         self.draw();
         let _ = self.conn.flush();
@@ -370,6 +526,9 @@ impl App {
             return; // never attach a buffer before the first configure is acked
         }
         let layout = self.layout();
+        let torso_output = self.snapshot_torso_output();
+        let speech = self.speech.clone();
+        let input_text = self.input_text.clone();
         let (Some(pool), Some(layer)) = (self.pool.as_mut(), self.layer.as_ref()) else {
             return;
         };
@@ -379,10 +538,11 @@ impl App {
         let view = BodyView {
             t: self.start.elapsed().as_secs_f32(),
             emotion: self.emotion,
-            speech: self.speech.as_deref(),
+            speech: speech.as_deref(),
+            torso_output: torso_output.as_render(),
             chat_open: self.chat_open,
             tucked: self.tucked.map(edge_to_bump),
-            input_text: &self.input_text,
+            input_text: &input_text,
             input_focused: self.input_focused,
             layout,
             color: self.color,
@@ -403,6 +563,77 @@ impl App {
         buffer.attach_to(surface).expect("attach buffer");
         surface.damage_buffer(0, 0, w as i32, h as i32);
         surface.commit();
+    }
+
+    fn snapshot_torso_output(&self) -> TorsoSurfaceSnapshot {
+        match &self.torso_surface {
+            TorsoSurface::Session => TorsoSurfaceSnapshot::Session {
+                buddy: self.buddy.clone(),
+                provider: self.provider_label.clone(),
+                model: self.model_label.clone(),
+                gateway: self.gateway_label.clone(),
+                status: self.presence_status.clone(),
+                note: self.session_note.clone(),
+            },
+            TorsoSurface::Text { title, body } => TorsoSurfaceSnapshot::Text {
+                title: title.clone(),
+                body: body.clone(),
+            },
+            TorsoSurface::Image { asset, title, caption, hint } => {
+                TorsoSurfaceSnapshot::Image {
+                    asset: *asset,
+                    title: title.clone(),
+                    caption: caption.clone(),
+                    hint: hint.clone(),
+                }
+            }
+            TorsoSurface::ImageStub { title, caption, hint } => {
+                TorsoSurfaceSnapshot::ImageStub {
+                    title: title.clone(),
+                    caption: caption.clone(),
+                    hint: hint.clone(),
+                }
+            }
+            TorsoSurface::FileStub { title, caption, hint } => {
+                TorsoSurfaceSnapshot::FileStub {
+                    title: title.clone(),
+                    caption: caption.clone(),
+                    hint: hint.clone(),
+                }
+            }
+        }
+    }
+
+    fn mark_presence_connected(&mut self) {
+        self.presence_status = format!("Linked to {}", self.provider_label);
+        if matches!(self.torso_surface, TorsoSurface::Session) && !self.awaiting_reply {
+            self.session_note =
+                "Speech bubble carries quick updates. Text, image, and file output can land here.".to_string();
+        }
+    }
+
+    fn show_reply_in_torso(&mut self, text: &str) {
+        self.torso_surface = classify_torso_surface(text);
+        self.awaiting_reply = false;
+        self.session_note = "Latest provider output loaded in the torso.".to_string();
+    }
+
+    fn bubble_for_surface(&self, text: &str) -> String {
+        match classify_torso_surface(text) {
+            TorsoSurface::Image { .. } => "Image ready in torso.".to_string(),
+            TorsoSurface::ImageStub { .. } => {
+                "Here is your picture. Click to open. Tell me what next?".to_string()
+            }
+            TorsoSurface::FileStub { .. } => "File stub ready in torso.".to_string(),
+            TorsoSurface::Text { .. } => {
+                if text.len() > 56 || text.contains('\n') {
+                    "Reply ready in torso.".to_string()
+                } else {
+                    text.to_string()
+                }
+            }
+            TorsoSurface::Session => text.to_string(),
+        }
     }
 
     /// Reposition by rewriting anchor margins — a compositor texture move, never a
@@ -484,6 +715,7 @@ impl App {
         if msg.buddy != self.buddy {
             return;
         }
+        self.mark_presence_connected();
         eprintln!("[bb-presence] applying cue for {}: {:?}", msg.buddy, msg.cue);
         match msg.cue {
             presence::Cue::Express { emotion } => {
@@ -548,7 +780,11 @@ impl App {
     }
 
     fn say(&mut self, text: impl Into<String>) {
-        self.speech = Some(text.into());
+        let text = text.into();
+        if self.awaiting_reply {
+            self.show_reply_in_torso(&text);
+        }
+        self.speech = Some(self.bubble_for_surface(&text));
         self.update_input_region();
     }
 
@@ -596,7 +832,14 @@ impl App {
         }
         self.send_to_soul(presence::said_json(&self.buddy, &text));
         self.set_emotion(Emotion::Thinking);
-        self.say(format!("You: {text}"));
+        self.awaiting_reply = true;
+        self.presence_status = format!("{} is thinking", self.buddy);
+        self.torso_surface = TorsoSurface::Text {
+            title: "Reply pending".to_string(),
+            body: format!("Waiting for {} to answer your latest prompt.", self.buddy),
+        };
+        self.speech = Some("Message sent.".to_string());
+        self.update_input_region();
         self.input_text.clear();
     }
 

@@ -619,6 +619,51 @@ impl App {
         self.session_note = "Latest provider output loaded in the torso.".to_string();
     }
 
+    /// Apply a typed `output` cue to the torso. `text`/`session` are handled here;
+    /// `image`/`file` carry inline base64 bytes — Slice 3 decodes and renders them, so
+    /// for now they land as an honest "received" stub rather than a fake preview.
+    fn apply_output(
+        &mut self,
+        surface: &str,
+        text: Option<String>,
+        caption: Option<String>,
+        _media_type: Option<String>,
+        _data_base64: Option<String>,
+    ) {
+        self.awaiting_reply = false;
+        match surface {
+            "text" => {
+                let body = text.unwrap_or_default();
+                self.torso_surface = TorsoSurface::Text {
+                    title: "Text output".to_string(),
+                    body: body.trim().to_string(),
+                };
+                self.session_note = "Latest provider output loaded in the torso.".to_string();
+            }
+            "session" => {
+                self.torso_surface = TorsoSurface::Session;
+                self.session_note =
+                    "Output cleared. Speech bubble carries quick updates.".to_string();
+            }
+            "image" => {
+                self.torso_surface = TorsoSurface::ImageStub {
+                    title: "Image output".to_string(),
+                    caption: caption.unwrap_or_else(|| "Image received".to_string()),
+                    hint: "Decoding inline image bytes lands in the next slice.".to_string(),
+                };
+            }
+            "file" => {
+                self.torso_surface = TorsoSurface::FileStub {
+                    title: "File output".to_string(),
+                    caption: caption.unwrap_or_else(|| "File received".to_string()),
+                    hint: "Inline file payload rendering lands in the next slice.".to_string(),
+                };
+            }
+            _ => {}
+        }
+        self.update_input_region();
+    }
+
     fn bubble_for_surface(&self, text: &str) -> String {
         match classify_torso_surface(text) {
             TorsoSurface::Image { .. } => "Image ready in torso.".to_string(),
@@ -738,6 +783,9 @@ impl App {
                 if let Some(s) = speech {
                     self.say(s);
                 }
+            }
+            presence::Cue::Output { surface, text, caption, media_type, data_base64 } => {
+                self.apply_output(&surface, text, caption, media_type, data_base64);
             }
         }
     }

@@ -70,6 +70,13 @@ describe("presence protocol round-trips", () => {
     presence.summoned("hermes", { ts: 13 }),
     presence.dismissed("hermes", { ts: 14 }),
     presence.said("hermes", "what's the weather?", { ts: 15 }),
+    presence.output("hermes", { surface: "text", text: "Reply body." }, { ts: 16 }),
+    presence.output(
+      "hermes",
+      { surface: "image", mediaType: "image/png", caption: "a bike", dataBase64: "iVBORw0KGgo=" },
+      { ts: 17 },
+    ),
+    presence.output("hermes", { surface: "session" }, { ts: 18 }),
   ];
 
   test.each(cases)("survives JSON serialization: $kind", (message) => {
@@ -105,6 +112,12 @@ describe("presence protocol parsing rejects malformed input", () => {
     expect(parsePresenceMessage({ protocol: PRESENCE_PROTOCOL, v: 0, kind: "grabbed", buddy: "h", ts: 1 })).toBeNull();
     // anchored position missing an offset coordinate
     expect(parsePresenceMessage({ protocol: PRESENCE_PROTOCOL, v: 0, kind: "move_to", buddy: "h", ts: 1, position: { mode: "anchored", edge: "right", offset: { x: 0 } } })).toBeNull();
+    // output image without inline bytes
+    expect(parsePresenceMessage({ protocol: PRESENCE_PROTOCOL, v: 0, kind: "output", buddy: "h", ts: 1, surface: "image", mediaType: "image/png" })).toBeNull();
+    // output with an unknown surface
+    expect(parsePresenceMessage({ protocol: PRESENCE_PROTOCOL, v: 0, kind: "output", buddy: "h", ts: 1, surface: "hologram" })).toBeNull();
+    // output text with a non-string body
+    expect(parsePresenceMessage({ protocol: PRESENCE_PROTOCOL, v: 0, kind: "output", buddy: "h", ts: 1, surface: "text", text: 42 })).toBeNull();
   });
 
   test("accepts valid optional fields and minimal payloads", () => {

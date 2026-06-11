@@ -154,5 +154,16 @@
     "buddy": "hermes",
     "ts": 1012,
     "text": "what's on my calendar today?"
+  },
+  "output": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "output",
+    "buddy": "hermes",
+    "ts": 1013,
+    "surface": "image",
+    "mediaType": "image/png",
+    "caption": "a red bicycle",
+    "dataBase64": "iVBORw0KGgo="
   }
 }

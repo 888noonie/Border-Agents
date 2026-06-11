@@ -32,6 +32,11 @@ export const PRESENCE_FIXTURES = {
   summoned: presence.summoned(BUDDY, { ts: 1010 }),
   dismissed: presence.dismissed(BUDDY, { ts: 1011 }),
   said: presence.said(BUDDY, "what's on my calendar today?", { ts: 1012 }),
+  output: presence.output(
+    BUDDY,
+    { surface: "image", mediaType: "image/png", caption: "a red bicycle", dataBase64: "iVBORw0KGgo=" },
+    { ts: 1013 },
+  ),
 } as const;
 
 /** Canonical serialization (drops `undefined`, stable 2-space indent, trailing nl). */

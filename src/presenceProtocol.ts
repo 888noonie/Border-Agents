@@ -25,6 +25,8 @@
  * the shared WebSocket. A relay can forward both; a client switches on the field.
  */
 
+import { isOutputSurfaceKind, type OutputSurfaceKind } from "./buddyCapabilities";
+
 export const PRESENCE_PROTOCOL = "presence" as const;
 export const PRESENCE_PROTOCOL_VERSION = 0 as const;
 
@@ -126,12 +128,35 @@ export type PresenceHydrate = PresenceEnvelope<
   }
 >;
 
+/**
+ * Rich result content the body renders in its output surface (the desktop torso, the
+ * browser content panel) — distinct from `say`, which is the ephemeral speech bubble.
+ *
+ * `surface` selects the renderer: `text` (a text card), `image`/`file` (rendered from
+ * inline bytes), or `session` (clear back to the idle status card). Bytes are always
+ * **inlined as base64** by the soul/gateway, never a URL — the native wlr-layer-shell
+ * body speaks `ws://` only and has no HTTP/TLS client, so it must receive the bytes,
+ * not fetch them. `mediaType` + `dataBase64` are required for image/file; `text`
+ * carries the text-card body; `session` needs neither.
+ */
+export type PresenceOutput = PresenceEnvelope<
+  "output",
+  {
+    surface: OutputSurfaceKind;
+    text?: string;
+    caption?: string;
+    mediaType?: string;
+    dataBase64?: string;
+  }
+>;
+
 export type PresenceToBodyMessage =
   | PresenceMoveTo
   | PresenceExpress
   | PresenceSay
   | PresenceAttention
-  | PresenceHydrate;
+  | PresenceHydrate
+  | PresenceOutput;
 
 // --- to-soul: the body reporting what happened to it ---------------------------
 
@@ -191,6 +216,7 @@ export const PRESENCE_TO_BODY_KINDS: readonly PresenceToBodyMessage["kind"][] = 
   "say",
   "attention",
   "hydrate",
+  "output",
 ];
 
 export const PRESENCE_TO_SOUL_KINDS: readonly PresenceToSoulMessage["kind"][] = [
@@ -280,6 +306,36 @@ function isFocus(value: unknown): value is PresenceFocus {
   );
 }
 
+/**
+ * Validate an `output` payload. image/file must carry inline bytes (`dataBase64`) and a
+ * `mediaType`; `text` must carry a string body; `session` (clear) needs neither. Any
+ * present optional field must still be the right type.
+ */
+function isValidOutputPayload(raw: Record<string, unknown>): boolean {
+  if (!isOutputSurfaceKind(raw.surface)) {
+    return false;
+  }
+  if (raw.text !== undefined && typeof raw.text !== "string") {
+    return false;
+  }
+  if (raw.caption !== undefined && typeof raw.caption !== "string") {
+    return false;
+  }
+  if (raw.mediaType !== undefined && typeof raw.mediaType !== "string") {
+    return false;
+  }
+  if (raw.dataBase64 !== undefined && typeof raw.dataBase64 !== "string") {
+    return false;
+  }
+  if (raw.surface === "image" || raw.surface === "file") {
+    return isNonEmptyString(raw.dataBase64) && isNonEmptyString(raw.mediaType);
+  }
+  if (raw.surface === "text") {
+    return typeof raw.text === "string";
+  }
+  return true; // session: a clear/reset signal, no payload required
+}
+
 /** Validate a kind-specific payload. Returns false for anything malformed. */
 function isValidForKind(kind: PresenceKind, raw: Record<string, unknown>): boolean {
   switch (kind) {
@@ -308,6 +364,8 @@ function isValidForKind(kind: PresenceKind, raw: Record<string, unknown>): boole
         (raw.emotion === undefined || isEmotion(raw.emotion)) &&
         (raw.speech === undefined || typeof raw.speech === "string")
       );
+    case "output":
+      return isValidOutputPayload(raw);
     case "attached":
       return (
         (raw.at === undefined || isPosition(raw.at)) &&
@@ -430,6 +488,19 @@ export const presence = {
     opts: EnvelopeOptions = {},
   ): PresenceHydrate {
     return envelope("hydrate", buddy, { ...snapshot }, opts) as PresenceHydrate;
+  },
+  output(
+    buddy: string,
+    payload: {
+      surface: OutputSurfaceKind;
+      text?: string;
+      caption?: string;
+      mediaType?: string;
+      dataBase64?: string;
+    },
+    opts: EnvelopeOptions = {},
+  ): PresenceOutput {
+    return envelope("output", buddy, { ...payload }, opts) as PresenceOutput;
   },
   attached(
     buddy: string,

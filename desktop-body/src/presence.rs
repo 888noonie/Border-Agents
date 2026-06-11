@@ -301,6 +301,16 @@ pub enum Cue {
         emotion: Option<String>,
         speech: Option<String>,
     },
+    /// Rich result content for the output surface (torso). `surface` is one of
+    /// text/image/file/session; image/file carry inline base64 bytes the body decodes
+    /// (the body has no HTTP/TLS — the soul/gateway always sends bytes, never a URL).
+    Output {
+        surface: String,
+        text: Option<String>,
+        caption: Option<String>,
+        media_type: Option<String>,
+        data_base64: Option<String>,
+    },
 }
 
 /// A parsed to-body message: which buddy it concerns, and the cue to apply.
@@ -318,6 +328,30 @@ fn parse_edge(value: &str) -> Option<Edge> {
         "left" => Some(Edge::Left),
         _ => None,
     }
+}
+
+/// Parse an `output` cue. Mirrors the TS validator: `surface` must be a known kind,
+/// and image/file must carry both inline bytes (`dataBase64`) and a `mediaType` —
+/// anything else is dropped (returns None) rather than rendered as a broken card.
+fn parse_output(v: &Value) -> Option<Cue> {
+    let surface = v.get("surface")?.as_str()?.to_string();
+    if !matches!(surface.as_str(), "text" | "image" | "file" | "session") {
+        return None;
+    }
+    let text = v.get("text").and_then(|s| s.as_str()).map(String::from);
+    let caption = v.get("caption").and_then(|s| s.as_str()).map(String::from);
+    let media_type = v.get("mediaType").and_then(|s| s.as_str()).map(String::from);
+    let data_base64 = v.get("dataBase64").and_then(|s| s.as_str()).map(String::from);
+
+    if surface == "image" || surface == "file" {
+        let has_bytes = data_base64.as_deref().map(|s| !s.is_empty()).unwrap_or(false);
+        let has_type = media_type.as_deref().map(|s| !s.is_empty()).unwrap_or(false);
+        if !has_bytes || !has_type {
+            return None;
+        }
+    }
+
+    Some(Cue::Output { surface, text, caption, media_type, data_base64 })
 }
 
 fn parse_position(value: &Value) -> Option<Position> {
@@ -373,6 +407,7 @@ pub fn parse_to_body(text: &str) -> Option<ToBody> {
             emotion: v.get("emotion").and_then(|e| e.as_str()).map(String::from),
             speech: v.get("speech").and_then(|s| s.as_str()).map(String::from),
         },
+        "output" => parse_output(&v)?,
         // attention (reserved) and all to-soul kinds are not body cues.
         _ => return None,
     };
@@ -439,6 +474,36 @@ mod tests {
             }
             other => panic!("expected hydrate, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_output_image_fixture() {
+        let output = parse_to_body(&fixture("output")).unwrap();
+        assert_eq!(output.buddy, "hermes");
+        match output.cue {
+            Cue::Output { surface, caption, media_type, data_base64, .. } => {
+                assert_eq!(surface, "image");
+                assert_eq!(caption.as_deref(), Some("a red bicycle"));
+                assert_eq!(media_type.as_deref(), Some("image/png"));
+                assert!(data_base64.is_some_and(|b| !b.is_empty()));
+            }
+            other => panic!("expected output, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn output_validation_mirrors_ts() {
+        // text surface: a text body is enough.
+        assert!(matches!(
+            parse_to_body(r#"{"protocol":"presence","v":0,"kind":"output","buddy":"h","ts":1,"surface":"text","text":"hi"}"#).unwrap().cue,
+            Cue::Output { .. }
+        ));
+        // session surface: no payload required (a clear signal).
+        assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"output","buddy":"h","ts":1,"surface":"session"}"#).is_some());
+        // image without inline bytes is dropped.
+        assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"output","buddy":"h","ts":1,"surface":"image","mediaType":"image/png"}"#).is_none());
+        // unknown surface is dropped.
+        assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"output","buddy":"h","ts":1,"surface":"hologram"}"#).is_none());
     }
 
     #[test]

@@ -11,9 +11,63 @@ const HERMES_PROVIDER = process.env.HERMES_PROVIDER?.trim() || "echo";
 const HERMES_API_BASE = normalizeApiBase(process.env.HERMES_API_BASE);
 const HERMES_API_KEY = process.env.HERMES_API_KEY?.trim() || "";
 const HERMES_MODEL = process.env.HERMES_MODEL?.trim() || "";
+// Image-generation model for the `/image` command. xAI ships grok-2-image on the same
+// OpenAI-compatible base; override per provider via HERMES_IMAGE_MODEL.
+const HERMES_IMAGE_MODEL = process.env.HERMES_IMAGE_MODEL?.trim() || "grok-2-image";
 const HERMES_SYSTEM_PROMPT =
   process.env.HERMES_SYSTEM_PROMPT?.trim() ||
   "You are Hermes, a concise desktop companion speaking through the Border Agents buddy gateway. Be direct, useful, and clear.";
+
+// Per-buddy session state for commands: the last free-text prompt (for /retry) and a
+// live model override (for /model). A real soul persists this behind governance; the
+// dev soul keeps it in process. Keyed by buddy id.
+const sessionState = new Map();
+function sessionFor(buddy) {
+  let state = sessionState.get(buddy);
+  if (!state) {
+    state = { lastPrompt: "", modelOverride: "" };
+    sessionState.set(buddy, state);
+  }
+  return state;
+}
+function activeModel(buddy) {
+  return sessionFor(buddy).modelOverride || HERMES_MODEL;
+}
+
+// --- slash commands (hand-mirror of src/buddyCapabilities.ts DEFAULT_HERMES_COMMANDS) ---
+// The canonical specs live in TS; this gateway mirrors them until the real soul runtime
+// consumes the TS model directly (same pattern as the wizard script mirror above).
+const SLASH_COMMANDS = [
+  { name: "image", args: "<prompt>", summary: "Generate an image from a prompt and show it in the torso.", action: "generate_image" },
+  { name: "help", args: "", summary: "List what this buddy can take in and put out.", action: "help" },
+  { name: "clear", args: "", summary: "Clear the output surface back to the session card.", action: "clear" },
+  { name: "model", args: "<id>", summary: "Switch the active model for this session.", action: "set_model" },
+  { name: "retry", args: "", summary: "Re-run your last prompt.", action: "retry" },
+];
+
+function parseCommand(text) {
+  const trimmed = String(text ?? "").trimStart();
+  if (!trimmed.startsWith("/")) {
+    return null;
+  }
+  const match = trimmed.slice(1).match(/^(\S+)\s*([\s\S]*)$/);
+  if (!match) {
+    return null;
+  }
+  const spec = SLASH_COMMANDS.find((command) => command.name === match[1].toLowerCase());
+  if (!spec) {
+    return null;
+  }
+  return { spec, rest: match[2].trim() };
+}
+
+function formatCommandHelp() {
+  const lines = SLASH_COMMANDS.map((command) => {
+    const usage = command.args ? `/${command.name} ${command.args}` : `/${command.name}`;
+    return `${usage} — ${command.summary}`;
+  });
+  return `Hermes commands:\n${lines.join("\n")}`;
+}
 
 const hermesReplies = [
   "Hermes here — dev gateway is live on your desktop dock.",
@@ -70,7 +124,7 @@ function gatewayStatusMessage() {
   return "Hermes gateway ready (fallback echo)";
 }
 
-async function askHermes(text) {
+async function askHermes(text, buddy = "hermes") {
   const mode = gatewayMode();
   if (mode !== "openai-compatible") {
     const echo = String(text ?? "").trim();
@@ -91,7 +145,7 @@ async function askHermes(text) {
     method: "POST",
     headers,
     body: JSON.stringify({
-      model: HERMES_MODEL,
+      model: activeModel(buddy),
       messages: [
         { role: "system", content: HERMES_SYSTEM_PROMPT },
         { role: "user", content: String(text ?? "") },
@@ -116,6 +170,94 @@ async function askHermes(text) {
   return reply.trim();
 }
 
+// --- image generation + extraction ---------------------------------------------
+//
+// `/image` calls the OpenAI-compatible images endpoint and returns the bytes inline as
+// base64 (the bodies have no HTTP/TLS, so the gateway always delivers bytes, never a
+// URL). Plain replies that embed an image (markdown/HTML/data-URL/bare URL) are also
+// detected and inlined, which is the real xAI case where Grok answers with HTML.
+
+async function generateImage(prompt) {
+  if (gatewayMode() !== "openai-compatible") {
+    throw new Error("image generation needs a configured provider (HERMES_API_BASE/MODEL)");
+  }
+  const headers = { "content-type": "application/json" };
+  if (HERMES_API_KEY) {
+    headers.authorization = `Bearer ${HERMES_API_KEY}`;
+  }
+  const response = await fetch(`${HERMES_API_BASE}/images/generations`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      model: HERMES_IMAGE_MODEL,
+      prompt,
+      n: 1,
+      response_format: "b64_json",
+    }),
+  });
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    throw new Error(`Image provider returned ${response.status}: ${body.slice(0, 300)}`);
+  }
+  const payload = await response.json();
+  const item = payload?.data?.[0];
+  if (item && typeof item.b64_json === "string" && item.b64_json) {
+    return { surface: "image", mediaType: "image/png", dataBase64: item.b64_json, caption: prompt };
+  }
+  if (item && typeof item.url === "string" && item.url) {
+    return await fetchImageAsMedia(item.url, prompt);
+  }
+  throw new Error("Image provider returned an unrecognized payload");
+}
+
+async function fetchImageAsMedia(url, caption) {
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`could not fetch image (${response.status})`);
+  }
+  const mediaType = response.headers.get("content-type")?.split(";")[0] || "image/png";
+  const bytes = Buffer.from(await response.arrayBuffer());
+  return { surface: "image", mediaType, dataBase64: bytes.toString("base64"), caption };
+}
+
+const DATA_URL_RE = /data:(image\/[a-z0-9.+-]+);base64,([A-Za-z0-9+/=]+)/i;
+const MARKDOWN_IMG_RE = /!\[[^\]]*\]\(\s*(\S+?)\s*\)/;
+const HTML_IMG_RE = /<img[^>]+src=["']([^"']+)["']/i;
+const BARE_IMG_URL_RE = /(https?:\/\/[^\s"')]+\.(?:png|jpe?g|gif|webp)(?:\?[^\s"')]*)?)/i;
+
+// If `text` embeds an image, return it as inline media (fetching the bytes if it's a
+// URL); otherwise null. Used to turn an "image as HTML/markdown" reply into a real
+// rendered image.
+async function extractImageFromText(text, caption) {
+  const value = String(text ?? "");
+  const dataMatch = value.match(DATA_URL_RE);
+  if (dataMatch) {
+    return { surface: "image", mediaType: dataMatch[1], dataBase64: dataMatch[2], caption };
+  }
+  const urlMatch = value.match(MARKDOWN_IMG_RE) || value.match(HTML_IMG_RE) || value.match(BARE_IMG_URL_RE);
+  if (urlMatch) {
+    try {
+      return await fetchImageAsMedia(urlMatch[1] ?? urlMatch[0], caption);
+    } catch (error) {
+      logError("inline image fetch failed", error instanceof Error ? error.message : String(error));
+      return null;
+    }
+  }
+  return null;
+}
+
+// Strip image markup from a reply so the text card / bubble doesn't show raw HTML when
+// the image itself is rendered separately.
+function stripImageMarkup(text) {
+  return String(text ?? "")
+    .replace(DATA_URL_RE, "")
+    .replace(MARKDOWN_IMG_RE, "")
+    .replace(HTML_IMG_RE, "")
+    .replace(BARE_IMG_URL_RE, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 const PRESENCE_PROTOCOL = "presence";
 const PRESENCE_VERSION = 0;
 
@@ -136,6 +278,134 @@ function presenceEnvelope(kind, buddy, payload) {
 const lastPosition = new Map();
 
 const DEFAULT_HYDRATE_POSITION = { mode: "anchored", edge: "right", offset: { x: 24, y: 48 } };
+
+// --- command + text dispatch (transport-agnostic) -----------------------------
+//
+// `emit` abstracts the two transports: presence cues (desktop body) vs a single
+// chat_reply (browser). handleUserText parses a slash command or routes free text to
+// the provider, surfacing image output through emit.output(). `providerPrompt` lets the
+// chat path inject authorized context while command detection still sees the raw text.
+
+async function handleUserText(buddy, text, emit, providerPrompt = text) {
+  const command = parseCommand(text);
+  if (command) {
+    await runCommand(buddy, command, emit);
+    return;
+  }
+  sessionFor(buddy).lastPrompt = text;
+  emit.thinking();
+  try {
+    const reply = await askHermes(providerPrompt, buddy);
+    const media = await extractImageFromText(reply, "Image");
+    emit.happy();
+    if (media) {
+      emit.output(media);
+      emit.say(stripImageMarkup(reply) || "Here's your image.");
+    } else {
+      emit.output({ surface: "text", text: reply });
+      emit.say(reply);
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logError("text handler failed", message);
+    emit.alert();
+    emit.say("I couldn't reach my brain just now.");
+  }
+}
+
+async function runCommand(buddy, { spec, rest }, emit) {
+  switch (spec.action) {
+    case "help":
+      emit.output({ surface: "text", text: formatCommandHelp() });
+      emit.say("Here's what I can do.");
+      return;
+    case "clear":
+      emit.output({ surface: "session" });
+      emit.say("Output cleared.");
+      return;
+    case "set_model":
+      if (!rest) {
+        emit.say("Usage: /model <id>");
+        return;
+      }
+      sessionFor(buddy).modelOverride = rest;
+      emit.say(`Model set to ${rest} for this session.`);
+      return;
+    case "retry": {
+      const last = sessionFor(buddy).lastPrompt;
+      if (!last) {
+        emit.say("Nothing to retry yet — send a prompt first.");
+        return;
+      }
+      await handleUserText(buddy, last, emit);
+      return;
+    }
+    case "generate_image": {
+      if (!rest) {
+        emit.say("Usage: /image <prompt>");
+        return;
+      }
+      emit.thinking();
+      try {
+        const media = await generateImage(rest);
+        emit.output(media);
+        emit.happy();
+        emit.say("Here's your image.");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        logError("image generation failed", message);
+        emit.alert();
+        emit.say(`Image generation failed: ${message}`);
+      }
+      return;
+    }
+    default:
+      emit.say("That command isn't wired yet.");
+  }
+}
+
+function presenceEmit(socket, buddy) {
+  return {
+    thinking: () => socket.send(presenceEnvelope("express", buddy, { emotion: "thinking" })),
+    happy: () => socket.send(presenceEnvelope("express", buddy, { emotion: "happy" })),
+    alert: () => socket.send(presenceEnvelope("express", buddy, { emotion: "alert" })),
+    say: (text) => socket.send(presenceEnvelope("say", buddy, { text })),
+    output: (payload) => socket.send(presenceEnvelope("output", buddy, payload)),
+  };
+}
+
+// Buffering emit for the request/reply chat path: collects one chat_reply. Express cues
+// don't apply to the browser; text comes from an output(text) card or the say() line,
+// with any image/file media riding alongside.
+function chatEmit() {
+  const buffer = { bodyText: null, speech: null, media: null };
+  return {
+    emit: {
+      thinking: () => {},
+      happy: () => {},
+      alert: () => {},
+      say: (text) => {
+        buffer.speech = text;
+      },
+      output: (payload) => {
+        if (payload.surface === "text") {
+          buffer.bodyText = payload.text ?? "";
+        } else if (payload.surface === "image" || payload.surface === "file") {
+          buffer.media = {
+            surface: payload.surface,
+            mediaType: payload.mediaType,
+            dataBase64: payload.dataBase64,
+            caption: payload.caption,
+          };
+        }
+      },
+    },
+    result: () => ({
+      text: buffer.bodyText ?? buffer.speech ?? "",
+      media: buffer.media ?? undefined,
+    }),
+  };
+}
 
 // Dev-only "soul": react to body interaction events with presence cues so both
 // directions of the protocol can be exercised against the browser body that
@@ -182,25 +452,14 @@ function handlePresenceInteraction(socket, message) {
       socket.send(presenceEnvelope("express", buddy, { emotion: "sleepy" }));
       return;
     case "said": {
-      // The user typed to the buddy through the on-body input box. Route the text to
-      // the connected provider (or echo) and reply as a `say` cue.
+      // The user typed to the buddy through the on-body input box. Route through the
+      // shared dispatch: slash commands fire their action, free text goes to the
+      // provider, and image output comes back as an `output` cue (rendered in the torso).
       const text = typeof message.text === "string" ? message.text.trim() : "";
       if (!text) {
         return;
       }
-      socket.send(presenceEnvelope("express", buddy, { emotion: "thinking" }));
-      void (async () => {
-        try {
-          const reply = await askHermes(text);
-          socket.send(presenceEnvelope("express", buddy, { emotion: "happy" }));
-          socket.send(presenceEnvelope("say", buddy, { text: reply }));
-        } catch (error) {
-          const errorMessage = error instanceof Error ? error.message : String(error);
-          logError("said handler failed", errorMessage);
-          socket.send(presenceEnvelope("express", buddy, { emotion: "alert" }));
-          socket.send(presenceEnvelope("say", buddy, { text: "I couldn't reach my brain just now." }));
-        }
-      })();
+      void handleUserText(buddy, text, presenceEmit(socket, buddy));
       return;
     }
     default:
@@ -359,13 +618,19 @@ wss.on("connection", (socket, request) => {
     if (message?.type === "chat" && message.buddy === "hermes") {
       void (async () => {
         try {
-          const reply = await askHermes(buildGatewayPrompt(message));
+          const rawText = typeof message.text === "string" ? message.text.trim() : "";
+          const { emit, result } = chatEmit();
+          // Commands parse against the raw text; free text uses the context-injected
+          // prompt for the provider call.
+          await handleUserText("hermes", rawText, emit, buildGatewayPrompt(message));
+          const { text, media } = result();
 
           socket.send(
             JSON.stringify({
               type: "chat_reply",
               buddy: "hermes",
-              text: reply,
+              text,
+              media,
               requestId: message.requestId,
             }),
           );
@@ -375,6 +640,7 @@ wss.on("connection", (socket, request) => {
             provider: HERMES_PROVIDER,
             purpose: message.purpose ?? null,
             hasContext: typeof message.context === "string" && message.context.trim().length > 0,
+            hasMedia: Boolean(media),
             requestId: message.requestId,
           });
         } catch (error) {

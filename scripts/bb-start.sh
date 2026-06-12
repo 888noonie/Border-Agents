@@ -79,14 +79,14 @@ else
   fi
 fi
 
-bb_log "Starting desktop overlay (npm run desktop:dev)..."
+bb_log "Starting native desktop body (npm run body:dev)..."
 set +e
-npm run desktop:dev
+npm run body:dev
 desktop_exit_code=$?
 set -e
 
 if [[ "${desktop_exit_code}" -ne 0 ]]; then
-  bb_error "desktop:dev failed with exit code ${desktop_exit_code}"
+  bb_error "body:dev failed with exit code ${desktop_exit_code}"
   bb_log "Recent session output:"
   tail -n 40 "$BB_LOG_SESSION" 2>/dev/null | sed 's/^/[BB tail] /' || true
 fi

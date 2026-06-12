@@ -89,10 +89,18 @@ Build order:
    drag-stable via relative pointer; on-screen clamp; correct buffer-size rendering.
 4. **Wire the soul** ⏳ — presence WebSocket client in the Rust body; first driver is
    the scripted **Wizard** onboarding host (`docs/WIZARD_ONBOARDING_SCRIPT.md`).
+   Current `presence-layer` proof (2026-06-13): the body consumes target lifecycle
+   cues from a COSMIC window-tracking helper and can pin/unpin Hermes to a tracked
+   native window as a small head + speech/input surface. The user can drag the pinned
+   head to choose any attachment point on/near the target; that offset follows the
+   window as it moves. This is still presentation-only: the body does not read,
+   move, or act on the target window.
 5. **Governance vertical slice** — a buddy action produces a receipt, joining the
    presence layer to the governance core.
 
-Known cosmetic TODO: edge-aware speech-bubble placement (clips at far-right edge).
+Known TODOs before main: polish pinned placement controls, remove or quarantine the
+old full-frame renderer/tests if the pin UX remains the chosen path, and wire any
+future target action through Core Patrol receipts rather than the body.
 
 ---
 

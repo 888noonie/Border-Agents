@@ -86,6 +86,47 @@ export type PresenceFocus =
 
 export type PresencePointer = "primary" | "secondary";
 
+/**
+ * Bounds of a tracked native OS window, in **logical pixels** in a single global
+ * coordinate space, with the `scaleFactor` that produced them carried alongside.
+ *
+ * Every platform driver (the COSMIC `cosmic-toplevel-info` body, a future Win32 hook)
+ * MUST convert into this one canonical space *before* emitting, so the body never has
+ * to know which OS produced a rectangle. The body does the final device-pixel math
+ * with `scaleFactor` — this is what stops the frame from drifting off the edge of a
+ * window dragged onto a HiDPI/4K external monitor.
+ */
+export type TargetBounds = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  scaleFactor: number;
+};
+
+/**
+ * Why the body lost its grip on a target. A closed union, not a free string, because
+ * the body pattern-matches on it to pick an animation (release gracefully on `closed`
+ * vs. look around confused on `trackingFailed`) — a typo'd reason must fail typecheck,
+ * not silently skip the animation.
+ */
+export type TargetLostReason = "closed" | "workspaceSwitched" | "minimized" | "trackingFailed";
+
+/**
+ * Host-platform capabilities, reported once in `hydrate`. These describe the *body's
+ * window shell and its driver*, not the buddy — so the soul/UI can degrade gracefully
+ * on a platform where a mechanism is missing instead of assuming it everywhere.
+ *
+ * `canClickThrough` is a property of the window shell (XShape / layer-shell / Win32
+ * styles), not the geometry driver, but it rides here because `hydrate` is the one
+ * body-level snapshot and the body owns both.
+ */
+export type PresencePlatform = {
+  canTrackGeometry: boolean;
+  canInjectInput: boolean;
+  canClickThrough: boolean;
+};
+
 type PresenceEnvelope<Kind extends string, Payload> = {
   protocol: typeof PRESENCE_PROTOCOL;
   v: typeof PRESENCE_PROTOCOL_VERSION;
@@ -125,6 +166,7 @@ export type PresenceHydrate = PresenceEnvelope<
     position?: PresencePosition;
     emotion?: PresenceEmotion;
     speech?: string;
+    platform?: PresencePlatform;
   }
 >;
 
@@ -150,13 +192,43 @@ export type PresenceOutput = PresenceEnvelope<
   }
 >;
 
+/**
+ * Border-target tracking (the "Morph Frame" seam) — soul/driver → body. A platform
+ * driver tells the body where a native OS window is, so the body can wrap its hollow
+ * torso around it. The body never learns whether a rectangle came from
+ * `cosmic-toplevel-info`, an XWayland poll, or a Win32 hook: a driver is simply "a
+ * process that speaks presence protocol", which makes the seam wire-level, not a
+ * shared-language Rust trait.
+ *
+ * Split into three kinds so the body can bind distinct CSS to the lifecycle, and so a
+ * `targetMoved` is never ambiguous: every event carries `targetId`, and `targetAcquired`
+ * carries the initial `bounds` so there is no empty-handed gap before the first move.
+ */
+export type PresenceTargetAcquired = PresenceEnvelope<
+  "target_acquired",
+  { targetId: string; title: string; appId: string; bounds: TargetBounds }
+>;
+
+export type PresenceTargetMoved = PresenceEnvelope<
+  "target_moved",
+  { targetId: string; bounds: TargetBounds }
+>;
+
+export type PresenceTargetLost = PresenceEnvelope<
+  "target_lost",
+  { targetId: string; reason: TargetLostReason }
+>;
+
 export type PresenceToBodyMessage =
   | PresenceMoveTo
   | PresenceExpress
   | PresenceSay
   | PresenceAttention
   | PresenceHydrate
-  | PresenceOutput;
+  | PresenceOutput
+  | PresenceTargetAcquired
+  | PresenceTargetMoved
+  | PresenceTargetLost;
 
 // --- to-soul: the body reporting what happened to it ---------------------------
 
@@ -196,6 +268,16 @@ export type PresenceDismissed = PresenceEnvelope<"dismissed", Record<never, neve
 /** User typed a message to the buddy through its on-body input box. */
 export type PresenceSaid = PresenceEnvelope<"said", { text: string }>;
 
+/**
+ * User dragged the buddy's visible frame head while it was wrapped around a native
+ * target. This is only a request: OS window movement is an effector routed through the
+ * soul/driver, never a body capability.
+ */
+export type PresenceTargetDragRequested = PresenceEnvelope<
+  "target_drag_requested",
+  { targetId: string; delta: { x: number; y: number } }
+>;
+
 export type PresenceToSoulMessage =
   | PresenceAttached
   | PresenceClicked
@@ -204,7 +286,8 @@ export type PresenceToSoulMessage =
   | PresenceDropped
   | PresenceSummoned
   | PresenceDismissed
-  | PresenceSaid;
+  | PresenceSaid
+  | PresenceTargetDragRequested;
 
 export type PresenceMessage = PresenceToBodyMessage | PresenceToSoulMessage;
 
@@ -217,6 +300,9 @@ export const PRESENCE_TO_BODY_KINDS: readonly PresenceToBodyMessage["kind"][] = 
   "attention",
   "hydrate",
   "output",
+  "target_acquired",
+  "target_moved",
+  "target_lost",
 ];
 
 export const PRESENCE_TO_SOUL_KINDS: readonly PresenceToSoulMessage["kind"][] = [
@@ -228,6 +314,7 @@ export const PRESENCE_TO_SOUL_KINDS: readonly PresenceToSoulMessage["kind"][] = 
   "summoned",
   "dismissed",
   "said",
+  "target_drag_requested",
 ];
 
 export function presenceDirection(kind: PresenceKind): PresenceDirection {
@@ -286,6 +373,35 @@ function isPosition(value: unknown): value is PresencePosition {
   }
 
   return false;
+}
+
+function isTargetBounds(value: unknown): value is TargetBounds {
+  return (
+    isObject(value) &&
+    isFiniteNumber(value.x) &&
+    isFiniteNumber(value.y) &&
+    isFiniteNumber(value.w) &&
+    isFiniteNumber(value.h) &&
+    isFiniteNumber(value.scaleFactor)
+  );
+}
+
+function isTargetLostReason(value: unknown): value is TargetLostReason {
+  return (
+    value === "closed" ||
+    value === "workspaceSwitched" ||
+    value === "minimized" ||
+    value === "trackingFailed"
+  );
+}
+
+function isPlatform(value: unknown): value is PresencePlatform {
+  return (
+    isObject(value) &&
+    typeof value.canTrackGeometry === "boolean" &&
+    typeof value.canInjectInput === "boolean" &&
+    typeof value.canClickThrough === "boolean"
+  );
 }
 
 function isFocus(value: unknown): value is PresenceFocus {
@@ -362,10 +478,22 @@ function isValidForKind(kind: PresenceKind, raw: Record<string, unknown>): boole
       return (
         (raw.position === undefined || isPosition(raw.position)) &&
         (raw.emotion === undefined || isEmotion(raw.emotion)) &&
-        (raw.speech === undefined || typeof raw.speech === "string")
+        (raw.speech === undefined || typeof raw.speech === "string") &&
+        (raw.platform === undefined || isPlatform(raw.platform))
       );
     case "output":
       return isValidOutputPayload(raw);
+    case "target_acquired":
+      return (
+        isNonEmptyString(raw.targetId) &&
+        typeof raw.title === "string" &&
+        typeof raw.appId === "string" &&
+        isTargetBounds(raw.bounds)
+      );
+    case "target_moved":
+      return isNonEmptyString(raw.targetId) && isTargetBounds(raw.bounds);
+    case "target_lost":
+      return isNonEmptyString(raw.targetId) && isTargetLostReason(raw.reason);
     case "attached":
       return (
         (raw.at === undefined || isPosition(raw.at)) &&
@@ -386,6 +514,13 @@ function isValidForKind(kind: PresenceKind, raw: Record<string, unknown>): boole
       return true;
     case "said":
       return typeof raw.text === "string" && raw.text.length > 0;
+    case "target_drag_requested":
+      return (
+        isNonEmptyString(raw.targetId) &&
+        isObject(raw.delta) &&
+        isFiniteNumber(raw.delta.x) &&
+        isFiniteNumber(raw.delta.y)
+      );
     default:
       return false;
   }
@@ -484,7 +619,12 @@ export const presence = {
   },
   hydrate(
     buddy: string,
-    snapshot: { position?: PresencePosition; emotion?: PresenceEmotion; speech?: string },
+    snapshot: {
+      position?: PresencePosition;
+      emotion?: PresenceEmotion;
+      speech?: string;
+      platform?: PresencePlatform;
+    },
     opts: EnvelopeOptions = {},
   ): PresenceHydrate {
     return envelope("hydrate", buddy, { ...snapshot }, opts) as PresenceHydrate;
@@ -501,6 +641,27 @@ export const presence = {
     opts: EnvelopeOptions = {},
   ): PresenceOutput {
     return envelope("output", buddy, { ...payload }, opts) as PresenceOutput;
+  },
+  targetAcquired(
+    buddy: string,
+    target: { targetId: string; title: string; appId: string; bounds: TargetBounds },
+    opts: EnvelopeOptions = {},
+  ): PresenceTargetAcquired {
+    return envelope("target_acquired", buddy, { ...target }, opts) as PresenceTargetAcquired;
+  },
+  targetMoved(
+    buddy: string,
+    target: { targetId: string; bounds: TargetBounds },
+    opts: EnvelopeOptions = {},
+  ): PresenceTargetMoved {
+    return envelope("target_moved", buddy, { ...target }, opts) as PresenceTargetMoved;
+  },
+  targetLost(
+    buddy: string,
+    target: { targetId: string; reason: TargetLostReason },
+    opts: EnvelopeOptions = {},
+  ): PresenceTargetLost {
+    return envelope("target_lost", buddy, { ...target }, opts) as PresenceTargetLost;
   },
   attached(
     buddy: string,
@@ -538,5 +699,12 @@ export const presence = {
   },
   said(buddy: string, text: string, opts: EnvelopeOptions = {}): PresenceSaid {
     return envelope("said", buddy, { text }, opts) as PresenceSaid;
+  },
+  targetDragRequested(
+    buddy: string,
+    target: { targetId: string; delta: { x: number; y: number } },
+    opts: EnvelopeOptions = {},
+  ): PresenceTargetDragRequested {
+    return envelope("target_drag_requested", buddy, { ...target }, opts) as PresenceTargetDragRequested;
   },
 };

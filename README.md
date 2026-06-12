@@ -120,4 +120,20 @@ npm run gateway:dev          # VS Code task: BB gateway
 npm run dev                  # browser preview  (VS Code task: BB browser preview)
 ```
 
+**Experimental pinned-window presence** on COSMIC (`presence-layer`): start the
+gateway, native body, and frame driver together. The driver tracks a native window
+matching `BB_TARGET` (default: `firefox`) and sends target lifecycle cues through the
+gateway. Right-click Hermes to pin/unpin; left-click the pinned head to open input;
+drag the pinned head to choose the attachment point that follows the window.
+
+```bash
+npm run gateway:dev
+cargo run --release --manifest-path desktop-body/Cargo.toml --bin bb-desktop-body
+cargo run --release --manifest-path desktop-body/Cargo.toml --bin bb-frame-driver
+# BB_TARGET=code cargo run --release --manifest-path desktop-body/Cargo.toml --bin bb-frame-driver
+```
+
+The target pin is presentation-only. The body does not read or control the target
+window; future screen actions must be soul effectors routed through Core Patrol.
+
 Governance ensures they are reliable. Playfulness ensures you'll love having them around.

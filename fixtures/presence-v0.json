@@ -55,7 +55,12 @@
       }
     },
     "emotion": "neutral",
-    "speech": "ready"
+    "speech": "ready",
+    "platform": {
+      "canTrackGeometry": true,
+      "canInjectInput": false,
+      "canClickThrough": true
+    }
   },
   "attached": {
     "protocol": "presence",
@@ -165,5 +170,58 @@
     "mediaType": "image/png",
     "caption": "a red bicycle",
     "dataBase64": "iVBORw0KGgo="
+  },
+  "target_acquired": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "target_acquired",
+    "buddy": "hermes",
+    "ts": 1014,
+    "targetId": "win-42",
+    "title": "Firefox",
+    "appId": "org.mozilla.firefox",
+    "bounds": {
+      "x": 320,
+      "y": 180,
+      "w": 1280,
+      "h": 720,
+      "scaleFactor": 2
+    }
+  },
+  "target_moved": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "target_moved",
+    "buddy": "hermes",
+    "ts": 1015,
+    "targetId": "win-42",
+    "bounds": {
+      "x": 320,
+      "y": 180,
+      "w": 1280,
+      "h": 720,
+      "scaleFactor": 2
+    }
+  },
+  "target_lost": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "target_lost",
+    "buddy": "hermes",
+    "ts": 1016,
+    "targetId": "win-42",
+    "reason": "closed"
+  },
+  "target_drag_requested": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "target_drag_requested",
+    "buddy": "hermes",
+    "ts": 1017,
+    "targetId": "win-42",
+    "delta": {
+      "x": 12,
+      "y": -4
+    }
   }
 }

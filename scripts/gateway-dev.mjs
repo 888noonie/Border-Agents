@@ -260,6 +260,8 @@ function stripImageMarkup(text) {
 
 const PRESENCE_PROTOCOL = "presence";
 const PRESENCE_VERSION = 0;
+const TO_BODY_RELAY_KINDS = new Set(["target_acquired", "target_moved", "target_lost"]);
+const TO_EFFECTOR_RELAY_KINDS = new Set(["target_drag_requested"]);
 
 function presenceEnvelope(kind, buddy, payload) {
   return JSON.stringify({
@@ -462,6 +464,16 @@ function handlePresenceInteraction(socket, message) {
       void handleUserText(buddy, text, presenceEmit(socket, buddy));
       return;
     }
+    case "target_drag_requested":
+      // Moving a native OS window is a governed effector. The body only reports the
+      // request; a later driver/soul path decides whether and how to move the window.
+      log("target move requested", {
+        buddy,
+        targetId: message.targetId,
+        delta: message.delta,
+      });
+      socket.send(presenceEnvelope("say", buddy, { text: "Window move request noted." }));
+      return;
     default:
       return;
   }
@@ -563,12 +575,27 @@ server.on("error", (error) => {
 });
 
 const wss = new WebSocketServer({ server, path: PATH });
+const clients = new Set();
+
+function relayPresenceCue(sender, message) {
+  const json = JSON.stringify(message);
+  let count = 0;
+  for (const client of clients) {
+    if (client === sender || client.readyState !== client.OPEN) {
+      continue;
+    }
+    client.send(json);
+    count += 1;
+  }
+  log("relayed presence cue", { kind: message.kind, buddy: message.buddy, clients: count });
+}
 
 wss.on("error", (error) => {
   logError("WebSocket server error", error);
 });
 
 wss.on("connection", (socket, request) => {
+  clients.add(socket);
   const remote = request.socket.remoteAddress ?? "unknown";
   log(`client connected from ${remote}`);
 
@@ -577,6 +604,7 @@ wss.on("connection", (socket, request) => {
   });
 
   socket.on("close", () => {
+    clients.delete(socket);
     log(`client disconnected from ${remote}`);
   });
 
@@ -594,6 +622,13 @@ wss.on("connection", (socket, request) => {
     log("message", { source, ...message });
 
     if (message?.protocol === PRESENCE_PROTOCOL && message?.kind && message?.buddy) {
+      if (TO_BODY_RELAY_KINDS.has(message.kind)) {
+        relayPresenceCue(socket, message);
+        return;
+      }
+      if (TO_EFFECTOR_RELAY_KINDS.has(message.kind)) {
+        relayPresenceCue(socket, message);
+      }
       if (BB_SOUL === "wizard") {
         wizardHostAct0(socket, message);
       } else {

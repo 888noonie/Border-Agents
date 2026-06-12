@@ -249,6 +249,17 @@ pub fn said_json(buddy: &str, text: &str) -> String {
     to_soul("said", buddy, json!({ "text": text }))
 }
 
+/// The user dragged the visible frame head while the buddy was framing a native window.
+/// This is only a request: moving the OS window is an effector owned by the soul/driver,
+/// never by the body.
+pub fn target_drag_requested_json(buddy: &str, target_id: &str, dx: f64, dy: f64) -> String {
+    to_soul(
+        "target_drag_requested",
+        buddy,
+        json!({ "targetId": target_id, "delta": { "x": dx, "y": dy } }),
+    )
+}
+
 /// Set a read timeout on the underlying TCP stream (plain ws:// only).
 fn set_read_timeout(socket: &WebSocket<MaybeTlsStream<TcpStream>>, dur: Option<Duration>) {
     match socket.get_ref() {
@@ -290,6 +301,30 @@ pub enum Position {
     Free { x: f64, y: f64 },
 }
 
+/// Bounds of a tracked native OS window, in logical pixels in one global space, with
+/// the `scale_factor` that produced them. The platform driver (cosmic-toplevel-info
+/// here, a Win32 hook elsewhere) converts into this canonical space before emitting, so
+/// the body does the final device-pixel math the same way regardless of host OS.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TargetBounds {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    pub scale_factor: f64,
+}
+
+/// Why the body lost its grip on a target. A closed set, mirroring the TS union, so the
+/// renderer can branch on it (release gracefully on `Closed` vs. look around on
+/// `TrackingFailed`); an unknown reason string drops the whole cue rather than guessing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetLostReason {
+    Closed,
+    WorkspaceSwitched,
+    Minimized,
+    TrackingFailed,
+}
+
 /// An inbound presentation cue the body applies to itself.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Cue {
@@ -311,6 +346,14 @@ pub enum Cue {
         media_type: Option<String>,
         data_base64: Option<String>,
     },
+    /// Border-target tracking (the "Morph Frame" seam): a platform driver tells the body
+    /// where a native OS window is so it can wrap its hollow torso around it. Split three
+    /// ways so the renderer binds distinct behavior to the lifecycle; every cue carries
+    /// `target_id`, and `TargetAcquired` carries initial `bounds` so there is no
+    /// empty-handed gap before the first move.
+    TargetAcquired { target_id: String, title: String, app_id: String, bounds: TargetBounds },
+    TargetMoved { target_id: String, bounds: TargetBounds },
+    TargetLost { target_id: String, reason: TargetLostReason },
 }
 
 /// A parsed to-body message: which buddy it concerns, and the cue to apply.
@@ -352,6 +395,34 @@ fn parse_output(v: &Value) -> Option<Cue> {
     }
 
     Some(Cue::Output { surface, text, caption, media_type, data_base64 })
+}
+
+/// A required, non-empty string field (mirrors the TS `isNonEmptyString` guard).
+fn nonempty(value: Option<&Value>) -> Option<String> {
+    let s = value?.as_str()?;
+    (!s.is_empty()).then(|| s.to_string())
+}
+
+/// Parse a `TargetBounds`. Every field is required and must be finite — `as_f64`
+/// rejects non-numbers, mirroring the TS `isTargetBounds` guard.
+fn parse_bounds(value: &Value) -> Option<TargetBounds> {
+    Some(TargetBounds {
+        x: value.get("x")?.as_f64()?,
+        y: value.get("y")?.as_f64()?,
+        w: value.get("w")?.as_f64()?,
+        h: value.get("h")?.as_f64()?,
+        scale_factor: value.get("scaleFactor")?.as_f64()?,
+    })
+}
+
+fn parse_lost_reason(value: &str) -> Option<TargetLostReason> {
+    match value {
+        "closed" => Some(TargetLostReason::Closed),
+        "workspaceSwitched" => Some(TargetLostReason::WorkspaceSwitched),
+        "minimized" => Some(TargetLostReason::Minimized),
+        "trackingFailed" => Some(TargetLostReason::TrackingFailed),
+        _ => None,
+    }
 }
 
 fn parse_position(value: &Value) -> Option<Position> {
@@ -408,6 +479,20 @@ pub fn parse_to_body(text: &str) -> Option<ToBody> {
             speech: v.get("speech").and_then(|s| s.as_str()).map(String::from),
         },
         "output" => parse_output(&v)?,
+        "target_acquired" => Cue::TargetAcquired {
+            target_id: nonempty(v.get("targetId"))?,
+            title: v.get("title")?.as_str()?.to_string(),
+            app_id: v.get("appId")?.as_str()?.to_string(),
+            bounds: parse_bounds(v.get("bounds")?)?,
+        },
+        "target_moved" => Cue::TargetMoved {
+            target_id: nonempty(v.get("targetId"))?,
+            bounds: parse_bounds(v.get("bounds")?)?,
+        },
+        "target_lost" => Cue::TargetLost {
+            target_id: nonempty(v.get("targetId"))?,
+            reason: parse_lost_reason(v.get("reason")?.as_str()?)?,
+        },
         // attention (reserved) and all to-soul kinds are not body cues.
         _ => return None,
     };
@@ -489,6 +574,39 @@ mod tests {
             }
             other => panic!("expected output, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn parses_target_lifecycle_fixtures() {
+        let acquired = parse_to_body(&fixture("target_acquired")).unwrap();
+        match acquired.cue {
+            Cue::TargetAcquired { target_id, title, app_id, bounds } => {
+                assert_eq!(target_id, "win-42");
+                assert_eq!(title, "Firefox");
+                assert_eq!(app_id, "org.mozilla.firefox");
+                assert_eq!(bounds, TargetBounds { x: 320.0, y: 180.0, w: 1280.0, h: 720.0, scale_factor: 2.0 });
+            }
+            other => panic!("expected target_acquired, got {other:?}"),
+        }
+
+        let moved = parse_to_body(&fixture("target_moved")).unwrap();
+        assert!(matches!(moved.cue, Cue::TargetMoved { ref target_id, .. } if target_id == "win-42"));
+
+        let lost = parse_to_body(&fixture("target_lost")).unwrap();
+        assert_eq!(
+            lost.cue,
+            Cue::TargetLost { target_id: "win-42".into(), reason: TargetLostReason::Closed }
+        );
+    }
+
+    #[test]
+    fn target_validation_mirrors_ts() {
+        // Empty targetId is dropped.
+        assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"target_moved","buddy":"h","ts":1,"targetId":"","bounds":{"x":0,"y":0,"w":1,"h":1,"scaleFactor":1}}"#).is_none());
+        // Bounds missing a field is dropped.
+        assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"target_moved","buddy":"h","ts":1,"targetId":"w","bounds":{"x":0,"y":0,"w":1,"h":1}}"#).is_none());
+        // Unknown lost reason is dropped (closed union, not a free string).
+        assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"target_lost","buddy":"h","ts":1,"targetId":"w","reason":"vanished"}"#).is_none());
     }
 
     #[test]
@@ -580,6 +698,14 @@ mod tests {
         assert_eq!(s["kind"], "said");
         assert_eq!(s["buddy"], "hermes");
         assert_eq!(s["text"], "hello buddy");
+
+        let drag: Value =
+            serde_json::from_str(&target_drag_requested_json("hermes", "win-42", 12.0, -4.0))
+                .unwrap();
+        assert_eq!(drag["kind"], "target_drag_requested");
+        assert_eq!(drag["targetId"], "win-42");
+        assert_eq!(drag["delta"]["x"], 12.0);
+        assert_eq!(drag["delta"]["y"], -4.0);
     }
 
     #[test]

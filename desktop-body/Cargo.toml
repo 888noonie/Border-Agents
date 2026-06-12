@@ -8,13 +8,24 @@ description = "Border Agents desktop presence body — wlr-layer-shell spike (bu
 name = "bb-desktop-body"
 path = "src/main.rs"
 
+# The border-target geometry driver (build-order "step b"): a separate process that
+# speaks the presence protocol, tracking a native COSMIC window via cosmic-toplevel-info
+# and emitting target_* envelopes. Kept a distinct binary so the seam stays wire-level —
+# a Windows driver is just a different process emitting the same envelopes.
+[[bin]]
+name = "bb-frame-driver"
+path = "src/bin/frame_driver.rs"
+
 [dependencies]
 smithay-client-toolkit = "0.19"
 calloop = "0.13"
 calloop-wayland-source = "0.3"
 tiny-skia = "0.11"
 fontdue = "0.9"
-wayland-protocols = { version = "0.32", features = ["client", "unstable"] }
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "unstable", "staging"] }
+# COSMIC toplevel-info: the geometry source the frame driver tracks (cosmic-comp only).
+cosmic-protocols = { version = "0.2", default-features = false, features = ["client"] }
 # Presence WebSocket client (Step 4). Blocking, no async runtime; ws:// only, so no
 # TLS features are pulled in.
 tungstenite = { version = "0.24", default-features = false, features = ["handshake"] }

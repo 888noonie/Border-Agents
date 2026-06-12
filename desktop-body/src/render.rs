@@ -25,6 +25,14 @@ use tiny_skia::{
 // --- figure geometry -------------------------------------------------------------
 
 pub const SURFACE_W: u32 = 560;
+pub const PINNED_SURFACE_W: u32 = 420;
+pub const PINNED_SURFACE_H: u32 = 176;
+const FRAME_SIDE_PAD: f32 = 92.0;
+const FRAME_TOP_PAD: f32 = 118.0;
+const FRAME_BOTTOM_PAD: f32 = 72.0;
+const FRAME_MIN_TARGET_W: f32 = 240.0;
+const FRAME_MIN_TARGET_H: f32 = 160.0;
+const FRAME_RAIL: f32 = 24.0;
 /// Figure centreline. UI (bubble/input) flips to either side of this.
 pub const FIG_CX: f32 = 280.0;
 pub const HEAD_CY: f32 = 58.0;
@@ -53,6 +61,8 @@ const LEG_W: f32 = 15.0;
 // --- UI geometry -----------------------------------------------------------------
 
 const BUBBLE_W: f32 = 172.0;
+pub const PINNED_BUBBLE_W_MIN: f32 = 188.0;
+pub const PINNED_BUBBLE_W_MAX: f32 = 292.0;
 const BUBBLE_Y: f32 = 8.0;
 const BUBBLE_MAX_LINES: usize = 6;
 const INPUT_Y: f32 = 196.0;
@@ -172,6 +182,134 @@ impl Layout {
         Rect { x, y, w: size, h: size }
     }
 
+}
+
+#[derive(Clone, Copy)]
+pub struct FrameTargetView {
+    pub w: f32,
+    pub h: f32,
+}
+
+#[derive(Clone, Copy)]
+pub struct FrameLayout {
+    pub target: Rect,
+    pub surface_w: u32,
+    pub surface_h: u32,
+}
+
+#[derive(Clone, Copy)]
+pub struct PinnedLayout {
+    pub bubble_w: f32,
+}
+
+impl PinnedLayout {
+    pub fn new(bubble_w: f32) -> PinnedLayout {
+        PinnedLayout { bubble_w: bubble_w.clamp(PINNED_BUBBLE_W_MIN, PINNED_BUBBLE_W_MAX) }
+    }
+
+    pub fn head_rect(&self) -> Rect {
+        Rect { x: 10.0, y: 14.0, w: HEAD_R * 2.0, h: HEAD_R * 2.0 }
+    }
+
+    pub fn bubble_rect(&self) -> Rect {
+        Rect { x: 106.0, y: 12.0, w: self.bubble_w, h: 62.0 }
+    }
+
+    pub fn input_rect(&self, lines: usize) -> Rect {
+        let lines = lines.clamp(1, INPUT_MAX_LINES) as f32;
+        Rect { x: 106.0, y: 88.0, w: self.bubble_w, h: 16.0 + lines * LINE_H }
+    }
+
+    pub fn input_region_rect(&self) -> Rect {
+        self.input_rect(INPUT_MAX_LINES)
+    }
+
+    pub fn contains_head(&self, x: f64, y: f64) -> bool {
+        self.head_rect().contains(x, y)
+    }
+}
+
+impl FrameLayout {
+    pub fn new(target: FrameTargetView) -> FrameLayout {
+        let target_w = target.w.max(FRAME_MIN_TARGET_W);
+        let target_h = target.h.max(FRAME_MIN_TARGET_H);
+        let surface_w = (target_w + FRAME_SIDE_PAD * 2.0).ceil() as u32;
+        let surface_h = (target_h + FRAME_TOP_PAD + FRAME_BOTTOM_PAD).ceil() as u32;
+        FrameLayout {
+            target: Rect {
+                x: FRAME_SIDE_PAD,
+                y: FRAME_TOP_PAD,
+                w: target_w,
+                h: target_h,
+            },
+            surface_w,
+            surface_h,
+        }
+    }
+
+    pub fn head_rect(&self) -> Rect {
+        Rect {
+            x: self.target.x - 50.0,
+            y: self.target.y - 96.0,
+            w: HEAD_R * 2.0,
+            h: HEAD_R * 2.0,
+        }
+    }
+
+    pub fn top_rail_rect(&self) -> Rect {
+        Rect {
+            x: self.target.x - FRAME_RAIL,
+            y: self.target.y - FRAME_RAIL,
+            w: self.target.w + FRAME_RAIL * 2.0,
+            h: FRAME_RAIL,
+        }
+    }
+
+    pub fn left_rail_rect(&self) -> Rect {
+        Rect {
+            x: self.target.x - FRAME_RAIL,
+            y: self.target.y,
+            w: FRAME_RAIL,
+            h: self.target.h,
+        }
+    }
+
+    pub fn right_rail_rect(&self) -> Rect {
+        Rect {
+            x: self.target.x + self.target.w,
+            y: self.target.y,
+            w: FRAME_RAIL,
+            h: self.target.h,
+        }
+    }
+
+    pub fn bottom_rail_rect(&self) -> Rect {
+        Rect {
+            x: self.target.x - FRAME_RAIL,
+            y: self.target.y + self.target.h,
+            w: self.target.w + FRAME_RAIL * 2.0,
+            h: FRAME_RAIL + 6.0,
+        }
+    }
+
+    pub fn visible_rects(&self) -> [Rect; 5] {
+        [
+            self.head_rect(),
+            self.top_rail_rect(),
+            self.left_rail_rect(),
+            self.right_rail_rect(),
+            self.bottom_rail_rect(),
+        ]
+    }
+
+    pub fn contains_head(&self, px: f64, py: f64) -> bool {
+        let head = self.head_rect();
+        let cx = head.x + head.w / 2.0;
+        let cy = head.y + head.h / 2.0;
+        let dx = px as f32 - cx;
+        let dy = py as f32 - cy;
+        dx * dx + dy * dy <= HEAD_R * HEAD_R
+    }
 }
 
 // --- tucked bump (minimized, parked flush against a screen edge) -------------------
@@ -470,6 +608,8 @@ pub struct BodyView<'a> {
     pub input_text: &'a str,
     pub input_focused: bool,
     pub layout: Layout,
+    pub pinned: Option<PinnedLayout>,
+    pub frame: Option<FrameLayout>,
     /// Clay colour (BB_COLOR) — every shade on the figure derives from this.
     pub color: [u8; 3],
 }
@@ -506,6 +646,46 @@ impl Sprite {
         let face = view.emotion.face();
         let eye_open = if blinking { 0.10 } else { face.eye_open };
         let pose = FigurePose::idle(view.t);
+
+        if let Some(pinned) = view.pinned {
+            draw_pinned_view(
+                &mut pixmap,
+                pinned,
+                view.color,
+                bob,
+                eye_open,
+                face.pupil_dy,
+                &face.mouth,
+            );
+            if let Some(font) = &self.font {
+                if let Some(text) = view.speech {
+                    draw_pinned_bubble(&mut pixmap, font, pinned, text);
+                }
+                if view.chat_open {
+                    draw_pinned_input(
+                        &mut pixmap,
+                        font,
+                        pinned,
+                        view.input_text,
+                        view.input_focused,
+                        view.t,
+                    );
+                }
+            }
+            blit_premultiplied_bgra(pixmap.data(), canvas);
+            return;
+        }
+
+        if let Some(frame) = view.frame {
+            draw_frame_view(&mut pixmap, frame, view.color, bob, eye_open, face.pupil_dy, &face.mouth);
+            if let Some(text) = view.speech {
+                if let Some(font) = &self.font {
+                    draw_frame_label(&mut pixmap, font, frame, text);
+                }
+            }
+            blit_premultiplied_bgra(pixmap.data(), canvas);
+            return;
+        }
 
         draw_figure(&mut pixmap, &view.layout, view.color, bob, &pose);
         if let Some(font) = &self.font {
@@ -650,6 +830,303 @@ fn draw_figure(pixmap: &mut Pixmap, layout: &Layout, color: [u8; 3], bob: f32, p
     }
 
     draw_clay_texture(pixmap, layout, color, bob);
+}
+
+fn draw_frame_view(
+    pixmap: &mut Pixmap,
+    frame: FrameLayout,
+    color: [u8; 3],
+    bob: f32,
+    eye_open: f32,
+    pupil_dy: f32,
+    mouth: &Mouth,
+) {
+    let target = frame.target;
+    let rail = rgb(color);
+    let rail_shadow = solid(Color::from_rgba8(0, 0, 0, 58));
+    let rail_highlight = solid(Color::from_rgba8(255, 255, 255, 36));
+
+    for rect in [
+        frame.top_rail_rect(),
+        frame.left_rail_rect(),
+        frame.right_rail_rect(),
+        frame.bottom_rail_rect(),
+    ] {
+        draw_round_rect(pixmap, rect, rail);
+        if let Some(path) = round_rect_path(rect, 13.0) {
+            let mut stroke = Stroke::default();
+            stroke.width = 2.0;
+            pixmap.stroke_path(&path, &rail_shadow, &stroke, Transform::identity(), None);
+        }
+    }
+
+    let mut highlight = Stroke::default();
+    highlight.width = 5.0;
+    highlight.line_cap = tiny_skia::LineCap::Round;
+    for (x1, y1, x2, y2) in [
+        (target.x - 6.0, target.y - FRAME_RAIL + 7.0, target.x + target.w * 0.72, target.y - FRAME_RAIL + 7.0),
+        (target.x - FRAME_RAIL + 7.0, target.y + 20.0, target.x - FRAME_RAIL + 7.0, target.y + target.h * 0.70),
+    ] {
+        let mut pb = PathBuilder::new();
+        pb.move_to(x1, y1);
+        pb.line_to(x2, y2);
+        if let Some(path) = pb.finish() {
+            pixmap.stroke_path(&path, &rail_highlight, &highlight, Transform::identity(), None);
+        }
+    }
+
+    // Gentle corner blobs make the rails read as one pliable body, not four boxes.
+    for (cx, cy) in [
+        (target.x - FRAME_RAIL / 2.0, target.y - FRAME_RAIL / 2.0),
+        (target.x + target.w + FRAME_RAIL / 2.0, target.y - FRAME_RAIL / 2.0),
+        (target.x - FRAME_RAIL / 2.0, target.y + target.h + FRAME_RAIL / 2.0),
+        (target.x + target.w + FRAME_RAIL / 2.0, target.y + target.h + FRAME_RAIL / 2.0),
+    ] {
+        if let Some(blob) = PathBuilder::from_circle(cx, cy, FRAME_RAIL * 0.72) {
+            pixmap.fill_path(&blob, &solid(rail), FillRule::Winding, Transform::identity(), None);
+        }
+    }
+
+    let head = frame.head_rect();
+    let hx = head.x + head.w / 2.0;
+    let hy = head.y + head.h / 2.0 + bob;
+    let mut head_paint = Paint::default();
+    head_paint.anti_alias = true;
+    head_paint.shader = tiny_skia::LinearGradient::new(
+        tiny_skia::Point::from_xy(hx, hy - HEAD_R),
+        tiny_skia::Point::from_xy(hx, hy + HEAD_R),
+        vec![
+            tiny_skia::GradientStop::new(0.0, rgb(lighten(color, 0.22))),
+            tiny_skia::GradientStop::new(0.55, rgb(color)),
+            tiny_skia::GradientStop::new(1.0, rgb(shade(color, 0.72))),
+        ],
+        tiny_skia::SpreadMode::Pad,
+        Transform::identity(),
+    )
+    .unwrap_or_else(|| Shader::SolidColor(rgb(color)));
+    if let Some(circle) = PathBuilder::from_circle(hx, hy, HEAD_R) {
+        pixmap.fill_path(&circle, &head_paint, FillRule::Winding, Transform::identity(), None);
+    }
+
+    draw_frame_face(pixmap, hx, hy, eye_open, pupil_dy, mouth);
+    draw_frame_hands_and_feet(pixmap, frame, color);
+
+    // Tiny smudges on the rails so the stretched frame still feels handmade.
+    let smudge = solid(Color::from_rgba8(255, 255, 255, 24));
+    for i in 0..8 {
+        let x = target.x + 28.0 + i as f32 * (target.w / 8.5);
+        if let Some(e) = ellipse_path(x, target.y + target.h + 12.0, 10.0, 3.0) {
+            pixmap.fill_path(&e, &smudge, FillRule::Winding, Transform::identity(), None);
+        }
+    }
+}
+
+fn draw_pinned_view(
+    pixmap: &mut Pixmap,
+    pinned: PinnedLayout,
+    color: [u8; 3],
+    bob: f32,
+    eye_open: f32,
+    pupil_dy: f32,
+    mouth: &Mouth,
+) {
+    let head = pinned.head_rect();
+    let hx = head.x + head.w / 2.0;
+    let hy = head.y + head.h / 2.0 + bob;
+    draw_clay_head_at(pixmap, hx, hy, color);
+    draw_frame_face(pixmap, hx, hy, eye_open, pupil_dy, mouth);
+
+    let shine = solid(Color::from_rgba8(255, 255, 255, 34));
+    if let Some(e) = ellipse_path(hx - 13.0, hy - 18.0, 15.0, 9.0) {
+        pixmap.fill_path(&e, &shine, FillRule::Winding, Transform::identity(), None);
+    }
+}
+
+fn draw_clay_head_at(pixmap: &mut Pixmap, cx: f32, cy: f32, color: [u8; 3]) {
+    let mut head_paint = Paint::default();
+    head_paint.anti_alias = true;
+    head_paint.shader = tiny_skia::LinearGradient::new(
+        tiny_skia::Point::from_xy(cx, cy - HEAD_R),
+        tiny_skia::Point::from_xy(cx, cy + HEAD_R),
+        vec![
+            tiny_skia::GradientStop::new(0.0, rgb(lighten(color, 0.22))),
+            tiny_skia::GradientStop::new(0.55, rgb(color)),
+            tiny_skia::GradientStop::new(1.0, rgb(shade(color, 0.72))),
+        ],
+        tiny_skia::SpreadMode::Pad,
+        Transform::identity(),
+    )
+    .unwrap_or_else(|| Shader::SolidColor(rgb(color)));
+    if let Some(circle) = PathBuilder::from_circle(cx, cy, HEAD_R) {
+        pixmap.fill_path(&circle, &head_paint, FillRule::Winding, Transform::identity(), None);
+    }
+}
+
+fn draw_frame_face(
+    pixmap: &mut Pixmap,
+    cx: f32,
+    cy: f32,
+    eye_open: f32,
+    pupil_dy: f32,
+    mouth: &Mouth,
+) {
+    let white = solid(Color::from_rgba8(250, 250, 248, 255));
+    let dark = solid(Color::from_rgba8(20, 18, 16, 255));
+    for dx in [-14.0_f32, 14.0] {
+        if let Some(eye) = ellipse_path(cx + dx, cy - 8.0, 12.0, 12.0 * eye_open.max(0.08)) {
+            pixmap.fill_path(&eye, &white, FillRule::Winding, Transform::identity(), None);
+        }
+        if let Some(pupil) = PathBuilder::from_circle(cx + dx + 2.0, cy - 8.0 + pupil_dy, 4.0) {
+            pixmap.fill_path(&pupil, &dark, FillRule::Winding, Transform::identity(), None);
+        }
+    }
+
+    let my = cy + 18.0;
+    match mouth {
+        Mouth::Smile(amount) => {
+            let mut pb = PathBuilder::new();
+            pb.move_to(cx - 15.0, my);
+            pb.quad_to(cx, my + 16.0 * amount, cx + 15.0, my);
+            if let Some(path) = pb.finish() {
+                let mut stroke = Stroke::default();
+                stroke.width = 4.0;
+                stroke.line_cap = tiny_skia::LineCap::Round;
+                pixmap.stroke_path(&path, &dark, &stroke, Transform::identity(), None);
+            }
+        }
+        Mouth::Flat => {
+            let mut pb = PathBuilder::new();
+            pb.move_to(cx - 13.0, my);
+            pb.line_to(cx + 13.0, my);
+            if let Some(path) = pb.finish() {
+                let mut stroke = Stroke::default();
+                stroke.width = 4.0;
+                stroke.line_cap = tiny_skia::LineCap::Round;
+                pixmap.stroke_path(&path, &dark, &stroke, Transform::identity(), None);
+            }
+        }
+        Mouth::Spec(spec) => draw_mouth_spec(pixmap, cx, my + 4.0, spec),
+    }
+}
+
+fn draw_pinned_bubble(pixmap: &mut Pixmap, font: &Font, pinned: PinnedLayout, text: &str) {
+    let rect = pinned.bubble_rect();
+    draw_round_rect(pixmap, rect, Color::from_rgba8(247, 251, 255, 238));
+    if let Some(path) = round_rect_path(rect, 14.0) {
+        let mut stroke = Stroke::default();
+        stroke.width = 1.0;
+        pixmap.stroke_path(&path, &solid(Color::from_rgba8(0, 0, 0, 120)), &stroke, Transform::identity(), None);
+    }
+    let tail = {
+        let mut pb = PathBuilder::new();
+        pb.move_to(rect.x + 3.0, rect.y + 28.0);
+        pb.line_to(rect.x - 18.0, rect.y + 36.0);
+        pb.line_to(rect.x + 7.0, rect.y + 43.0);
+        pb.close();
+        pb.finish()
+    };
+    if let Some(path) = tail {
+        pixmap.fill_path(&path, &solid(Color::from_rgba8(247, 251, 255, 238)), FillRule::Winding, Transform::identity(), None);
+    }
+
+    let lines = wrap(font, text, 14.0, rect.w - 20.0, 2);
+    let mut y = rect.y + 20.0;
+    for line in lines {
+        draw_line(pixmap, font, &line, rect.x + 10.0, y, 14.0, [16, 24, 44]);
+        y += 17.0;
+    }
+}
+
+fn draw_pinned_input(
+    pixmap: &mut Pixmap,
+    font: &Font,
+    pinned: PinnedLayout,
+    text: &str,
+    focused: bool,
+    t: f32,
+) {
+    let all = wrap(font, text, TEXT_PX, pinned.input_region_rect().w - 22.0, usize::MAX);
+    let start = all.len().saturating_sub(INPUT_MAX_LINES);
+    let shown: &[String] = &all[start..];
+    let rect = pinned.input_rect(shown.len().max(1));
+    draw_round_rect(pixmap, rect, Color::from_rgba8(255, 255, 255, 236));
+    if let Some(path) = round_rect_path(rect, 13.0) {
+        let mut stroke = Stroke::default();
+        stroke.width = if focused { 2.0 } else { 1.0 };
+        let c = if focused {
+            Color::from_rgba8(56, 188, 214, 230)
+        } else {
+            Color::from_rgba8(0, 0, 0, 100)
+        };
+        pixmap.stroke_path(&path, &solid(c), &stroke, Transform::identity(), None);
+    }
+
+    let placeholder;
+    let wrapped: &[String] = if text.is_empty() {
+        placeholder = vec!["Ask Hermes...".to_string()];
+        &placeholder
+    } else {
+        shown
+    };
+    let color = if text.is_empty() { [92, 98, 112] } else { [18, 28, 46] };
+    let mut y = rect.y + 22.0;
+    for line in wrapped.iter() {
+        draw_line(pixmap, font, line, rect.x + 12.0, y, TEXT_PX, color);
+        y += LINE_H;
+    }
+    if focused && (t * 2.0).fract() < 0.55 {
+        let last = wrapped.last().map(String::as_str).unwrap_or("");
+        let caret_x = (rect.x + 12.0 + measure(font, last, TEXT_PX)).min(rect.x + rect.w - 13.0);
+        let caret_y = rect.y + 10.0 + (wrapped.len().saturating_sub(1) as f32 * LINE_H);
+        let mut pb = PathBuilder::new();
+        pb.move_to(caret_x, caret_y);
+        pb.line_to(caret_x, caret_y + LINE_H);
+        if let Some(path) = pb.finish() {
+            let mut stroke = Stroke::default();
+            stroke.width = 2.0;
+            pixmap.stroke_path(&path, &solid(Color::from_rgba8(18, 28, 46, 230)), &stroke, Transform::identity(), None);
+        }
+    }
+}
+
+fn draw_frame_hands_and_feet(pixmap: &mut Pixmap, frame: FrameLayout, color: [u8; 3]) {
+    let target = frame.target;
+    let limb = solid(rgb(shade(color, 0.94)));
+    for (x, y) in [
+        (target.x - FRAME_RAIL - 7.0, target.y + target.h * 0.38),
+        (target.x + target.w + FRAME_RAIL + 7.0, target.y + target.h * 0.38),
+    ] {
+        if let Some(hand) = PathBuilder::from_circle(x, y, HAND_R + 2.0) {
+            pixmap.fill_path(&hand, &limb, FillRule::Winding, Transform::identity(), None);
+        }
+    }
+    for x in [target.x + target.w * 0.30, target.x + target.w * 0.70] {
+        if let Some(foot) = ellipse_path(x, target.y + target.h + FRAME_RAIL + 13.0, 24.0, 8.0) {
+            pixmap.fill_path(&foot, &limb, FillRule::Winding, Transform::identity(), None);
+        }
+    }
+}
+
+fn draw_frame_label(pixmap: &mut Pixmap, font: &Font, frame: FrameLayout, text: &str) {
+    let max = frame.target.w.min(360.0).max(180.0);
+    let rect = Rect {
+        x: frame.target.x + 14.0,
+        y: frame.target.y - 78.0,
+        w: max,
+        h: 48.0,
+    };
+    draw_round_rect(pixmap, rect, Color::from_rgba8(247, 251, 255, 238));
+    if let Some(path) = round_rect_path(rect, 14.0) {
+        let mut stroke = Stroke::default();
+        stroke.width = 1.0;
+        pixmap.stroke_path(&path, &solid(Color::from_rgba8(0, 0, 0, 130)), &stroke, Transform::identity(), None);
+    }
+    let lines = wrap(font, text, 14.0, rect.w - 20.0, 2);
+    let mut y = rect.y + 19.0;
+    for line in lines {
+        draw_line(pixmap, font, &line, rect.x + 10.0, y, 14.0, [16, 24, 44]);
+        y += 17.0;
+    }
 }
 
 /// Texture bonus: subtle thumb-smudge marks so the figure reads as worked clay,
@@ -1658,6 +2135,66 @@ mod tests {
         assert!(rect.w > 0.0);
         assert!(rect.h > 0.0);
         assert!(point_in_bump(BumpEdge::Left, 40, 40, 1.0, 20.0));
+    }
+
+    #[test]
+    fn frame_layout_keeps_visible_regions_outside_target_hole() {
+        let frame = FrameLayout::new(FrameTargetView { w: 1280.0, h: 720.0 });
+
+        assert_eq!(frame.target.x, FRAME_SIDE_PAD);
+        assert_eq!(frame.target.y, FRAME_TOP_PAD);
+        assert!(frame.surface_w as f32 > frame.target.x + frame.target.w);
+        assert!(frame.surface_h as f32 > frame.target.y + frame.target.h);
+
+        let target_center = (
+            frame.target.x as f64 + frame.target.w as f64 / 2.0,
+            frame.target.y as f64 + frame.target.h as f64 / 2.0,
+        );
+        assert!(!frame.visible_rects().iter().any(|rect| rect.contains(target_center.0, target_center.1)));
+        assert!(frame.contains_head(
+            (frame.head_rect().x + frame.head_rect().w / 2.0) as f64,
+            (frame.head_rect().y + frame.head_rect().h / 2.0) as f64,
+        ));
+    }
+
+    #[test]
+    fn frame_render_leaves_target_center_transparent() {
+        let frame = FrameLayout::new(FrameTargetView { w: 640.0, h: 360.0 });
+        let mut canvas = vec![0_u8; (frame.surface_w * frame.surface_h * 4) as usize];
+        let sprite = Sprite::new();
+        let view = BodyView {
+            t: 0.0,
+            emotion: Emotion::Happy,
+            speech: Some("Framing Firefox."),
+            torso_output: TorsoOutput::Session(SessionCard {
+                buddy: "hermes",
+                provider: "echo",
+                model: "not configured",
+                gateway: "ws://127.0.0.1:17387/border-buddies",
+                status: "Linked",
+                note: "Idle",
+            }),
+            chat_open: false,
+            tucked: None,
+            input_text: "",
+            input_focused: false,
+            layout: Layout::initial(),
+            pinned: None,
+            frame: Some(frame),
+            color: CLAY_DEFAULT,
+        };
+
+        sprite.paint(&mut canvas, frame.surface_w, frame.surface_h, &view);
+
+        let center_x = (frame.target.x + frame.target.w / 2.0) as u32;
+        let center_y = (frame.target.y + frame.target.h / 2.0) as u32;
+        let center_idx = ((center_y * frame.surface_w + center_x) * 4 + 3) as usize;
+        assert_eq!(canvas[center_idx], 0, "target center must remain transparent");
+
+        let rail_x = (frame.target.x + 12.0) as u32;
+        let rail_y = (frame.target.y - FRAME_RAIL / 2.0) as u32;
+        let rail_idx = ((rail_y * frame.surface_w + rail_x) * 4 + 3) as usize;
+        assert!(canvas[rail_idx] > 0, "top rail should render opaque pixels");
     }
 
     #[test]

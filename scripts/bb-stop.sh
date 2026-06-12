@@ -22,8 +22,9 @@ process_pids="$(
 
 # Native desktop presence body — matched by exact name so we don't catch wrappers.
 body_pids="$(pgrep -x 'bb-desktop-body' 2>/dev/null | sort -u || true)"
+frame_driver_pids="$(pgrep -x 'bb-frame-driver' 2>/dev/null | sort -u || true)"
 
-pids="$(printf '%s\n%s\n%s\n%s\n' "$port_pids" "$gateway_pids" "$process_pids" "$body_pids" | awk 'NF' | sort -u)"
+pids="$(printf '%s\n%s\n%s\n%s\n%s\n' "$port_pids" "$gateway_pids" "$process_pids" "$body_pids" "$frame_driver_pids" | awk 'NF' | sort -u)"
 
 if [ -z "$pids" ]; then
   echo "No Border Buddies desktop, gateway, or dev-server processes found."

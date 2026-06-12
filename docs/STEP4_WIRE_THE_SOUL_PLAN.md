@@ -1,7 +1,9 @@
 # Step 4 — Wire the Soul: implementation plan
 
-**Status:** approved (Fable review) with 3 amendments folded in; commit 1 (protocol
-`attached` addition) **done in TS**. **Branch:** `presence-layer`.
+**Status:** approved (Fable review) with amendments folded in. The original
+`attached` addition is done in TS; the Rust body now has the presence WebSocket
+client, inbound cue application, outbound interaction events, and an experimental
+COSMIC target-pin proof. **Branch:** `presence-layer`.
 
 **Amendments applied vs the original draft:**
 1. Added an `attached` lifecycle handshake kind to protocol v0 (body → soul on
@@ -12,6 +14,27 @@
 3. A shared **golden fixture** (`fixtures/presence-v0.json`, `npm run gen:fixtures`)
    is read by both the vitest suite and the Rust `cargo test`, making cross-language
    protocol parity a test, not a hope. ✅
+4. Experimental target lifecycle cues (`target_acquired` / `target_moved` /
+   `target_lost`) are presentation-only. They let the body visually pin Hermes to a
+   tracked native window, but do not grant screen read or screen action capability.
+   Any future target action remains a soul effector routed through Core Patrol.
+
+## 0. Current live proof (2026-06-13)
+
+- `desktop-body` has a sync tungstenite presence client. The body keeps running if
+  the gateway is absent, reconnects when it appears, and filters cues by buddy id.
+- `scripts/gateway-dev.mjs` can relay target lifecycle cues from a platform helper to
+  bodies, while keeping effectors as separate to-soul/to-driver messages.
+- `desktop-body/src/bin/frame_driver.rs` is a COSMIC/Wayland helper that discovers a
+  target window (default match: Firefox) and emits `target_acquired`, `target_moved`,
+  and `target_lost` envelopes.
+- The first full-window "clay frame" experiment proved the geometry path but was too
+  heavy. The chosen UX direction is now **pinned mode**: right-click Hermes to
+  pin/unpin to the tracked target; left-click the pinned head opens the input; drag
+  the pinned head to choose an attachment offset that follows the target window.
+- This remains within AGENTS.md law 7: the body tracks and renders presence only. It
+  does not read the target window, move the target window, click it, or decide
+  authority.
 
 **Goal:** the native Rust body (`desktop-body/`) stops puppeting itself and is driven
 by a soul over the presence-protocol WebSocket — consuming `express/say/move_to/
@@ -58,6 +81,9 @@ idiomatic for heavy networking later, rejected for now as overkill.)
 | `move_to`  | `position`, `transitionMs?`          | resolve position → target `(margin_left, margin_top)`, `clamp_margins`, `reposition` (see §3); `transitionMs` → snap in v1, lerp later |
 | `hydrate`  | `position?`, `emotion?`, `speech?`   | apply each present field once (reconnect/late-join snapshot) |
 | `attention`| `focus`                              | v1: no-op (no gaze yet); reserve for eye-glance later |
+| `target_acquired` | `targetId`, `title`, `appId`, `bounds` | store as the current pin candidate; do not auto-act on the target |
+| `target_moved` | `targetId`, `bounds` | update the tracked bounds and move the pinned surface using the user-chosen offset |
+| `target_lost` | `targetId`, `reason?` | clear candidate/pinned state if it matches the current target |
 
 ### Outbound (App → to-soul). Built with the same envelope shape (`protocol:"presence"`, `v`, `kind`, `buddy`, `ts`).
 
@@ -72,6 +98,10 @@ idiomatic for heavy networking later, rejected for now as overkill.)
 
 **No `dragged` stream in v1** (amendment 2): `grabbed`→`dropped` already proves a drag
 occurred and where it ended — all any current consumer (incl. Wizard Act 4) needs.
+
+Target-control note: a body-originated request like `target_drag_requested` may be
+useful as a future UI gesture, but it must remain a request to the soul/effectors, not
+a direct body capability. Do not wire screen action into `desktop-body`.
 
 ## 3. Position mapping (the only non-trivial bit)
 
@@ -142,7 +172,9 @@ proves Act 0 end-to-end.
    position mapping + Rust unit tests (incl. reading the golden fixture).
 3. `feat(desktop-body): emit to-soul events` — attached/clicked/grabbed/dropped/
    summoned/dismissed (no `dragged` stream).
-4. `feat(gateway): wizard onboarding host (Act 0)` behind `BB_SOUL=wizard`.
+4. `feat(presence): COSMIC target lifecycle relay + pinned Hermes proof` — frame
+   driver, target cue schema/fixtures, gateway relay, pinned head/bubble/input UX.
+5. `feat(gateway): wizard onboarding host (Act 0)` behind `BB_SOUL=wizard`.
 
 ## 9. Decisions (resolved in review)
 

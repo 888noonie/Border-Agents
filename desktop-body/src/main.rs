@@ -61,6 +61,8 @@ use wayland_protocols::wp::relative_pointer::zv1::client::{
 };
 
 const CLICK_SLOP: f64 = 5.0;
+const BTN_LEFT: u32 = 0x110;
+const BTN_RIGHT: u32 = 0x111;
 
 /// Drop the buddy with its head within this many pixels of a screen edge and it tucks
 /// against that edge.
@@ -68,6 +70,17 @@ const TUCK_THRESHOLD: f64 = 40.0;
 
 fn env_i32(key: &str, fallback: i32) -> i32 {
     std::env::var(key).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(fallback)
+}
+
+/// Per-frame trace logging (every compositor resize, every inbound cue) is gated behind
+/// `BB_DEBUG` — it floods stderr during drags/animation, which is just noise in normal
+/// use (and enough volume to get a supervised process killed). Off by default.
+fn debug_log_enabled() -> bool {
+    use std::sync::OnceLock;
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("BB_DEBUG").map(|v| !v.is_empty() && v != "0").unwrap_or(false)
+    })
 }
 
 /// Parse `BB_COLOR` ("#C96D3C" or "C96D3C") into the clay colour; falls back to
@@ -280,6 +293,10 @@ fn main() {
         exit: false,
         presence_out: None,
         tucked: None,
+        frame_target: None,
+        pinned_to_target: false,
+        pinned_offset: None,
+        pinned_bubble_w: env_i32("BB_PINNED_BUBBLE_W", 248) as f32,
         keyboard: None,
         input_text: String::new(),
         input_focused: false,
@@ -380,6 +397,7 @@ fn main() {
 
 struct PressState {
     target: PressTarget,
+    secondary: bool,
     /// Accumulated physical pointer travel since press — distinguishes click from drag.
     dist: f64,
     /// Whether `grabbed` has been emitted for this press (fires once, when `dist`
@@ -396,6 +414,22 @@ enum PressTarget {
     Feet,
     Bump,
     Outside,
+}
+
+/// The native OS window currently available for pinning, kept live by target cues.
+struct FrameTarget {
+    id: String,
+    /// Window title and app id for pinned-mode status text.
+    title: String,
+    app_id: String,
+    bounds: presence::TargetBounds,
+}
+
+#[derive(Clone, Copy)]
+struct FrameBounds {
+    x: f64,
+    y: f64,
+    w: f64,
 }
 
 struct App {
@@ -444,6 +478,16 @@ struct App {
     /// When `Some`, the buddy is tucked against this edge — shown as a minimized bump,
     /// input shrunk to the bump, clicking it summons the buddy back out.
     tucked: Option<presence::Edge>,
+    /// When `Some`, a platform driver has identified a native OS window that Hermes
+    /// can be pinned to. This is tracking state only; right-click toggles presentation.
+    frame_target: Option<FrameTarget>,
+    /// Right-click toggles this on once a target has been acquired. The body remains
+    /// presentation-only: it follows target cues, but it never reads or moves windows.
+    pinned_to_target: bool,
+    /// User-chosen surface offset from the tracked target origin while pinned.
+    pinned_offset: Option<(f64, f64)>,
+    /// Resizable pinned bubble width; env-tunable now, drag handle later.
+    pinned_bubble_w: f32,
     /// Keyboard, acquired when the seat advertises the capability. Drives the on-body
     /// text input that replaces the old "Say hello" button.
     keyboard: Option<wl_keyboard::WlKeyboard>,
@@ -517,6 +561,30 @@ impl App {
         render::Layout { facing: self.facing, body_len: self.body_len }
     }
 
+    fn pinned_layout(&self) -> Option<render::PinnedLayout> {
+        if self.tucked.is_some() || !self.pinned_to_target || self.frame_target.is_none() {
+            return None;
+        }
+        Some(render::PinnedLayout::new(self.pinned_bubble_w))
+    }
+
+    fn adjusted_frame_bounds(&self) -> Option<FrameBounds> {
+        let target = self.frame_target.as_ref()?;
+        // COSMIC/Firefox currently reports geometry that visually starts below the top
+        // browser chrome. Keep knobs explicit so other apps/compositors can be tuned
+        // without another build.
+        let expand_top = env_i32("BB_FRAME_EXPAND_TOP", 34) as f64;
+        let expand_right = env_i32("BB_FRAME_EXPAND_RIGHT", 0) as f64;
+        let expand_left = env_i32("BB_FRAME_EXPAND_LEFT", 0) as f64;
+        let offset_x = env_i32("BB_FRAME_OFFSET_X", 0) as f64;
+        let offset_y = env_i32("BB_FRAME_OFFSET_Y", 0) as f64;
+        Some(FrameBounds {
+            x: target.bounds.x + offset_x - expand_left,
+            y: target.bounds.y + offset_y - expand_top,
+            w: (target.bounds.w + expand_left + expand_right).max(1.0),
+        })
+    }
+
     /// Actual compositor-acked surface size. Drawing, hit-testing, and tucked input
     /// regions use this so they hug the buffer that really exists.
     fn surface_size(&self) -> (f64, f64) {
@@ -526,6 +594,11 @@ impl App {
     /// Requested full-body surface size. Edge placement uses this deterministic size
     /// when tucking so transient compositor shrinkage cannot park the bump off-buffer.
     fn requested_surface_size(&self) -> (f64, f64) {
+        if self.tucked.is_none() {
+            if self.pinned_layout().is_some() {
+                return (render::PINNED_SURFACE_W as f64, render::PINNED_SURFACE_H as f64);
+            }
+        }
         (render::SURFACE_W as f64, self.layout().surface_h() as f64)
     }
 
@@ -548,6 +621,7 @@ impl App {
         let torso_image = self.torso_image.as_ref();
         let speech = self.speech.clone();
         let input_text = self.input_text.clone();
+        let pinned = self.pinned_layout();
         let (Some(pool), Some(layer)) = (self.pool.as_mut(), self.layer.as_ref()) else {
             return;
         };
@@ -564,6 +638,8 @@ impl App {
             input_text: &input_text,
             input_focused: self.input_focused,
             layout,
+            pinned,
+            frame: None,
             color: self.color,
         };
 
@@ -738,6 +814,53 @@ impl App {
         self.update_facing();
     }
 
+    fn set_layer_size(&mut self, w: u32, h: u32) {
+        if self.width == w && self.height == h {
+            return;
+        }
+        if let Some(layer) = self.layer.as_ref() {
+            layer.set_size(w, h);
+            layer.commit();
+        }
+    }
+
+    fn sync_pinned_surface(&mut self) {
+        if self.tucked.is_some() {
+            return;
+        }
+        if !self.pinned_to_target {
+            self.set_layer_size(render::SURFACE_W, self.layout().surface_h());
+            self.update_input_region();
+            return;
+        };
+        let Some(target) = self.adjusted_frame_bounds() else { return };
+        let Some(pinned) = self.pinned_layout() else { return };
+        let (offset_x, offset_y) = self.pinned_offset.unwrap_or_else(|| {
+            let head = pinned.head_rect();
+            let head_cx = head.x as f64 + head.w as f64 / 2.0;
+            let head_cy = head.y as f64 + head.h as f64 / 2.0;
+            (target.w - 18.0 - head_cx, 18.0 - head_cy)
+        });
+        self.margin_left = target.x + offset_x;
+        self.margin_top = target.y + offset_y;
+        self.clamp_pinned_margins();
+        self.remember_pinned_offset();
+        self.set_layer_size(render::PINNED_SURFACE_W, render::PINNED_SURFACE_H);
+        self.reposition();
+        self.update_input_region();
+    }
+
+    fn clamp_pinned_margins(&mut self) {
+        let Some((sw, sh)) = self.screen else { return };
+        self.margin_left = self.margin_left.clamp(0.0, (sw - render::PINNED_SURFACE_W as f64).max(0.0));
+        self.margin_top = self.margin_top.clamp(0.0, (sh - render::PINNED_SURFACE_H as f64).max(0.0));
+    }
+
+    fn remember_pinned_offset(&mut self) {
+        let Some(target) = self.adjusted_frame_bounds() else { return };
+        self.pinned_offset = Some((self.margin_left - target.x, self.margin_top - target.y));
+    }
+
     /// Keep the bubble + input on the side of the figure that faces the screen
     /// centre, so the UI never clips against the edge the buddy is docked to.
     fn update_facing(&mut self) {
@@ -774,6 +897,15 @@ impl App {
         // so the screen space the buddy stepped aside from is truly freed.
         let rects = if let Some(edge) = self.tucked {
             vec![self.tucked_bump_rect(edge).as_i32()]
+        } else if let Some(pinned) = self.pinned_layout() {
+            let mut rects = vec![pinned.head_rect().as_i32()];
+            if self.speech.is_some() {
+                rects.push(pinned.bubble_rect().as_i32());
+            }
+            if self.chat_open {
+                rects.push(pinned.input_region_rect().as_i32());
+            }
+            rects
         } else {
             let layout = self.layout();
             // Head = move/dock handle; feet = stretch handle. The torso stays
@@ -806,7 +938,9 @@ impl App {
             return;
         }
         self.mark_presence_connected();
-        eprintln!("[bb-presence] applying cue for {}: {:?}", msg.buddy, msg.cue);
+        if debug_log_enabled() {
+            eprintln!("[bb-presence] applying cue for {}: {:?}", msg.buddy, msg.cue);
+        }
         match msg.cue {
             presence::Cue::Express { emotion } => {
                 if let Some(e) = Emotion::from_wire(&emotion) {
@@ -828,6 +962,39 @@ impl App {
             }
             presence::Cue::Output { surface, text, caption, media_type, data_base64 } => {
                 self.apply_output(&surface, text, caption, media_type, data_base64);
+            }
+            presence::Cue::TargetAcquired { target_id, title, app_id, bounds } => {
+                if self.tucked.is_some() {
+                    return;
+                }
+                eprintln!("[bb-presence] tracked target {target_id} ({app_id} — {title:?})");
+                if !self.pinned_to_target {
+                    self.speech = Some(format!("Right-click Hermes to pin to {app_id}."));
+                    self.pinned_offset = None;
+                }
+                self.frame_target = Some(FrameTarget { id: target_id, title, app_id, bounds });
+                self.sync_pinned_surface();
+            }
+            presence::Cue::TargetMoved { target_id, bounds } => {
+                // Only the tracked window updates the pinned overlay; a stray move for
+                // another target id is ignored rather than snapping us onto it.
+                if let Some(frame) = self.frame_target.as_mut() {
+                    if frame.id == target_id {
+                        frame.bounds = bounds;
+                        self.sync_pinned_surface();
+                    }
+                }
+            }
+            presence::Cue::TargetLost { target_id, reason } => {
+                // Release only if it's our tracked target.
+                if self.frame_target.as_ref().is_some_and(|f| f.id == target_id) {
+                    eprintln!("[bb-presence] target lost {target_id}: {reason:?}");
+                    self.frame_target = None;
+                    self.pinned_to_target = false;
+                    self.pinned_offset = None;
+                    self.speech = Some("Released the window.".to_string());
+                    self.sync_pinned_surface();
+                }
             }
         }
     }
@@ -857,10 +1024,16 @@ impl App {
         };
         // A non-tucked position pops the buddy back to the full figure.
         let was_tucked = self.tucked.take().is_some();
+        let was_pinned = self.pinned_to_target;
+        self.pinned_to_target = false;
+        self.pinned_offset = None;
         self.margin_left = left;
         self.margin_top = top;
         self.clamp_margins();
-        if was_tucked {
+        if was_pinned {
+            self.set_layer_size(render::SURFACE_W, self.layout().surface_h());
+        }
+        if was_tucked || was_pinned {
             self.update_input_region();
         }
         self.reposition();
@@ -895,6 +1068,34 @@ impl App {
             self.input_text.clear();
         }
         self.update_input_region();
+    }
+
+    fn toggle_pin(&mut self) {
+        if self.pinned_to_target {
+            self.pinned_to_target = false;
+            self.pinned_offset = None;
+            self.chat_open = false;
+            self.input_focused = false;
+            self.speech = Some("Unpinned.".to_string());
+            self.set_layer_size(render::SURFACE_W, self.layout().surface_h());
+            self.clamp_margins();
+            self.reposition();
+            self.update_input_region();
+            return;
+        }
+
+        let Some(target) = self.frame_target.as_ref() else {
+            self.speech = Some("No active target to pin yet.".to_string());
+            self.update_input_region();
+            return;
+        };
+        self.pinned_to_target = true;
+        self.pinned_offset = None;
+        self.chat_open = false;
+        self.input_focused = false;
+        let name = if target.title.trim().is_empty() { target.app_id.as_str() } else { target.title.as_str() };
+        self.speech = Some(format!("Pinned to {name}."));
+        self.sync_pinned_surface();
     }
 
     /// Handle a keystroke while the input box is focused: submit on Enter, edit on
@@ -936,7 +1137,9 @@ impl App {
         self.input_text.clear();
     }
 
-    fn on_press(&mut self, x: f64, y: f64) {
+    fn on_press(&mut self, x: f64, y: f64, button: u32) {
+        let secondary = button == BTN_RIGHT;
+        let primary = button == BTN_LEFT;
         // While tucked, the only live target is the bump; a click on it summons the
         // buddy back out. The bump is not draggable in v1.
         if let Some(edge) = self.tucked {
@@ -945,12 +1148,20 @@ impl App {
             } else {
                 PressTarget::Outside
             };
-            self.press = Some(PressState { target, dist: 0.0, grabbed_sent: false });
+            self.press = Some(PressState { target, secondary, dist: 0.0, grabbed_sent: false });
             return;
         }
 
         let layout = self.layout();
-        let target = if render::point_in_head(x, y) {
+        let target = if let Some(pinned) = self.pinned_layout() {
+            if pinned.contains_head(x, y) {
+                PressTarget::Head
+            } else if self.chat_open && pinned.input_region_rect().contains(x, y) {
+                PressTarget::Input
+            } else {
+                PressTarget::Outside
+            }
+        } else if render::point_in_head(x, y) {
             PressTarget::Head
         } else if self.chat_open && layout.input_region_rect().contains(x, y) {
             PressTarget::Input
@@ -962,8 +1173,8 @@ impl App {
             PressTarget::Outside
         };
 
-        self.press = Some(PressState { target, dist: 0.0, grabbed_sent: false });
-        if target == PressTarget::Head {
+        self.press = Some(PressState { target, secondary, dist: 0.0, grabbed_sent: false });
+        if primary && target == PressTarget::Head && !self.pinned_to_target {
             self.drag = true;
         }
     }
@@ -973,6 +1184,17 @@ impl App {
     fn on_drag_delta(&mut self, dx: f64, dy: f64) {
         let Some(press) = self.press.as_mut() else { return };
         press.dist += dx.abs() + dy.abs();
+        if self.pinned_to_target && press.target == PressTarget::Head {
+            if press.dist > CLICK_SLOP {
+                self.margin_left += dx;
+                self.margin_top += dy;
+                self.clamp_pinned_margins();
+                self.remember_pinned_offset();
+                self.reposition();
+                self.update_input_region();
+            }
+            return;
+        }
         // A grab is a real drag, not a click: announce it the first time travel
         // crosses the slop. Doing this here (not in on_press) keeps every click from
         // emitting a phantom grabbed+dropped pair.
@@ -1020,6 +1242,17 @@ impl App {
             if press.dist <= CLICK_SLOP {
                 self.summon();
             }
+            return;
+        }
+
+        if press.secondary {
+            if press.dist <= CLICK_SLOP && matches!(press.target, PressTarget::Head | PressTarget::Outside) {
+                self.toggle_pin();
+            }
+            return;
+        }
+
+        if self.pinned_to_target && press.target == PressTarget::Head && press.dist > CLICK_SLOP {
             return;
         }
 
@@ -1264,7 +1497,7 @@ impl LayerShellHandler for App {
     ) {
         let (nw, nh) = configure.new_size;
         let size_changed = (nw != 0 && nw != self.width) || (nh != 0 && nh != self.height);
-        if nw != 0 && nh != 0 && size_changed {
+        if nw != 0 && nh != 0 && size_changed && debug_log_enabled() {
             eprintln!("[bb-desktop-body] surface resized by compositor to {nw}x{nh}");
         }
         if nw != 0 {
@@ -1399,7 +1632,7 @@ impl PointerHandler for App {
             }
             let (px, py) = event.position;
             match event.kind {
-                PointerEventKind::Press { .. } => self.on_press(px, py),
+                PointerEventKind::Press { button, .. } => self.on_press(px, py, button),
                 PointerEventKind::Release { .. } => self.on_release(),
                 // Dragging is driven by wp_relative_pointer deltas, not these
                 // surface-local positions (which move with the surface frame).

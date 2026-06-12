@@ -1,161 +1,179 @@
 {
   "version": "2.0.0",
+  // Run tasks track the ONE live rendering path: the native desktop body
+  // (desktop-body, wlr-layer-shell) + the COSMIC frame driver + the dev gateway.
+  // The old Tauri transparent overlay (src-tauri) failed on ghosting and is NOT
+  // launched here. The browser preview is only a UI dev harness, not a "buddy".
   "tasks": [
+    // ── RUN ─────────────────────────────────────────────────────────────────
     {
-      "label": "BB start",
+      "label": "Start (gateway + body)",
       "type": "shell",
       "command": "bash",
       "args": ["scripts/bb-start.sh"],
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
-      "group": {
-        "kind": "build",
-        "isDefault": true
-      },
-      "presentation": {
-        "reveal": "always",
-        "panel": "dedicated",
-        "clear": true,
-        "focus": true
-      },
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": { "kind": "build", "isDefault": true },
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "focus": true, "group": "stack" },
       "problemMatcher": [],
-      "detail": "Start gateway + desktop; logs to .bb-logs/bb-latest.log"
+      "detail": "Bring the whole stack up: dev gateway + native desktop body. Logs to .bb-logs/bb-latest.log"
     },
     {
-      "label": "BB gateway",
+      "label": "Gateway",
       "type": "shell",
       "command": "bash",
       "args": ["scripts/bb-gateway.sh"],
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
+      "options": { "cwd": "${workspaceFolder}" },
       "group": "build",
-      "presentation": {
-        "reveal": "always",
-        "panel": "dedicated",
-        "clear": true,
-        "focus": true
-      },
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "focus": true, "group": "stack" },
       "problemMatcher": [],
-      "detail": "Gateway only; logs to .bb-logs/bb-latest.log"
+      "detail": "Dev gateway only (default/echo soul) on ws://127.0.0.1:17387/border-buddies"
     },
     {
-      "label": "BB stop",
+      "label": "Gateway (wizard soul)",
+      "type": "shell",
+      "command": "npm run gateway:wizard",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "focus": true, "group": "stack" },
+      "problemMatcher": [],
+      "detail": "Gateway with BB_SOUL=wizard — onboarding persona; on-body text is NOT routed to a provider"
+    },
+    {
+      "label": "Body",
+      "type": "shell",
+      "command": "bash scripts/bb-body.sh",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "focus": true, "group": "stack" },
+      "problemMatcher": ["$rustc"],
+      "detail": "Build + run the native desktop presence body — single-instance (stops any running body first)"
+    },
+    {
+      "label": "Frame driver",
+      "type": "shell",
+      "command": "cargo run --release --manifest-path desktop-body/Cargo.toml --bin bb-frame-driver",
+      "options": { "cwd": "${workspaceFolder}", "env": { "BB_TARGET": "${input:frameTarget}" } },
+      "group": "build",
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "focus": true, "group": "stack" },
+      "problemMatcher": ["$rustc"],
+      "detail": "Track a native COSMIC window by title/app_id substring and emit target_* presence cues so a buddy can frame it"
+    },
+    {
+      "label": "UI preview (browser)",
+      "type": "shell",
+      "command": "npm run dev",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "stack" },
+      "problemMatcher": [],
+      "detail": "Buddy UI in a plain browser tab at 127.0.0.1:1420 — fast visual iteration, no Wayland overlay. A dev harness, not a buddy."
+    },
+
+    // ── STOP / RESTART ──────────────────────────────────────────────────────
+    {
+      "label": "Stop (all)",
       "type": "shell",
       "command": "bash",
       "args": ["scripts/bb-stop.sh"],
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
+      "options": { "cwd": "${workspaceFolder}" },
       "group": "none",
-      "presentation": {
-        "reveal": "always",
-        "panel": "shared",
-        "clear": true
-      },
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true },
       "problemMatcher": [],
-      "detail": "Stop desktop overlay, Vite dev server, and gateway"
+      "detail": "Stop desktop body, Vite dev server, and gateway"
     },
     {
-      "label": "BB report",
+      "label": "Stop body",
+      "type": "shell",
+      "command": "pkill -x bb-desktop-body || echo 'no desktop body running'",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "none",
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true },
+      "problemMatcher": [],
+      "detail": "Stop just the native desktop body"
+    },
+    {
+      "label": "Stop frame driver",
+      "type": "shell",
+      "command": "pkill -x bb-frame-driver || echo 'no frame driver running'",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "none",
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true },
+      "problemMatcher": [],
+      "detail": "Stop just the COSMIC frame-geometry driver"
+    },
+    {
+      "label": "Restart body",
+      "type": "shell",
+      "command": "bash scripts/bb-body.sh",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "none",
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "focus": true, "group": "stack" },
+      "problemMatcher": ["$rustc"],
+      "detail": "Stop, then rebuild + run the latest desktop body (same single-instance launcher as Body)"
+    },
+
+    // ── TEST ────────────────────────────────────────────────────────────────
+    {
+      "label": "Test (vitest)",
+      "type": "shell",
+      "command": "npm test",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": { "kind": "test", "isDefault": true },
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": [],
+      "detail": "Run the TypeScript suite (vitest run)"
+    },
+    {
+      "label": "Test (rust body)",
+      "type": "shell",
+      "command": "cargo test --manifest-path desktop-body/Cargo.toml",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "test",
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true },
+      "problemMatcher": ["$rustc"],
+      "detail": "Run the native body's cargo test suite (presence parser parity, etc.)"
+    },
+    {
+      "label": "Gen fixtures",
+      "type": "shell",
+      "command": "npm run gen:fixtures",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "test",
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true },
+      "problemMatcher": [],
+      "detail": "Regenerate fixtures/presence-v0.json from the canonical TS factories"
+    },
+
+    // ── DIAGNOSTICS ─────────────────────────────────────────────────────────
+    {
+      "label": "Report",
       "type": "shell",
       "command": "bash",
       "args": ["scripts/bb-report.sh"],
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
+      "options": { "cwd": "${workspaceFolder}" },
       "group": "none",
-      "presentation": {
-        "reveal": "always",
-        "panel": "shared",
-        "clear": false
-      },
+      "presentation": { "reveal": "always", "panel": "shared", "clear": false },
       "problemMatcher": [],
       "detail": "Print .bb-logs/bb-events.log and process status after a crash"
     },
     {
-      "label": "BB clean cache",
+      "label": "Clean cache",
       "type": "shell",
       "command": "bash",
       "args": ["scripts/bb-clean.sh"],
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
+      "options": { "cwd": "${workspaceFolder}" },
       "group": "none",
-      "presentation": {
-        "reveal": "always",
-        "panel": "shared",
-        "clear": true
-      },
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true },
       "problemMatcher": [],
       "detail": "Remove dist, Vite cache, and Rust target build artifacts"
-    },
+    }
+  ],
+  "inputs": [
     {
-      "label": "BB browser preview",
-      "type": "shell",
-      "command": "npm run dev",
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
-      "group": "none",
-      "presentation": {
-        "reveal": "always",
-        "panel": "dedicated",
-        "clear": true
-      },
-      "problemMatcher": [],
-      "detail": "Browser-only Vite preview (no Tauri overlay)"
-    },
-    {
-      "label": "BB body start",
-      "type": "shell",
-      "command": "bash scripts/bb-body.sh",
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
-      "group": "none",
-      "presentation": {
-        "reveal": "always",
-        "panel": "dedicated",
-        "clear": true,
-        "focus": true
-      },
-      "problemMatcher": ["$rustc"],
-      "detail": "Build + run the native desktop presence body — single-instance (stops any running body first, so you never get two buddies)"
-    },
-    {
-      "label": "BB body stop",
-      "type": "shell",
-      "command": "pkill -x bb-desktop-body || echo 'no desktop body running'",
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
-      "group": "none",
-      "presentation": {
-        "reveal": "always",
-        "panel": "shared",
-        "clear": true
-      },
-      "problemMatcher": [],
-      "detail": "Stop the desktop presence body"
-    },
-    {
-      "label": "BB body restart",
-      "type": "shell",
-      "command": "bash scripts/bb-body.sh",
-      "options": {
-        "cwd": "${workspaceFolder}"
-      },
-      "group": "none",
-      "presentation": {
-        "reveal": "always",
-        "panel": "dedicated",
-        "clear": true,
-        "focus": true
-      },
-      "problemMatcher": ["$rustc"],
-      "detail": "Stop, then rebuild + run the latest desktop presence body (same single-instance launcher as BB body start)"
+      "id": "frameTarget",
+      "type": "promptString",
+      "description": "Window to track (title / app_id substring)",
+      "default": "firefox"
     }
   ]
 }

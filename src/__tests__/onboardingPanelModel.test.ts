@@ -5,6 +5,7 @@ import {
   HERMES_PROVIDER_PRESETS,
   IDLE_AUTO_ADVANCE_MS,
 } from "../onboardingPanelModel";
+import { HERMES_CAPABILITIES, TEXT_ONLY_CAPABILITIES } from "../buddyCapabilities";
 import type { OnboardingState } from "../wizardOnboarding";
 
 describe("onboarding panel model", () => {
@@ -99,6 +100,49 @@ describe("onboarding panel model", () => {
 
     expect(model.section?.kind).toBe("connect");
     expect(model.idle).toBeNull();
+  });
+
+  it("has no capabilities block unless a manifest is supplied", () => {
+    const model = buildOnboardingPanelModel({
+      state: { actIndex: 0, completed: false },
+      receiptKinds: [],
+    });
+    expect(model.capabilities).toBeNull();
+  });
+
+  it("renders the capability blueprint from a supplied manifest", () => {
+    const model = buildOnboardingPanelModel({
+      state: { actIndex: 0, completed: false },
+      receiptKinds: [],
+      capabilities: HERMES_CAPABILITIES,
+    });
+
+    expect(model.capabilities?.freeText).toBe(true);
+    expect(model.capabilities?.outputs).toEqual(["text", "image", "file", "session"]);
+    // Commands are formatted as ready-to-show usage + summary, sourced from the manifest.
+    expect(model.capabilities?.commands[0]).toEqual({
+      usage: "/image <prompt>",
+      summary: "Generate an image from a prompt and show it in the torso.",
+    });
+    expect(model.capabilities?.commands.map((command) => command.usage)).toEqual([
+      "/image <prompt>",
+      "/help",
+      "/clear",
+      "/model <id>",
+      "/retry",
+    ]);
+  });
+
+  it("shows a text-only buddy as free-text with no commands", () => {
+    const model = buildOnboardingPanelModel({
+      state: { actIndex: 0, completed: false },
+      receiptKinds: [],
+      capabilities: TEXT_ONLY_CAPABILITIES,
+    });
+
+    expect(model.capabilities?.commands).toEqual([]);
+    expect(model.capabilities?.freeText).toBe(true);
+    expect(model.capabilities?.outputs).toEqual(["text", "session"]);
   });
 
   it("locks future sections during the first linear pass", () => {

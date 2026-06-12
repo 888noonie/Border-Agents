@@ -240,9 +240,10 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
             state: onboardingSurface.progress,
             receiptKinds: onboardingSurface.receiptKinds,
             sectionOverride: onboardingHubSection,
+            capabilities: BUDDY_PROFILES[buddy.id]?.capabilities ?? null,
           })
         : null,
-    [onboardingHubSection, onboardingSurface.progress, onboardingSurface.receiptKinds, wizardEnabled],
+    [buddy.id, onboardingHubSection, onboardingSurface.progress, onboardingSurface.receiptKinds, wizardEnabled],
   );
   const governanceSnapshot = useMemo(
     () =>

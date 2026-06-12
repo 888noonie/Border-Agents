@@ -1,6 +1,7 @@
 import { BUDDY_PROVIDER_LABELS } from "../../src/buddyProfiles";
 import type {
   ConnectSectionModel,
+  OnboardingCapabilitiesModel,
   OnboardingPanelModel,
   OnboardingPanelSection,
   PlacementSectionModel,
@@ -87,6 +88,48 @@ export function OnboardingWizardPanel({
           )}
         </div>
       )}
+
+      {model.capabilities ? <CapabilitiesBlock capabilities={model.capabilities} /> : null}
+    </section>
+  );
+}
+
+const OUTPUT_SURFACE_LABELS: Record<string, string> = {
+  text: "Text",
+  image: "Images",
+  file: "Files",
+  session: "Status",
+};
+
+// The buddy's data-driven blueprint — the commands it accepts and the output it can
+// render, straight from BuddyProfile.capabilities. This is the same manifest the gateway
+// parses against, so what's shown here is exactly what the buddy actually does.
+function CapabilitiesBlock({ capabilities }: { capabilities: OnboardingCapabilitiesModel }) {
+  return (
+    <section className="onboarding-panel__capabilities" aria-label="Buddy capabilities">
+      <h4>What I can do</h4>
+      {capabilities.commands.length > 0 ? (
+        <ul className="onboarding-panel__commands">
+          {capabilities.commands.map((command) => (
+            <li key={command.usage}>
+              <code>{command.usage}</code>
+              <span>{command.summary}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="onboarding-panel__note">
+          {capabilities.freeText ? "Takes free text — no commands yet." : "No inputs configured."}
+        </p>
+      )}
+      <p className="onboarding-panel__outputs">
+        <span>Output:</span>
+        {capabilities.outputs.map((surface) => (
+          <span key={surface} className="onboarding-panel__output-chip">
+            {OUTPUT_SURFACE_LABELS[surface] ?? surface}
+          </span>
+        ))}
+      </p>
     </section>
   );
 }

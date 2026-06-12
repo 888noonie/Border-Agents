@@ -1,4 +1,5 @@
 import { BUDDY_PROFILES, type BuddyProvider } from "./buddyProfiles";
+import type { BuddyCapabilities, OutputSurfaceKind } from "./buddyCapabilities";
 import {
   DEFAULT_USER_POSTURE,
   USER_POSTURES,
@@ -176,6 +177,19 @@ export interface OnboardingPanelIdleModel {
 // on — enough to read the cue line.
 export const IDLE_AUTO_ADVANCE_MS = 6000;
 
+// The buddy's data-driven "what I can do" — sourced straight from its capability
+// blueprint (BuddyProfile.capabilities) so the wizard and the runtime never disagree.
+export interface OnboardingCapabilityCommand {
+  usage: string;
+  summary: string;
+}
+
+export interface OnboardingCapabilitiesModel {
+  freeText: boolean;
+  commands: readonly OnboardingCapabilityCommand[];
+  outputs: readonly OutputSurfaceKind[];
+}
+
 export interface OnboardingPanelModel {
   mode: OnboardingEntryMode;
   act: OnboardingAct;
@@ -183,12 +197,15 @@ export interface OnboardingPanelModel {
   section: OnboardingPanelSectionModel | null;
   // Present exactly when `section` is null.
   idle: OnboardingPanelIdleModel | null;
+  // The buddy's capability blueprint, when one is supplied; null otherwise.
+  capabilities: OnboardingCapabilitiesModel | null;
 }
 
 export function buildOnboardingPanelModel(args: {
   state: OnboardingState;
   receiptKinds: readonly string[];
   sectionOverride?: OnboardingPanelSection | null;
+  capabilities?: BuddyCapabilities | null;
 }): OnboardingPanelModel {
   const act = currentAct(args.state);
   const mode = entryMode(args.receiptKinds);
@@ -200,6 +217,18 @@ export function buildOnboardingPanelModel(args: {
     nav: buildNav(activeSection, mode),
     section: buildSection(activeSection, args.receiptKinds),
     idle: activeSection === "none" ? buildIdle(act) : null,
+    capabilities: args.capabilities ? buildCapabilities(args.capabilities) : null,
+  };
+}
+
+function buildCapabilities(capabilities: BuddyCapabilities): OnboardingCapabilitiesModel {
+  return {
+    freeText: capabilities.inputs.freeText,
+    commands: capabilities.inputs.commands.map((command) => ({
+      usage: command.args ? `/${command.name} ${command.args}` : `/${command.name}`,
+      summary: command.summary,
+    })),
+    outputs: capabilities.outputs,
   };
 }
 

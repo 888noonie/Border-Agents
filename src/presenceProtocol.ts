@@ -13,12 +13,14 @@
  *
  *   to-body   (soul → body): the LLM's presence "tool calls". The body is a dumb
  *             puppet that renders these — where to sit, how to feel, what to say,
- *             where to look.  move_to | express | say | attention | hydrate
+ *             where to look, what governance outcome to show.  move_to | express |
+ *             say | attention | hydrate | output | action_result
  *
  *   to-soul   (body → soul): lifecycle + interaction events the body reports about
  *             itself. The soul reasons over these (and they are tomorrow's receipt
  *             inputs, so each kind means exactly one thing).  attached | clicked |
- *             grabbed | dragged | dropped | summoned | dismissed
+ *             grabbed | dragged | dropped | summoned | dismissed | said |
+ *             action_request
  *
  * Discriminator note: presence messages carry `protocol: "presence"`, which keeps
  * them cleanly separable from the legacy gateway messages (which carry `type`) on
@@ -26,6 +28,7 @@
  */
 
 import { isOutputSurfaceKind, type OutputSurfaceKind } from "./buddyCapabilities";
+import type { ActionDecision } from "./core";
 
 export const PRESENCE_PROTOCOL = "presence" as const;
 export const PRESENCE_PROTOCOL_VERSION = 0 as const;
@@ -219,6 +222,20 @@ export type PresenceTargetLost = PresenceEnvelope<
   { targetId: string; reason: TargetLostReason }
 >;
 
+/**
+ * Outcome of an `action_request` the soul ran through the governance action gate
+ * (src/core/actionGate.ts) — soul → body. Distinct from `output` (rendered artifact
+ * bytes) and `say` (ephemeral speech): an authorization outcome is a governance result
+ * the body renders as a badge/affordance, so it can key on `decision` without sniffing
+ * prose. The full `ActionReceipt` stays soul-side in the ledger (law 7 — the body never
+ * holds the authorization, only a cue about it); only `decision` + `receiptId` + an
+ * optional human `summary` cross the wire. `requestId` correlates back to the request.
+ */
+export type PresenceActionResult = PresenceEnvelope<
+  "action_result",
+  { effector: string; decision: ActionDecision; receiptId: string; requestId?: string; summary?: string }
+>;
+
 export type PresenceToBodyMessage =
   | PresenceMoveTo
   | PresenceExpress
@@ -226,6 +243,7 @@ export type PresenceToBodyMessage =
   | PresenceAttention
   | PresenceHydrate
   | PresenceOutput
+  | PresenceActionResult
   | PresenceTargetAcquired
   | PresenceTargetMoved
   | PresenceTargetLost;
@@ -278,6 +296,20 @@ export type PresenceTargetDragRequested = PresenceEnvelope<
   { targetId: string; delta: { x: number; y: number } }
 >;
 
+/**
+ * User asked the buddy to run one of its granted effectors (e.g. a `/review` affordance
+ * → `receipt_review`). This is only a *request*: authorization happens in the soul's
+ * action gate, never in the body (law 7). `effector` is a free string on the wire and is
+ * validated against the manifest in the soul handler, so the protocol stays manifest-free.
+ * `confirmed: true` is the follow-up after a `needs_confirmation` result — it can only
+ * clear the confirmation floor, never widen a hard block. `requestId` correlates the
+ * resulting `action_result` back to this request.
+ */
+export type PresenceActionRequest = PresenceEnvelope<
+  "action_request",
+  { effector: string; context?: string; confirmed?: boolean; requestId?: string }
+>;
+
 export type PresenceToSoulMessage =
   | PresenceAttached
   | PresenceClicked
@@ -287,6 +319,7 @@ export type PresenceToSoulMessage =
   | PresenceSummoned
   | PresenceDismissed
   | PresenceSaid
+  | PresenceActionRequest
   | PresenceTargetDragRequested;
 
 export type PresenceMessage = PresenceToBodyMessage | PresenceToSoulMessage;
@@ -300,6 +333,7 @@ export const PRESENCE_TO_BODY_KINDS: readonly PresenceToBodyMessage["kind"][] = 
   "attention",
   "hydrate",
   "output",
+  "action_result",
   "target_acquired",
   "target_moved",
   "target_lost",
@@ -314,6 +348,7 @@ export const PRESENCE_TO_SOUL_KINDS: readonly PresenceToSoulMessage["kind"][] = 
   "summoned",
   "dismissed",
   "said",
+  "action_request",
   "target_drag_requested",
 ];
 
@@ -384,6 +419,10 @@ function isTargetBounds(value: unknown): value is TargetBounds {
     isFiniteNumber(value.h) &&
     isFiniteNumber(value.scaleFactor)
   );
+}
+
+function isActionDecision(value: unknown): value is ActionDecision {
+  return value === "allow" || value === "needs_confirmation" || value === "blocked";
 }
 
 function isTargetLostReason(value: unknown): value is TargetLostReason {
@@ -483,6 +522,14 @@ function isValidForKind(kind: PresenceKind, raw: Record<string, unknown>): boole
       );
     case "output":
       return isValidOutputPayload(raw);
+    case "action_result":
+      return (
+        isNonEmptyString(raw.effector) &&
+        isActionDecision(raw.decision) &&
+        isNonEmptyString(raw.receiptId) &&
+        (raw.requestId === undefined || typeof raw.requestId === "string") &&
+        (raw.summary === undefined || typeof raw.summary === "string")
+      );
     case "target_acquired":
       return (
         isNonEmptyString(raw.targetId) &&
@@ -514,6 +561,13 @@ function isValidForKind(kind: PresenceKind, raw: Record<string, unknown>): boole
       return true;
     case "said":
       return typeof raw.text === "string" && raw.text.length > 0;
+    case "action_request":
+      return (
+        isNonEmptyString(raw.effector) &&
+        (raw.context === undefined || typeof raw.context === "string") &&
+        (raw.confirmed === undefined || typeof raw.confirmed === "boolean") &&
+        (raw.requestId === undefined || typeof raw.requestId === "string")
+      );
     case "target_drag_requested":
       return (
         isNonEmptyString(raw.targetId) &&
@@ -642,6 +696,13 @@ export const presence = {
   ): PresenceOutput {
     return envelope("output", buddy, { ...payload }, opts) as PresenceOutput;
   },
+  actionResult(
+    buddy: string,
+    payload: { effector: string; decision: ActionDecision; receiptId: string; requestId?: string; summary?: string },
+    opts: EnvelopeOptions = {},
+  ): PresenceActionResult {
+    return envelope("action_result", buddy, { ...payload }, opts) as PresenceActionResult;
+  },
   targetAcquired(
     buddy: string,
     target: { targetId: string; title: string; appId: string; bounds: TargetBounds },
@@ -699,6 +760,14 @@ export const presence = {
   },
   said(buddy: string, text: string, opts: EnvelopeOptions = {}): PresenceSaid {
     return envelope("said", buddy, { text }, opts) as PresenceSaid;
+  },
+  actionRequest(
+    buddy: string,
+    effector: string,
+    opts: { context?: string; confirmed?: boolean; requestId?: string } & EnvelopeOptions = {},
+  ): PresenceActionRequest {
+    const { context, confirmed, requestId, ts } = opts;
+    return envelope("action_request", buddy, { effector, context, confirmed, requestId }, { ts }) as PresenceActionRequest;
   },
   targetDragRequested(
     buddy: string,

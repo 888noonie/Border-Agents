@@ -17,8 +17,10 @@
 //      governance gate. New buddies should prefer `reach`.
 //
 // Everything here is DECLARATIVE DATA with STUBBED effectors: every `EffectorSpec`
-// ships `wired: false`. Live tools get switched on one at a time, behind the
-// assumptions gate, during the governance slice — never by editing this file alone.
+// ships `wired: false` UNLESS it is in `GATED_WIRED_EFFECTORS` below. Live tools get
+// switched on one at a time, behind the governance gate (src/core/actionGate.ts), during
+// the governance slice — never by editing this file alone. The first live effector is
+// `receipt_review`: read-only, `reach`, and only ever runs after the gate authorizes it.
 
 // ---------------------------------------------------------------------------
 // Capability groups — "what are you trying to do?", not "which subscription?"
@@ -193,7 +195,8 @@ export const EFFECTOR_SPECS: Record<EffectorId, EffectorSpec> = {
   open_vscode: reach("open_vscode", "Open in VS Code", "Open files/folders in the editor; no edits applied by this effector."),
   web_search: reach("web_search", "Web search", "Query the web and return sources; surface citations, do not assert unsourced facts."),
   open_source: reach("open_source", "Open source", "Open a cited source in the browser for the user to read."),
-  receipt_review: reach("receipt_review", "Review receipts", "Open the governance receipt ledger for inspection. Read-only."),
+  // First live effector — read-only, gated. See GATED_WIRED_EFFECTORS below.
+  receipt_review: { ...reach("receipt_review", "Review receipts", "Open the governance receipt ledger for inspection. Read-only."), wired: true },
   image_gen: act("image_gen", "Generate image", "Create an image artifact; label it AI-generated, keep it local until shared."),
   doc_build: act("doc_build", "Build document", "Assemble a document artifact; user reviews before any export or share."),
   slides_build: act("slides_build", "Build slides", "Assemble a slide deck; user reviews before any export or share."),
@@ -220,6 +223,11 @@ export type BuddyManifestEntry = {
   // Honor "reachable, not replace": when true, the entry must include at least one
   // `reach` effector (validated below). New buddies should set this true.
   reachFirst: boolean;
+  // The presentation persona (character) id that wears this governance identity in the
+  // dock/body (e.g. the "owl" character is the "veritas" governance buddy). The body emits
+  // action requests under its persona id; the gate authorizes under the governance id.
+  // `resolveManifestId` bridges the two. Omit when persona id === governance id.
+  persona?: string;
 };
 
 export const BUDDY_MANIFEST: Record<string, BuddyManifestEntry> = {
@@ -232,6 +240,7 @@ export const BUDDY_MANIFEST: Record<string, BuddyManifestEntry> = {
     routes: { primary: ["claude", "codex"], fallback: ["gpt"], local: ["lm_studio"] },
     effectors: ["open_github", "open_vscode", "repo_edit", "terminal"],
     reachFirst: true,
+    persona: "crab",
   },
   veritas: {
     schemaVersion: 1,
@@ -242,6 +251,7 @@ export const BUDDY_MANIFEST: Record<string, BuddyManifestEntry> = {
     routes: { primary: ["gpt", "grok", "web"], fallback: ["claude", "gemini"] },
     effectors: ["web_search", "open_source", "receipt_review"],
     reachFirst: true,
+    persona: "owl",
   },
   nova: {
     schemaVersion: 1,
@@ -270,6 +280,7 @@ export const BUDDY_MANIFEST: Record<string, BuddyManifestEntry> = {
       "open_calendar",
     ],
     reachFirst: true,
+    persona: "fox",
   },
   aether: {
     schemaVersion: 1,
@@ -283,6 +294,12 @@ export const BUDDY_MANIFEST: Record<string, BuddyManifestEntry> = {
   },
 };
 
+// Effectors allowed to ship `wired: true` because they have been switched on behind the
+// governance gate during the governance slice. Membership is the ONLY way an effector may
+// be live: `validateBuddyManifest` throws on any wired effector outside this set, and every
+// member must be `reach` (read-only hand-off) — an `act` effector can never be smuggled live.
+export const GATED_WIRED_EFFECTORS: ReadonlySet<EffectorId> = new Set<EffectorId>(["receipt_review"]);
+
 export const BUDDY_MANIFEST_ORDER: string[] = ["forge", "veritas", "nova", "nexus", "aether"];
 
 // ---------------------------------------------------------------------------
@@ -291,6 +308,21 @@ export const BUDDY_MANIFEST_ORDER: string[] = ["forge", "veritas", "nova", "nexu
 
 export function manifestEntry(id: string): BuddyManifestEntry | undefined {
   return BUDDY_MANIFEST[id];
+}
+
+// Persona/character id (e.g. "owl") → governance manifest id (e.g. "veritas"). Built once
+// from the `persona` fields on the manifest entries so the mapping has a single source of
+// truth. A governance id, or any id with no persona alias, resolves to itself — so callers
+// can pass either form. The action gate keys grants by governance id; the dock/body speak
+// in persona ids, so every action request is resolved through here before authorization.
+const PERSONA_TO_MANIFEST: Record<string, string> = Object.fromEntries(
+  Object.values(BUDDY_MANIFEST)
+    .filter((entry): entry is BuddyManifestEntry & { persona: string } => Boolean(entry.persona))
+    .map((entry) => [entry.persona, entry.id]),
+);
+
+export function resolveManifestId(id: string): string {
+  return PERSONA_TO_MANIFEST[id] ?? id;
 }
 
 export function effectorsFor(entry: BuddyManifestEntry): EffectorSpec[] {
@@ -312,10 +344,18 @@ export function currentRouteLabel(entry: BuddyManifestEntry): string {
 // first violation so a bad edit fails loudly rather than smuggling a live or
 // dangling effector into the body layer.
 export function validateBuddyManifest(): void {
-  // No effector ships wired. Live tools are switched on behind the gate, not here.
+  // No effector ships wired unless it has been explicitly gated. Live tools are switched
+  // on behind the action gate (GATED_WIRED_EFFECTORS), not by editing a spec in place.
   for (const spec of Object.values(EFFECTOR_SPECS)) {
-    if (spec.wired) {
-      throw new Error(`effector "${spec.id}" is wired; effectors must stay stubbed until gated`);
+    if (spec.wired && !GATED_WIRED_EFFECTORS.has(spec.id)) {
+      throw new Error(`effector "${spec.id}" is wired but not gated; effectors stay stubbed until gated`);
+    }
+  }
+  // A gated-live effector must be read-only (`reach`). An `act` effector performs work in
+  // place of the tool and may never be smuggled live through the gated allow-set.
+  for (const id of GATED_WIRED_EFFECTORS) {
+    if (EFFECTOR_SPECS[id].kind !== "reach") {
+      throw new Error(`gated effector "${id}" is not a reach effector; only read-only effectors may be gated live`);
     }
   }
 

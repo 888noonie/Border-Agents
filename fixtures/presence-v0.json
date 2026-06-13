@@ -223,5 +223,26 @@
       "x": 12,
       "y": -4
     }
+  },
+  "action_request": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "action_request",
+    "buddy": "hermes",
+    "ts": 1018,
+    "effector": "receipt_review",
+    "requestId": "req-1"
+  },
+  "action_result": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "action_result",
+    "buddy": "hermes",
+    "ts": 1019,
+    "effector": "receipt_review",
+    "decision": "allow",
+    "receiptId": "action:hermes:receipt_review:t0",
+    "requestId": "req-1",
+    "summary": "Opening the receipt ledger."
   }
 }

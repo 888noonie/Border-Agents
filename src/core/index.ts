@@ -1,3 +1,4 @@
+export * from "./actionGate";
 export * from "./grader";
 export * from "./governanceTrace";
 export * from "./panelData";

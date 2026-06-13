@@ -95,12 +95,38 @@ Build order:
    head to choose any attachment point on/near the target; that offset follows the
    window as it moves. This is still presentation-only: the body does not read,
    move, or act on the target window.
-5. **Governance vertical slice** — a buddy action produces a receipt, joining the
-   presence layer to the governance core.
+5. **Governance vertical slice** ✅ — a buddy action produces a receipt, joining the
+   presence layer to the governance core. Delivered (2026-06-13):
+   - `authorizeEffectorAction` + `ActionReceipt` (`src/core/actionGate.ts`): the
+     deterministic action-side mirror of `GradeReceipt`. Hard blocks (ungranted /
+     unwired / no trusted `may_use_for_action` backing) run first and ignore
+     confirmation; the risk floor (`act` effectors floored to medium) drives
+     `needs_confirmation`; confirmation can clear the floor but never a hard block.
+   - Typed `action_request` (body→soul) and `action_result` (soul→body) presence
+     cues, mirrored in the Rust body (`desktop-body/src/presence.rs`) and fixtures.
+   - Soul handler `handleActionRequest` (`src/soulActions.ts`): cue → gate → ledger.
+   - Receipt ledger extended to a discriminated memory/action union, backward
+     compatible (`src/receiptLedger.ts`).
+   - First live effector: `receipt_review` flipped `wired: true` behind
+     `GATED_WIRED_EFFECTORS` (read-only `reach` only; invariant preserved, not deleted).
+   - Browser proof: `/review` (and `/confirm`) on a buddy runs the gate and renders the
+     `ActionReceipt` (decision + derivation + confirm affordance + ledger) — posture
+     threaded from the docks. Dev gateway relays the cue as a stand-in (real
+     authorization stays in the TS soul, never the disposable gateway).
+   - Persona→governance id resolution (`resolveManifestId` in `src/buddyManifest.ts`): the
+     dock/body address buddies by persona id (e.g. `owl`); the gate keys grants by
+     governance id (e.g. `veritas`). `handleActionRequest` resolves once so the receipt and
+     ledger carry the governance (audit) identity while the result cue stays addressed to
+     the persona. (Without this the browser `/review` fell through to `blocked`/ungranted.)
+   - End-to-end Playwright proof (`e2e/governance-action.spec.ts`): drives `/review` on the
+     real Veritas surface → asserts `needs_confirmation` + derivation → clicks Confirm →
+     asserts `allow` + the action ledger opens.
 
 Known TODOs before main: polish pinned placement controls, remove or quarantine the
-old full-frame renderer/tests if the pin UX remains the chosen path, and wire any
-future target action through Core Patrol receipts rather than the body.
+old full-frame renderer/tests if the pin UX remains the chosen path, drive the native
+body's `/review` affordance + Confirm button (the browser path is the current proof, now
+guarded by `e2e/governance-action.spec.ts`), and surface action entries in the dock's
+ledger summary UI.
 
 ---
 

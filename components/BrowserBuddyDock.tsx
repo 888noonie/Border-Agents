@@ -1834,6 +1834,12 @@ export function BrowserBuddyDock() {
     return "work";
   }
 
+  function userModeToPosture(mode: UserMode): UserPosture {
+    if (mode === "adjust") return "private";
+    if (mode === "play") return "play";
+    return "work";
+  }
+
   function switchUserMode(nextMode: UserMode) {
     markActivity();
 
@@ -2081,6 +2087,7 @@ export function BrowserBuddyDock() {
                   placement={placements[buddy.id] ?? defaultPlacements[buddy.id]}
                   renderMode={effectiveRenderMode}
                   settings={buddySettings[buddy.id] ?? defaultBuddySettings[buddy.id]}
+                  posture={userModeToPosture(activeUserMode)}
                   onSettingsChange={(settings) =>
                     setBuddySettings((current) => ({
                       ...current,
@@ -2455,6 +2462,7 @@ function BuddyHotspot({
   onManualTuck,
   renderMode,
   settings,
+  posture,
   onSettingsChange,
   onPostureChange,
   onPlacementChange,
@@ -2488,6 +2496,7 @@ function BuddyHotspot({
   onManualTuck: () => void;
   renderMode: DockRenderMode;
   settings: BuddySettings;
+  posture?: UserPosture;
   onSettingsChange: (settings: BuddySettings) => void;
   onPostureChange?: (posture: UserPosture) => void;
   onPlacementChange?: (placement: { enabledBuddyIds: readonly string[]; buddyEdges: Readonly<Record<string, string>> }) => void;
@@ -2668,6 +2677,7 @@ function BuddyHotspot({
           onPostureChange={onPostureChange}
           onPlacementChange={onPlacementChange}
           settings={settings}
+          posture={posture}
         />
 
       ) : null}

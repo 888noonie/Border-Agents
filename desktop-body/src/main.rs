@@ -963,6 +963,17 @@ impl App {
             presence::Cue::Output { surface, text, caption, media_type, data_base64 } => {
                 self.apply_output(&surface, text, caption, media_type, data_base64);
             }
+            presence::Cue::ActionResult { decision, summary, .. } => {
+                // Present the soul's authorization outcome — the body renders it, it never
+                // decides it (law 7). A non-`allow` outcome draws an alert expression so the
+                // user notices the gate held or wants confirmation.
+                if decision != "allow" {
+                    self.set_emotion(Emotion::Alert);
+                }
+                if let Some(text) = summary {
+                    self.say(text);
+                }
+            }
             presence::Cue::TargetAcquired { target_id, title, app_id, bounds } => {
                 if self.tucked.is_some() {
                     return;

@@ -249,6 +249,21 @@ pub fn said_json(buddy: &str, text: &str) -> String {
     to_soul("said", buddy, json!({ "text": text }))
 }
 
+/// The user asked the buddy to run one of its granted effectors (e.g. a `/review`
+/// affordance → `receipt_review`). This is only a *request*: authorization happens in the
+/// soul's action gate, never in the body (law 7). `confirmed` is the follow-up press after
+/// a `needs_confirmation` result; `request_id` correlates the resulting `action_result`.
+pub fn action_request_json(buddy: &str, effector: &str, confirmed: bool, request_id: Option<&str>) -> String {
+    let mut fields = json!({ "effector": effector });
+    if confirmed {
+        fields["confirmed"] = json!(true);
+    }
+    if let Some(id) = request_id {
+        fields["requestId"] = json!(id);
+    }
+    to_soul("action_request", buddy, fields)
+}
+
 /// The user dragged the visible frame head while the buddy was framing a native window.
 /// This is only a request: moving the OS window is an effector owned by the soul/driver,
 /// never by the body.
@@ -346,6 +361,17 @@ pub enum Cue {
         media_type: Option<String>,
         data_base64: Option<String>,
     },
+    /// Outcome of an `action_request` the soul ran through the governance action gate.
+    /// Distinct from `Output`: a governance result the body shows as a badge/affordance,
+    /// keyed on `decision` (allow/needs_confirmation/blocked). The full receipt stays
+    /// soul-side; the body only holds this thin cue (AGENTS.md law 7).
+    ActionResult {
+        effector: String,
+        decision: String,
+        receipt_id: String,
+        request_id: Option<String>,
+        summary: Option<String>,
+    },
     /// Border-target tracking (the "Morph Frame" seam): a platform driver tells the body
     /// where a native OS window is so it can wrap its hollow torso around it. Split three
     /// ways so the renderer binds distinct behavior to the lifecycle; every cue carries
@@ -395,6 +421,21 @@ fn parse_output(v: &Value) -> Option<Cue> {
     }
 
     Some(Cue::Output { surface, text, caption, media_type, data_base64 })
+}
+
+/// Parse an `action_result` cue. Mirrors the TS validator: `effector` and `receiptId`
+/// must be non-empty strings and `decision` must be one of the three literals — an
+/// unknown decision drops the whole cue rather than rendering an unknown state.
+fn parse_action_result(v: &Value) -> Option<Cue> {
+    let effector = nonempty(v.get("effector"))?;
+    let decision = v.get("decision")?.as_str()?.to_string();
+    if !matches!(decision.as_str(), "allow" | "needs_confirmation" | "blocked") {
+        return None;
+    }
+    let receipt_id = nonempty(v.get("receiptId"))?;
+    let request_id = v.get("requestId").and_then(|s| s.as_str()).map(String::from);
+    let summary = v.get("summary").and_then(|s| s.as_str()).map(String::from);
+    Some(Cue::ActionResult { effector, decision, receipt_id, request_id, summary })
 }
 
 /// A required, non-empty string field (mirrors the TS `isNonEmptyString` guard).
@@ -479,6 +520,7 @@ pub fn parse_to_body(text: &str) -> Option<ToBody> {
             speech: v.get("speech").and_then(|s| s.as_str()).map(String::from),
         },
         "output" => parse_output(&v)?,
+        "action_result" => parse_action_result(&v)?,
         "target_acquired" => Cue::TargetAcquired {
             target_id: nonempty(v.get("targetId"))?,
             title: v.get("title")?.as_str()?.to_string(),
@@ -641,9 +683,54 @@ mod tests {
 
     #[test]
     fn to_soul_and_attention_fixtures_are_not_body_cues() {
-        for kind in ["attached", "clicked", "grabbed", "dropped", "summoned", "dismissed", "said", "attention"] {
+        for kind in ["attached", "clicked", "grabbed", "dropped", "summoned", "dismissed", "said", "attention", "action_request"] {
             assert!(parse_to_body(&fixture(kind)).is_none(), "{kind} should not be a body cue");
         }
+    }
+
+    #[test]
+    fn parses_action_result_fixture() {
+        let result = parse_to_body(&fixture("action_result")).unwrap();
+        assert_eq!(result.buddy, "hermes");
+        match result.cue {
+            Cue::ActionResult { effector, decision, receipt_id, request_id, summary } => {
+                assert_eq!(effector, "receipt_review");
+                assert_eq!(decision, "allow");
+                assert!(!receipt_id.is_empty());
+                assert_eq!(request_id.as_deref(), Some("req-1"));
+                assert!(summary.is_some());
+            }
+            other => panic!("expected action_result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn action_result_validation_mirrors_ts() {
+        // Unknown decision literal is dropped (closed union, not a free string).
+        assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"action_result","buddy":"h","ts":1,"effector":"receipt_review","decision":"maybe","receiptId":"r1"}"#).is_none());
+        // Empty effector is dropped.
+        assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"action_result","buddy":"h","ts":1,"effector":"","decision":"allow","receiptId":"r1"}"#).is_none());
+        // Empty receiptId is dropped.
+        assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"action_result","buddy":"h","ts":1,"effector":"receipt_review","decision":"allow","receiptId":""}"#).is_none());
+        // Minimal valid (no optional requestId/summary) parses.
+        assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"action_result","buddy":"h","ts":1,"effector":"receipt_review","decision":"blocked","receiptId":"r1"}"#).is_some());
+    }
+
+    #[test]
+    fn action_request_builder_emits_valid_envelope() {
+        // Bare request: effector only, no confirmed/requestId fields.
+        let a: Value = serde_json::from_str(&action_request_json("hermes", "receipt_review", false, None)).unwrap();
+        assert_eq!(a["protocol"], "presence");
+        assert_eq!(a["kind"], "action_request");
+        assert_eq!(a["buddy"], "hermes");
+        assert_eq!(a["effector"], "receipt_review");
+        assert!(a.get("confirmed").is_none(), "confirmed omitted when false");
+        assert!(a.get("requestId").is_none(), "requestId omitted when absent");
+
+        // Confirmation follow-up carries confirmed:true and the correlating requestId.
+        let c: Value = serde_json::from_str(&action_request_json("hermes", "receipt_review", true, Some("req-9"))).unwrap();
+        assert_eq!(c["confirmed"], true);
+        assert_eq!(c["requestId"], "req-9");
     }
 
     #[test]

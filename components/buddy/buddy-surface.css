@@ -1132,3 +1132,77 @@
   background: #182033;
   color: #fff;
 }
+
+/* Action receipt card — renders the governance action-gate outcome (decision +
+   derivation trail) in the buddy panel. Mirrors the receipt detail styling. */
+.action-receipt-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 12px;
+}
+.action-receipt-card__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.action-receipt-card__badge {
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-size: 10px;
+}
+.action-receipt-card__badge[data-decision="allow"] {
+  background: #12331f;
+  color: #79e0a3;
+}
+.action-receipt-card__badge[data-decision="needs_confirmation"] {
+  background: #33290f;
+  color: #e6c574;
+}
+.action-receipt-card__badge[data-decision="blocked"] {
+  background: #331517;
+  color: #e88a8a;
+}
+.action-receipt-card__effector {
+  font-family: ui-monospace, monospace;
+  color: #cdd6e6;
+}
+.action-receipt-card__risk {
+  margin-left: auto;
+  color: #8a93a6;
+}
+.action-receipt-card__rules {
+  margin: 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  color: #b6c0d2;
+}
+.action-receipt-card__rules code {
+  color: #8fb6ff;
+  margin-right: 6px;
+}
+.action-receipt-card__confirm {
+  align-self: flex-start;
+  padding: 6px 14px;
+  border-radius: 8px;
+  border: none;
+  background: #2b6cff;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+}
+.action-receipt-card__ledger h4 {
+  margin: 4px 0;
+  color: #cdd6e6;
+}
+.action-receipt-card__ledger ul {
+  margin: 0;
+  padding-left: 16px;
+  color: #97a1b4;
+}

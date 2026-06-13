@@ -25,7 +25,10 @@ import {
 import { advanceOnboarding, currentAct, type OnboardingAct, type OnboardingEvent } from "../../src/wizardOnboarding";
 import { lifecycleReceiptKinds, recordLifecycleReceipt } from "../../src/lifecycleReceipts";
 import { type UserPosture } from "../../src/core/userPosture";
+import { type ActionReceipt } from "../../src/core";
+import { handleActionRequest } from "../../src/soulActions";
 import { connectionLabelForState } from "../../src/useBuddyGateway";
+import { ActionReceiptCard } from "./ActionReceiptCard";
 import { BuddyActionMenu } from "./BuddyActionMenu";
 import { BuddyPanel, type BuddyChatLine } from "./BuddyPanel";
 import { BuddySettingsDialog } from "./BuddySettingsDialog";
@@ -105,6 +108,8 @@ type BuddySurfaceProps = {
   /** Rich media (image/file) attached to the latest reply, rendered in the panel. */
   messageMedia?: GatewayMedia | null;
   settings: BuddySettings;
+  /** The active Work/Play/Private posture, for routing buddy actions through the gate. */
+  posture?: UserPosture;
   onGatewayConnect: () => void;
   onGatewayDisconnect: () => void;
   onGatewaySettingsChange: (settings: GatewaySettings) => void;
@@ -183,6 +188,7 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
     message,
     messageMedia,
     settings,
+    posture = "work",
     onGatewayConnect,
     onGatewayDisconnect,
     onGatewaySettingsChange,
@@ -206,6 +212,10 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
   const [history, setHistory] = useState<BuddyChatLine[]>([]);
+  // The latest governance action-gate outcome, rendered as a receipt card. `pendingEffector`
+  // holds the effector awaiting confirmation so a Confirm re-invokes the gate with confirmed.
+  const [actionReceipt, setActionReceipt] = useState<ActionReceipt | null>(null);
+  const [pendingEffector, setPendingEffector] = useState<string | null>(null);
   const [panelShift, setPanelShift] = useState({ x: 0, y: 0 });
   const [surfaceUi, setSurfaceUi] = useState<BuddySurfaceUiState>(() =>
     loadStoredBuddySurfaceUi(buddy.id, preferCenterFit),
@@ -573,9 +583,47 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
     }
   }
 
+  // Run a buddy action through the soul-side governance gate. The body never authorizes
+  // (AGENTS.md law 7) — it hands the request to the gate, which emits the ActionReceipt and
+  // persists it. Confirmation re-runs the same effector with `confirmed`, which can clear the
+  // risk floor but never a hard block.
+  function runActionReview(effectorId: string, confirmed: boolean) {
+    const { receipt } = handleActionRequest({
+      buddy: buddy.id,
+      effectorId,
+      settings,
+      posture,
+      history: history.map((line) => ({ role: line.role, text: line.text })),
+      confirmed,
+    });
+    setActionReceipt(receipt);
+    setPendingEffector(receipt.decision === "needs_confirmation" ? effectorId : null);
+    updateSurfaceUi({ activeTab: "message" });
+    setHistory((current) => [
+      ...current,
+      { id: createLineId(), role: "status", text: `${receipt.effector}: ${receipt.decision}` },
+    ]);
+  }
+
   function handleSubmit() {
     const trimmed = draft.trim();
     if (!trimmed) {
+      return;
+    }
+
+    // Slash commands that drive the governance action gate, intercepted before any
+    // text reaches the provider. `/review [effector]` requests an effector (default the
+    // read-only receipt_review); `/confirm` confirms a pending needs_confirmation action.
+    if (trimmed.startsWith("/review") || trimmed === "/confirm") {
+      setDraft("");
+      if (trimmed === "/confirm") {
+        if (pendingEffector) {
+          runActionReview(pendingEffector, true);
+        }
+        return;
+      }
+      const effectorId = trimmed.slice("/review".length).trim() || "receipt_review";
+      runActionReview(effectorId, false);
       return;
     }
 
@@ -797,7 +845,12 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
               gatewayState={gatewayState}
               history={history}
               panelContent={
-                bubbleTab === "setup" && wizardEnabled && onboardingModel ? (
+                actionReceipt ? (
+                  <ActionReceiptCard
+                    receipt={actionReceipt}
+                    onConfirm={pendingEffector ? () => runActionReview(pendingEffector, true) : undefined}
+                  />
+                ) : bubbleTab === "setup" && wizardEnabled && onboardingModel ? (
                   <OnboardingWizardPanel
                     model={onboardingModel}
                     draft={onboardingSurface.draft}

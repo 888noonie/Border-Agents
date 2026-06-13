@@ -464,6 +464,29 @@ function handlePresenceInteraction(socket, message) {
       void handleUserText(buddy, text, presenceEmit(socket, buddy));
       return;
     }
+    case "action_request": {
+      // The body asked to run a granted effector. Authorization is NOT done here: the
+      // real ActionReceipt is produced by the deterministic gate in src/soulActions.ts
+      // (→ src/core/actionGate.ts), which this disposable dev gateway cannot import. We
+      // only relay a stand-in `action_result` so the native body stays wire-compatible.
+      // A real soul runtime runs the gate, persists the receipt, and emits the true result.
+      const effector = typeof message.effector === "string" ? message.effector : "";
+      log("action requested (gateway stub — real authorization is the soul's job)", {
+        buddy,
+        effector,
+        confirmed: message.confirmed === true,
+      });
+      socket.send(
+        presenceEnvelope("action_result", buddy, {
+          effector,
+          decision: "needs_confirmation",
+          receiptId: "gateway-stub",
+          requestId: typeof message.requestId === "string" ? message.requestId : undefined,
+          summary: "Authorization happens in the soul; this dev gateway only relays the request.",
+        }),
+      );
+      return;
+    }
     case "target_drag_requested":
       // Moving a native OS window is a governed effector. The body only reports the
       // request; a later driver/soul path decides whether and how to move the window.

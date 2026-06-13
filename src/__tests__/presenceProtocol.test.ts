@@ -126,6 +126,52 @@ describe("presence protocol parsing rejects malformed input", () => {
   });
 });
 
+describe("action gate cues", () => {
+  test("action_request is to-soul and round-trips over the wire", () => {
+    const request = presence.actionRequest("veritas", "receipt_review", { confirmed: true, requestId: "req-1", ts: 1 });
+    expect(presenceDirection("action_request")).toBe("to-soul");
+    expect((PRESENCE_TO_SOUL_KINDS as readonly string[])).toContain("action_request");
+    expect(overTheWire(request)).toMatchObject({
+      kind: "action_request",
+      effector: "receipt_review",
+      confirmed: true,
+      requestId: "req-1",
+    });
+  });
+
+  test("action_result is to-body and round-trips over the wire", () => {
+    const result = presence.actionResult(
+      "veritas",
+      { effector: "receipt_review", decision: "needs_confirmation", receiptId: "action:veritas:receipt_review:t", summary: "confirm?" },
+      { ts: 1 },
+    );
+    expect(presenceDirection("action_result")).toBe("to-body");
+    expect((PRESENCE_TO_BODY_KINDS as readonly string[])).toContain("action_result");
+    expect(overTheWire(result)).toMatchObject({ kind: "action_result", decision: "needs_confirmation" });
+  });
+
+  test("rejects a malformed action_request (missing effector)", () => {
+    expect(
+      parsePresenceMessage({ protocol: PRESENCE_PROTOCOL, v: 0, kind: "action_request", buddy: "veritas", ts: 1 }),
+    ).toBeNull();
+  });
+
+  test("rejects an action_result with an unknown decision literal", () => {
+    expect(
+      parsePresenceMessage({
+        protocol: PRESENCE_PROTOCOL,
+        v: 0,
+        kind: "action_result",
+        buddy: "veritas",
+        ts: 1,
+        effector: "receipt_review",
+        decision: "maybe",
+        receiptId: "r1",
+      }),
+    ).toBeNull();
+  });
+});
+
 describe("attached handshake", () => {
   test("is a to-soul lifecycle kind, distinct from summoned", () => {
     expect((PRESENCE_TO_SOUL_KINDS as readonly string[])).toContain("attached");

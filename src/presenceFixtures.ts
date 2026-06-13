@@ -51,6 +51,12 @@ export const PRESENCE_FIXTURES = {
     { targetId: "win-42", delta: { x: 12, y: -4 } },
     { ts: 1017 },
   ),
+  action_request: presence.actionRequest(BUDDY, "receipt_review", { requestId: "req-1", ts: 1018 }),
+  action_result: presence.actionResult(
+    BUDDY,
+    { effector: "receipt_review", decision: "allow", receiptId: "action:hermes:receipt_review:t0", requestId: "req-1", summary: "Opening the receipt ledger." },
+    { ts: 1019 },
+  ),
 } as const;
 
 /** Canonical serialization (drops `undefined`, stable 2-space indent, trailing nl). */

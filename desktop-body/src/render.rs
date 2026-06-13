@@ -177,6 +177,7 @@ impl Layout {
         let x = panel.x + panel.w - size - 5.0;
         let y = match action {
             TorsoAction::Expand => panel.y + 5.0,
+            TorsoAction::Copy => panel.y + (panel.h - size) / 2.0,
             TorsoAction::Scroll => panel.y + panel.h - size - 5.0,
         };
         Rect { x, y, w: size, h: size }
@@ -191,6 +192,11 @@ impl Layout {
         let h = 20.0;
         let col_x = self.ui_x(BUBBLE_W);
         Rect { x: col_x + BUBBLE_W - w, y: INPUT_Y - h - 5.0, w, h }
+    }
+
+    pub fn paste_button_rect(&self) -> Rect {
+        let review = self.review_button_rect();
+        Rect { x: review.x - 58.0, y: review.y, w: 52.0, h: review.h }
     }
 
 }
@@ -375,7 +381,7 @@ pub fn point_in_bump(edge: BumpEdge, w: u32, h: u32, px: f64, py: f64) -> bool {
 }
 
 pub fn torso_action_at(layout: &Layout, px: f64, py: f64) -> Option<TorsoAction> {
-    [TorsoAction::Expand, TorsoAction::Scroll]
+    [TorsoAction::Expand, TorsoAction::Copy, TorsoAction::Scroll]
         .into_iter()
         .find(|action| layout.torso_action_rect(*action).contains(px, py))
 }
@@ -602,6 +608,7 @@ pub enum TorsoOutput<'a> {
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum TorsoAction {
     Expand,
+    Copy,
     Scroll,
 }
 
@@ -619,6 +626,7 @@ pub struct BodyView<'a> {
     /// bump instead of the full figure.
     pub tucked: Option<BumpEdge>,
     pub input_text: &'a str,
+    pub input_placeholder: &'a str,
     pub input_focused: bool,
     /// The on-body Review control is a Confirm button when the soul's last action_result
     /// asked for confirmation. The body only renders this state; it never authorizes.
@@ -683,6 +691,7 @@ impl Sprite {
                         font,
                         pinned,
                         view.input_text,
+                        view.input_placeholder,
                         view.input_focused,
                         view.t,
                     );
@@ -723,9 +732,11 @@ impl Sprite {
                     font,
                     &view.layout,
                     view.input_text,
+                    view.input_placeholder,
                     view.input_focused,
                     view.t,
                 );
+                draw_paste_button(&mut pixmap, font, &view.layout);
                 draw_review_button(&mut pixmap, font, &view.layout, view.review_pending);
             }
         }
@@ -1059,6 +1070,7 @@ fn draw_pinned_input(
     font: &Font,
     pinned: PinnedLayout,
     text: &str,
+    placeholder_text: &str,
     focused: bool,
     t: f32,
 ) {
@@ -1080,7 +1092,7 @@ fn draw_pinned_input(
 
     let placeholder;
     let wrapped: &[String] = if text.is_empty() {
-        placeholder = vec!["Ask Hermes...".to_string()];
+        placeholder = vec![placeholder_text.to_string()];
         &placeholder
     } else {
         shown
@@ -1115,6 +1127,23 @@ fn draw_review_button(pixmap: &mut Pixmap, font: &Font, layout: &Layout, pending
     } else {
         (Color::from_rgba8(247, 251, 255, 238), [24, 40, 64], "Review")
     };
+    draw_round_rect(pixmap, rect, bg);
+    if let Some(path) = round_rect_path(rect, 9.0) {
+        let mut stroke = Stroke::default();
+        stroke.width = 1.0;
+        pixmap.stroke_path(&path, &solid(Color::from_rgba8(0, 0, 0, 110)), &stroke, Transform::identity(), None);
+    }
+    let tw = measure(font, label, TEXT_PX);
+    let x = rect.x + (rect.w - tw) / 2.0;
+    let y = rect.y + 14.0;
+    draw_line(pixmap, font, label, x, y, TEXT_PX, fg);
+}
+
+fn draw_paste_button(pixmap: &mut Pixmap, font: &Font, layout: &Layout) {
+    let rect = layout.paste_button_rect();
+    let bg = Color::from_rgba8(247, 251, 255, 238);
+    let fg = [24, 40, 64];
+    let label = "Paste";
     draw_round_rect(pixmap, rect, bg);
     if let Some(path) = round_rect_path(rect, 9.0) {
         let mut stroke = Stroke::default();
@@ -1384,6 +1413,7 @@ fn draw_torso_output(
     }
 
     draw_torso_action(pixmap, layout, TorsoAction::Expand);
+    draw_torso_action(pixmap, layout, TorsoAction::Copy);
     draw_torso_action(pixmap, layout, TorsoAction::Scroll);
 }
 
@@ -1391,8 +1421,9 @@ fn draw_session_card(pixmap: &mut Pixmap, font: &Font, rect: Rect, card: &Sessio
     let pad = 8.0;
     let mut y = rect.y + pad + 12.0;
     let text_w = rect.w - pad * 2.0;
+    let bottom = rect.y + rect.h - pad;
 
-    y = draw_wrapped_block(
+    let Some(next_y) = draw_wrapped_block_clipped(
         pixmap,
         font,
         rect.x + pad,
@@ -1403,8 +1434,12 @@ fn draw_session_card(pixmap: &mut Pixmap, font: &Font, rect: Rect, card: &Sessio
         1,
         &format!("{} surface", card.name),
         [102, 88, 76],
-    ) + 4.0;
-    y = draw_wrapped_block(
+        bottom,
+    ) else {
+        return;
+    };
+    y = next_y + 4.0;
+    let Some(next_y) = draw_wrapped_block_clipped(
         pixmap,
         font,
         rect.x + pad,
@@ -1415,14 +1450,18 @@ fn draw_session_card(pixmap: &mut Pixmap, font: &Font, rect: Rect, card: &Sessio
         2,
         card.status,
         [38, 34, 32],
-    ) + 5.0;
+        bottom,
+    ) else {
+        return;
+    };
+    y = next_y + 5.0;
 
     for (line, max_lines) in [
         (format!("Provider: {}", card.provider), 1usize),
-        (format!("Model: {}", card.model), 2usize),
-        (format!("Link: {}", card.gateway), 3usize),
+        (format!("Model: {}", card.model), 1usize),
+        (format!("Link: {}", card.gateway), 2usize),
     ] {
-        y = draw_wrapped_block(
+        let Some(next_y) = draw_wrapped_block_clipped(
             pixmap,
             font,
             rect.x + pad,
@@ -1433,11 +1472,15 @@ fn draw_session_card(pixmap: &mut Pixmap, font: &Font, rect: Rect, card: &Sessio
             max_lines,
             &line,
             [63, 56, 52],
-        ) + 2.0;
+            bottom,
+        ) else {
+            break;
+        };
+        y = next_y + 2.0;
     }
 
     let note_y = y + 4.0;
-    let note_h = (rect.y + rect.h - pad - note_y).max(0.0);
+    let note_h = (bottom - note_y).max(0.0);
     if note_h >= PANEL_TEXT_PX + 10.0 {
         let note_rect = Rect {
             x: rect.x + pad,
@@ -1501,6 +1544,30 @@ fn draw_wrapped_block(
     } else {
         baseline - line_h
     }
+}
+
+fn draw_wrapped_block_clipped(
+    pixmap: &mut Pixmap,
+    font: &Font,
+    x: f32,
+    top: f32,
+    px: f32,
+    line_h: f32,
+    max_w: f32,
+    max_lines: usize,
+    text: &str,
+    color: [u8; 3],
+    bottom: f32,
+) -> Option<f32> {
+    if top + px > bottom {
+        return None;
+    }
+    let fit_lines = (((bottom - top - px) / line_h).floor() as usize).saturating_add(1);
+    let lines = max_lines.min(fit_lines);
+    if lines == 0 {
+        return None;
+    }
+    Some(draw_wrapped_block(pixmap, font, x, top, px, line_h, max_w, lines, text, color))
 }
 
 fn draw_media_stub(
@@ -1605,6 +1672,30 @@ fn draw_torso_action(pixmap: &mut Pixmap, layout: &Layout, action: TorsoAction) 
                 stroke.width = 1.35;
                 stroke.line_cap = tiny_skia::LineCap::Round;
                 stroke.line_join = tiny_skia::LineJoin::Round;
+                pixmap.stroke_path(&path, &icon, &stroke, Transform::identity(), None);
+            }
+        }
+        TorsoAction::Copy => {
+            let back = Rect {
+                x: rect.x + 5.0,
+                y: rect.y + 4.0,
+                w: rect.w - 9.0,
+                h: rect.h - 8.0,
+            };
+            let front = Rect {
+                x: rect.x + 3.0,
+                y: rect.y + 6.0,
+                w: rect.w - 9.0,
+                h: rect.h - 8.0,
+            };
+            if let Some(path) = round_rect_path(back, 2.0) {
+                let mut stroke = Stroke::default();
+                stroke.width = 1.15;
+                pixmap.stroke_path(&path, &icon, &stroke, Transform::identity(), None);
+            }
+            if let Some(path) = round_rect_path(front, 2.0) {
+                let mut stroke = Stroke::default();
+                stroke.width = 1.15;
                 pixmap.stroke_path(&path, &icon, &stroke, Transform::identity(), None);
             }
         }
@@ -1745,7 +1836,15 @@ fn draw_bubble(pixmap: &mut Pixmap, font: &Font, layout: &Layout, text: &str) {
 
 /// The on-body chat input: expands to fit the typed text (up to
 /// `INPUT_MAX_LINES`, then scrolls), brighter when focused, blinking caret.
-fn draw_input(pixmap: &mut Pixmap, font: &Font, layout: &Layout, text: &str, focused: bool, t: f32) {
+fn draw_input(
+    pixmap: &mut Pixmap,
+    font: &Font,
+    layout: &Layout,
+    text: &str,
+    placeholder_text: &str,
+    focused: bool,
+    t: f32,
+) {
     let pad = 12.0;
     let max_w = BUBBLE_W - pad * 2.0;
 
@@ -1771,7 +1870,7 @@ fn draw_input(pixmap: &mut Pixmap, font: &Font, layout: &Layout, text: &str, foc
     let mut baseline = rect.y + 8.0 + TEXT_PX;
     if text.is_empty() {
         if !focused {
-            draw_line(pixmap, font, "Type to me…", rect.x + pad, baseline, TEXT_PX, [130, 122, 114]);
+            draw_line(pixmap, font, placeholder_text, rect.x + pad, baseline, TEXT_PX, [130, 122, 114]);
         }
     } else {
         for line in shown {
@@ -2112,17 +2211,22 @@ mod tests {
     }
 
     #[test]
-    fn review_button_sits_above_the_input_and_shares_its_column() {
+    fn input_buttons_sit_above_the_input_and_share_its_column() {
         for facing in [Facing::Left, Facing::Right] {
             let l = Layout { facing, body_len: BODY_LEN_MIN };
-            let btn = l.review_button_rect();
+            let review = l.review_button_rect();
+            let paste = l.paste_button_rect();
             let input = l.input_region_rect();
             // Above the input, not overlapping it.
-            assert!(btn.y + btn.h <= input.y, "review button overlaps input ({facing:?})");
+            assert!(review.y + review.h <= input.y, "review button overlaps input ({facing:?})");
+            assert!(paste.y + paste.h <= input.y, "paste button overlaps input ({facing:?})");
             // Within the bubble/input column (right-aligned to it).
-            assert!(btn.x >= input.x - 0.5);
-            assert!(btn.x + btn.w <= input.x + input.w + 0.5);
-            assert!(btn.y >= 0.0);
+            for btn in [review, paste] {
+                assert!(btn.x >= input.x - 0.5);
+                assert!(btn.x + btn.w <= input.x + input.w + 0.5);
+                assert!(btn.y >= 0.0);
+            }
+            assert!(paste.x + paste.w <= review.x, "paste button overlaps review ({facing:?})");
         }
     }
 
@@ -2144,7 +2248,7 @@ mod tests {
     fn torso_actions_live_inside_output_panel() {
         let layout = Layout { facing: Facing::Right, body_len: BODY_LEN_DEFAULT };
         let panel = layout.output_panel_rect();
-        for action in [TorsoAction::Expand, TorsoAction::Scroll] {
+        for action in [TorsoAction::Expand, TorsoAction::Copy, TorsoAction::Scroll] {
             let rect = layout.torso_action_rect(action);
             assert!(rect.x >= panel.x);
             assert!(rect.y >= panel.y);
@@ -2230,6 +2334,7 @@ mod tests {
             chat_open: false,
             tucked: None,
             input_text: "",
+            input_placeholder: "Ask Border Wizard...",
             input_focused: false,
             review_pending: false,
             layout: Layout::initial(),

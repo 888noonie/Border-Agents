@@ -23,14 +23,17 @@ export BB_TARGET="${BB_TARGET:-firefox}"
 #   gateway            — dev gateway with provider chat (npm run gateway:dev)
 #   wizard             — onboarding persona (npm run gateway:wizard)
 export BB_START_SOUL="${BB_START_SOUL:-governance}"
+# Browser buddies UI harness (Vite on :1420). Set BB_START_BROWSER=0 to skip.
+export BB_START_BROWSER="${BB_START_BROWSER:-1}"
 
 bb_init_logging "$ROOT"
 export BB_LOG_EVENTS
 bb_begin_session_log
 bb_tee_session
 
-bb_banner "Border Buddies start ALL (soul + frame + body)"
+bb_banner "Border Buddies start ALL (soul + browser + frame + body)"
 bb_log "Soul mode: ${BB_START_SOUL}"
+bb_log "Browser preview: ${BB_START_BROWSER}"
 bb_log "Frame target: ${BB_TARGET}"
 bb_log "After a crash/freeze run: npm run report   (or Run Task → Report)"
 bb_log "Logs folder: ${ROOT}/.bb-logs/"
@@ -40,8 +43,10 @@ bb_log "Cargo: $(command -v cargo) ($(cargo --version 2>/dev/null || echo unknow
 
 soul_pid=""
 frame_pid=""
+browser_pid=""
 soul_started_by_us=0
 frame_started_by_us=0
+browser_started_by_us=0
 body_exit_code=0
 
 soul_start_cmd() {
@@ -59,6 +64,10 @@ soul_start_cmd() {
 }
 
 cleanup() {
+  if [[ "${browser_started_by_us}" -eq 1 && -n "${browser_pid}" ]] && kill -0 "${browser_pid}" 2>/dev/null; then
+    bb_log "Stopping browser preview (pid ${browser_pid})"
+    kill "${browser_pid}" 2>/dev/null || true
+  fi
   if [[ "${frame_started_by_us}" -eq 1 && -n "${frame_pid}" ]] && kill -0 "${frame_pid}" 2>/dev/null; then
     bb_log "Stopping frame driver (pid ${frame_pid})"
     kill "${frame_pid}" 2>/dev/null || true
@@ -107,6 +116,29 @@ else
     exit 1
   fi
   bb_log "Soul ready at ws://127.0.0.1:17387/border-buddies"
+fi
+
+if [[ "${BB_START_BROWSER}" == "0" ]]; then
+  bb_log "Browser preview disabled (BB_START_BROWSER=0)."
+elif bb_port_listening 1420; then
+  bb_log "Browser preview already listening on http://127.0.0.1:1420"
+else
+  bb_log "Starting browser buddies (npm run dev)..."
+  npm run dev >>"$BB_LOG_SESSION" 2>&1 &
+  browser_pid=$!
+  browser_started_by_us=1
+  bb_log "Browser preview pid: ${browser_pid}"
+
+  if bb_wait_for_port 1420 40; then
+    bb_log "Browser preview ready at http://127.0.0.1:1420"
+  else
+    bb_warn "Browser preview is not listening yet; native body will still start."
+    if ! kill -0 "${browser_pid}" 2>/dev/null; then
+      bb_warn "Browser preview process exited early."
+      browser_started_by_us=0
+      browser_pid=""
+    fi
+  fi
 fi
 
 if pgrep -x bb-frame-driver >/dev/null 2>&1; then

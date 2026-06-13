@@ -1,8 +1,8 @@
 {
   "version": "2.0.0",
-  // Run tasks track the live native stack: soul (or gateway/wizard) + frame driver +
-  // desktop body. Only one process may bind ws://127.0.0.1:17387 — Start ALL picks
-  // the soul mode; use Start ALL (wizard) for onboarding.
+  // Run tasks track the full stack: soul (or gateway/wizard) + browser buddies preview +
+  // frame driver + native body. Only one process may bind ws://127.0.0.1:17387 —
+  // Start ALL picks the soul mode; use Start ALL (wizard) for onboarding.
   "tasks": [
     // ── RUN ─────────────────────────────────────────────────────────────────
     {
@@ -20,7 +20,7 @@
       "group": { "kind": "build", "isDefault": true },
       "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "focus": true, "group": "stack" },
       "problemMatcher": ["$rustc"],
-      "detail": "Full stack: real soul (action gate) + COSMIC frame driver + native body. Logs to .bb-logs/"
+      "detail": "Full stack: real soul + browser buddies (127.0.0.1:1420) + frame driver + native body. Logs to .bb-logs/"
     },
     {
       "label": "Start ALL (wizard)",
@@ -37,7 +37,7 @@
       "group": "build",
       "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "focus": true, "group": "stack" },
       "problemMatcher": ["$rustc"],
-      "detail": "Onboarding stack: wizard gateway soul + frame driver + native body (no real action gate — use Start ALL for governance)"
+      "detail": "Onboarding stack: wizard gateway + browser buddies + frame driver + native body (no real action gate — use Start ALL for governance)"
     },
     {
       "label": "Start (gateway + body)",
@@ -107,14 +107,15 @@
       "detail": "Track a native COSMIC window and emit target_* presence cues (relayed by soul or gateway)"
     },
     {
-      "label": "UI preview (browser)",
+      "label": "Browser buddies",
       "type": "shell",
-      "command": "npm run dev",
+      "command": "bash",
+      "args": ["scripts/bb-browser.sh"],
       "options": { "cwd": "${workspaceFolder}" },
       "group": "build",
       "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "group": "stack" },
       "problemMatcher": [],
-      "detail": "Buddy UI in a plain browser tab at 127.0.0.1:1420 — fast visual iteration, no Wayland overlay. A dev harness, not a buddy."
+      "detail": "Browser buddies UI at http://127.0.0.1:1420 — connects to soul/gateway on :17387. Dev harness + governance proof path."
     },
 
     // ── STOP / RESTART ──────────────────────────────────────────────────────

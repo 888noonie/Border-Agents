@@ -16,6 +16,7 @@
     "test:e2e:codegen": "playwright codegen http://127.0.0.1:1420",
     "demo:memory": "tsx src/core/demo/hermesMemoryDemoCli.ts",
     "demo:trace": "tsx src/core/demo/governanceTraceCli.ts",
+    "demo:harm": "tsx scripts/harm-demo.ts",
     "preview": "vite preview --host 127.0.0.1 --port 1420",
     "gateway:dev": "node scripts/gateway-dev.mjs",
     "gateway:wizard": "BB_SOUL=wizard node scripts/gateway-dev.mjs",

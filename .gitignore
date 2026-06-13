@@ -30,6 +30,9 @@ Repo_Improvement_Report.md
 # Local phase/scaffold notes
 RoadMap.md
 
+# Act-effector sandbox — the ONLY place repo_edit may write (harm demo / live executor artifacts)
+.border-agents/
+
 # Playwright
 /playwright-report/
 /playwright/.cache/

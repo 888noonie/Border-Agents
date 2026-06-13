@@ -27,6 +27,7 @@ import { join } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 
 import { handleActionRequest, parseActionCommand } from "../src/soulActions";
+import { createLiveRepoEditExecutor } from "./liveEffectorExecutors";
 import { PRESENCE_PROTOCOL, parsePresenceMessage, presence } from "../src/presenceProtocol";
 import { createDefaultBuddySettings, BUDDY_PROFILES, type BuddyProfile } from "../src/buddyProfiles";
 import type { UserPosture } from "../src/core";
@@ -84,6 +85,9 @@ function profileFor(buddy: string): BuddyProfile {
 }
 
 const storage = fileStorage(LEDGER_PATH);
+// Live, disk-writing executors rooted at the repo cwd, sandboxed to .border-agents/proofs/.
+// The soul-server is a Node context, so unlike the browser body it injects real executors.
+const EXECUTORS = { repo_edit: createLiveRepoEditExecutor() };
 // Per-buddy pending effector, set when the gate returns needs_confirmation so a later
 // `/confirm` knows what it is confirming. Mirrors the browser composer's pendingEffector.
 const pending = new Map<string, string>();
@@ -99,12 +103,16 @@ function authorizeAndReply(
   confirmed: boolean,
   requestId?: string,
 ) {
-  const { receipt, result } = handleActionRequest({
+  const { receipt, result, execution } = handleActionRequest({
     buddy,
     effectorId,
     settings: createDefaultBuddySettings(profileFor(buddy)),
     posture: POSTURE,
     history: [],
+    // Real disk-writing executors, sandboxed to .border-agents/proofs/. They only run on an
+    // `allow` carrying an intent; until the body emits a typed intent over the wire, repo_edit
+    // requests authorize but skip execution. No-execute-on-block still holds either way.
+    executors: EXECUTORS,
     confirmed,
     requestId,
     storage,
@@ -121,6 +129,7 @@ function authorizeAndReply(
     confirmed,
     decision: receipt.decision,
     receiptId: receipt.receipt_id,
+    execution: execution ? `${execution.outcome}${execution.executor_called ? "" : " (skipped)"}` : "none",
   });
   return receipt;
 }

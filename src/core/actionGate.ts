@@ -114,22 +114,51 @@ export const PROTECTED_REPO_TARGETS: readonly string[] = [
   "package-lock.json",
 ];
 
-/** Normalize a repo-relative path for protection matching (strip `./`, leading `/`). */
-function normalizeRepoPath(path: string): string {
-  return path.replace(/^\.\//, "").replace(/^\/+/, "");
+/**
+ * Canonicalize a repo-relative path: strip leading slashes, resolve `.` and `..`
+ * segments, and report whether the path climbs out of the repo root. This is the
+ * trust-critical step — without resolving `..`, `src/foo/../../AGENTS.md` or
+ * `.border-agents/proofs/../../etc/passwd` would slip past a naive prefix match.
+ */
+export function canonicalizeRepoPath(path: string): { path: string; escapes: boolean } {
+  const segments = path.replace(/^\/+/, "").split("/");
+  const out: string[] = [];
+  let escapes = false;
+  for (const segment of segments) {
+    if (segment === "" || segment === ".") {
+      continue;
+    }
+    if (segment === "..") {
+      if (out.length === 0) {
+        escapes = true; // climbed above the repo root — never writable
+      } else {
+        out.pop();
+      }
+      continue;
+    }
+    out.push(segment);
+  }
+  return { path: out.join("/"), escapes };
 }
 
 /**
  * Is this intent aimed at a protected target? Only repo-path targets are guarded here;
- * other target kinds get their own policy as effectors graduate. Pure and exported so
- * surfaces and tests can pre-flight a target without invoking the full gate.
+ * other target kinds get their own policy as effectors graduate. A path that escapes the
+ * repo root (via `..`) is always protected. Pure and exported so surfaces and tests can
+ * pre-flight a target without invoking the full gate.
  */
 export function isProtectedTarget(intent: ActionIntent): boolean {
   if (intent.target.kind !== "repo_path") {
     return false;
   }
-  const path = normalizeRepoPath(intent.target.path);
-  return PROTECTED_REPO_TARGETS.some((p) => path === p || path.startsWith(p));
+  const { path, escapes } = canonicalizeRepoPath(intent.target.path);
+  if (escapes) {
+    return true;
+  }
+  return PROTECTED_REPO_TARGETS.some((entry) => {
+    const dir = entry.endsWith("/") ? entry.slice(0, -1) : entry;
+    return path === dir || path.startsWith(`${dir}/`);
+  });
 }
 
 const RISK_RANK: Record<PurposePolicy["risk"], number> = { low: 0, medium: 1, high: 2 };

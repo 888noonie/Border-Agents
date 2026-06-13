@@ -192,9 +192,33 @@ describe("execution membrane — intent-level authorization", () => {
     expect(isProtectedTarget(repoIntent("AGENTS.md"))).toBe(true);
     expect(isProtectedTarget(repoIntent("src/core/actionGate.ts"))).toBe(true);
     expect(isProtectedTarget(repoIntent("./src/core/grader.ts"))).toBe(true);
+    expect(isProtectedTarget(repoIntent("src/core"))).toBe(true); // the dir itself
     expect(isProtectedTarget(repoIntent("package.json"))).toBe(true);
     expect(isProtectedTarget(repoIntent(".border-agents/proofs/first-act.patch"))).toBe(false);
     expect(isProtectedTarget(repoIntent("src/components/foo.tsx"))).toBe(false);
+  });
+
+  test("isProtectedTarget resolves `..` so traversal cannot disguise a protected target", () => {
+    // A naive prefix match would miss all of these — canonicalization catches them.
+    expect(isProtectedTarget(repoIntent("src/foo/../../AGENTS.md"))).toBe(true);
+    expect(isProtectedTarget(repoIntent("docs/../src/core/grader.ts"))).toBe(true);
+    expect(isProtectedTarget(repoIntent(".border-agents/proofs/../../package.json"))).toBe(true);
+    // Any path that climbs out of the repo root is never writable.
+    expect(isProtectedTarget(repoIntent("../../etc/passwd"))).toBe(true);
+    expect(isProtectedTarget(repoIntent(".border-agents/proofs/../../../home/x"))).toBe(true);
+    // A `..` that stays inside and resolves to a safe path is fine.
+    expect(isProtectedTarget(repoIntent("src/components/../components/foo.tsx"))).toBe(false);
+  });
+
+  test("a traversal target is hard-blocked by the gate even when granted, backed, and confirmed", () => {
+    const receipt = authorizeEffectorAction({
+      ...base,
+      frame: backedFrame(),
+      intent: repoIntent(".border-agents/proofs/../../AGENTS.md", "apply_patch"),
+      confirmed: true,
+    });
+    expect(receipt.decision).toBe("blocked");
+    expect(receipt.rules.some((r) => r.policy_rule === "action.blocked.protected_target")).toBe(true);
   });
 
   // Case A — blocked before confirmation: no trusted action backing.

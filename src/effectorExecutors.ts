@@ -16,7 +16,7 @@
 // (so allowed actions record `executor_called: false`, outcome `skipped` — an honest
 // "would run here"); the Node soul-server injects real ones.
 
-import type { ActionIntent, ActionRoute, ExecutionReceipt } from "./core";
+import { canonicalizeRepoPath, type ActionIntent, type ActionRoute, type ExecutionReceipt } from "./core";
 import type { EffectorId } from "./buddyManifest";
 
 export interface ExecutionContext {
@@ -40,19 +40,19 @@ export type ExecutorRegistry = Partial<Record<EffectorId, EffectorExecutor>>;
 /** The only repo path the repo_edit executor will ever touch — the act-effector proof sandbox. */
 export const REPO_EDIT_PROOF_DIR = ".border-agents/proofs/";
 
-function normalizeRepoPath(path: string): string {
-  return path.replace(/^\.\//, "").replace(/^\/+/, "");
-}
-
 /**
  * The default repo_edit executor. It re-asserts the proof-directory guard independently
- * of the gate (defense in depth) and reports the outcome. This build does not write to
- * disk — it records an honest `ok` for a sandbox target so the audit pair (ActionReceipt
- * + ExecutionReceipt) is complete; the soul-server can inject a disk-writing executor.
+ * of the gate (defense in depth), using the same `..`-resolving canonicalization the gate
+ * uses so a traversal target (`.border-agents/proofs/../../etc`) can never escape the
+ * sandbox. This build does not write to disk — it records an honest `ok` for a sandbox
+ * target so the audit pair (ActionReceipt + ExecutionReceipt) is complete; the soul-server
+ * can inject a disk-writing executor.
  */
 export const repoEditProofExecutor: EffectorExecutor = (ctx) => {
-  const path = normalizeRepoPath(ctx.intent.target.path);
-  if (ctx.intent.target.kind !== "repo_path" || !path.startsWith(normalizeRepoPath(REPO_EDIT_PROOF_DIR))) {
+  const sandbox = canonicalizeRepoPath(REPO_EDIT_PROOF_DIR).path;
+  const { path, escapes } = canonicalizeRepoPath(ctx.intent.target.path);
+  const inSandbox = !escapes && (path === sandbox || path.startsWith(`${sandbox}/`));
+  if (ctx.intent.target.kind !== "repo_path" || !inSandbox) {
     return {
       outcome: "skipped",
       detail: `executor sandbox: repo_edit only operates under ${REPO_EDIT_PROOF_DIR}; refused "${ctx.intent.target.path}"`,

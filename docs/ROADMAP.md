@@ -130,10 +130,39 @@ Build order:
      real Veritas surface → asserts `needs_confirmation` + derivation → clicks Confirm →
      asserts `allow` + the action ledger opens.
 
+**Execution membrane — first real `act` effector (2026-06-13, post-roundtable)** ✅ — the gate
+graduated from effector-level to **intent-level** authorization (GPT roundtable):
+   - `ActionIntent` (operation + target) + `ExecutionReceipt` (world-facing outcome, route
+     provenance) in `src/core/actionGate.ts` — authorization and execution are different
+     borders. `repo_edit` is the first true `act` effector, live behind a stricter
+     `GATED_WIRED_ACT_EFFECTORS` lane (intent schema + outcome receipt required); the
+     read-only `reach` lane is untouched.
+   - Hard block `action.blocked.protected_target`: `AGENTS.md` / `src/core` / deps / `.git`
+     can never be written, even after confirmation. `..` is canonicalized so traversal
+     (`src/foo/../../AGENTS.md`) can't disguise a protected target (and the executor sandbox
+     guard uses the same resolution — defense in depth).
+   - Route doctrine: `action.confirm.route_downgrade` — a fallback to a lower-trust provider
+     re-enters the confirmation floor (degradation is never silent). Route rides on the
+     `ExecutionReceipt` and the wire `action_result.outcome`.
+   - Protocol v0 (additive): typed `intent` + `routeHint` on `action_request`, `outcome`
+     `{ executed, executionReceiptId, route }` on `action_result`. `context` is legacy and
+     never authoritative. Mirrored in the Rust body (`desktop-body/src/presence.rs`) with a
+     cross-language golden fixture exercising the outcome byte-for-byte.
+   - Browser proof: Forge `/review repo_edit <path>` renders the decision, derivation, and
+     execution outcome; `e2e/governance-act-effector.spec.ts` drives the block paths on the
+     real surface (protected target → blocked, no Confirm affordance; traversal → blocked;
+     safe target without backing → `no_action_grant`). The `allow` path for an act effector
+     needs an action-backed memory turn (proven at the soul layer, `soulActions` "Case C").
+
 Known TODOs before main: polish pinned placement controls, remove or quarantine the
 old full-frame renderer/tests if the pin UX remains the chosen path, manually verify the
 native Review/Confirm click on a live COSMIC session, surface action entries in the dock's
-ledger summary UI, and put one real `act` effector behind the gate (hard-block proof).
+ledger summary UI, wire the **native body to emit a typed `repo_edit` intent** (the body→soul
+Rust intent builder + on-body affordance — the soul→body outcome is already mirrored), and
+add a **live (on-disk) `act` executor** behind the gate for the visible harm demo (the
+current executor is a guarded proof that does not write to disk). Backlog from roundtable 2:
+confirmation budgets (fatigue), intent-parser fuzzing, publish the protocol as a versioned
+crate with a conformance suite.
 
 ---
 

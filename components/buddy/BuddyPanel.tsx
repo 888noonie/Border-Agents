@@ -182,7 +182,7 @@ export function BuddyPanel({
             <span>{modelLabel}</span>
             {hasGateway ? (
               <span className="buddy-panel__gateway-pill">
-                {gatewayState === "connected" ? "Hermes" : connectionLabelForState(gatewayState)}
+                {gatewayState === "connected" ? buddyName : connectionLabelForState(gatewayState)}
               </span>
             ) : null}
           </button>

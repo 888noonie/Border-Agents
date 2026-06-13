@@ -116,9 +116,15 @@ npm run desktop:build        # installable bundle
 **browser-only preview**:
 
 ```bash
-npm run gateway:dev          # VS Code task: BB gateway
-npm run dev                  # browser preview  (VS Code task: BB browser preview)
+npm run soul:dev             # real soul — action gate (VS Code: Soul)
+npm run gateway:dev          # dev gateway — provider chat + frame relay (VS Code: Gateway)
+npm run dev                  # browser preview  (VS Code: UI preview)
 ```
+
+**VS Code Run Task → Start ALL** brings up the full stack: real soul + browser
+buddies (`http://127.0.0.1:1420`) + frame driver + native body. Use **Start ALL
+(wizard)** for onboarding (wizard gateway instead of the governance soul — only one
+may bind port 17387).
 
 **Experimental pinned-window presence** on COSMIC (`presence-layer`): start the
 gateway, native body, and frame driver together. The driver tracks a native window

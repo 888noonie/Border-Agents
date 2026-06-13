@@ -1,4 +1,12 @@
-import type { ActionDecision, ActionReceipt, Grade, GradeReceipt, PurposePolicy, UserPosture } from "./core";
+import type {
+  ActionDecision,
+  ActionReceipt,
+  ExecutionReceipt,
+  Grade,
+  GradeReceipt,
+  PurposePolicy,
+  UserPosture,
+} from "./core";
 import type { EffectorId } from "./buddyManifest";
 import type { BuddyGovernanceSnapshot } from "./liveGovernance";
 
@@ -37,18 +45,45 @@ export interface ActionReceiptLedgerEntry {
   receipts: ActionReceipt[];
 }
 
-export type ReceiptLedgerEntry = MemoryReceiptLedgerEntry | ActionReceiptLedgerEntry;
+/**
+ * An execution-outcome ledger entry — the world-facing result of running an authorized
+ * action. Always recorded AFTER its authorizing `ActionReceiptLedgerEntry`, so the ledger
+ * reads as "authorized X, then executed X" — authorization and execution are different borders.
+ */
+export interface ExecutionReceiptLedgerEntry {
+  kind: "execution";
+  entryId: string;
+  buddyId: string;
+  recordedAt: string;
+  effector: EffectorId;
+  /** The ActionReceipt this execution was authorized by. */
+  actionReceiptId: string;
+  executorCalled: boolean;
+  outcome: ExecutionReceipt["outcome"];
+  receipts: ExecutionReceipt[];
+}
+
+export type ReceiptLedgerEntry =
+  | MemoryReceiptLedgerEntry
+  | ActionReceiptLedgerEntry
+  | ExecutionReceiptLedgerEntry;
 
 export function isActionEntry(entry: ReceiptLedgerEntry): entry is ActionReceiptLedgerEntry {
   return entry.kind === "action";
 }
 
+export function isExecutionEntry(entry: ReceiptLedgerEntry): entry is ExecutionReceiptLedgerEntry {
+  return entry.kind === "execution";
+}
+
 export function isMemoryEntry(entry: ReceiptLedgerEntry): entry is MemoryReceiptLedgerEntry {
-  return entry.kind !== "action";
+  return entry.kind !== "action" && entry.kind !== "execution";
 }
 
 export interface ReceiptLedgerSummary {
   entryCount: number;
+  /** How many entries are memory-grading frames (the union `entryCount` also counts action/execution entries). */
+  frameCount: number;
   receiptCount: number;
   latestBuddyId: string | null;
   latestPurpose: string | null;
@@ -60,6 +95,10 @@ export interface ReceiptLedgerSummary {
   actionCount: number;
   /** Decision of the most recent action entry, or null if there is none. */
   latestActionDecision: ActionDecision | null;
+  /** How many entries are execution-outcome receipts. */
+  executionCount: number;
+  /** Outcome of the most recent execution entry, or null if there is none. */
+  latestExecutionOutcome: ExecutionReceipt["outcome"] | null;
 }
 
 export function readReceiptLedger(storage: Storage = window.localStorage): ReceiptLedgerEntry[] {
@@ -117,14 +156,28 @@ export function appendActionReceiptToLedger(args: {
   return appendEntry(toActionLedgerEntry(args.buddyId, args.receipt), storage, maxEntries);
 }
 
+export function appendExecutionReceiptToLedger(args: {
+  buddyId: string;
+  receipt: ExecutionReceipt;
+  storage?: Storage;
+  maxEntries?: number;
+}): ReceiptLedgerEntry[] {
+  const storage = args.storage ?? window.localStorage;
+  const maxEntries = args.maxEntries ?? DEFAULT_MAX_LEDGER_ENTRIES;
+  return appendEntry(toExecutionLedgerEntry(args.buddyId, args.receipt), storage, maxEntries);
+}
+
 export function summarizeReceiptLedger(entries: ReceiptLedgerEntry[]): ReceiptLedgerSummary {
   const latest = entries[entries.length - 1] ?? null;
   const receiptCount = entries.reduce((count, entry) => count + entry.receipts.length, 0);
   const actionCount = entries.filter(isActionEntry).length;
   const latestAction = [...entries].reverse().find(isActionEntry) ?? null;
+  const executionCount = entries.filter(isExecutionEntry).length;
+  const latestExecution = [...entries].reverse().find(isExecutionEntry) ?? null;
 
   return {
     entryCount: entries.length,
+    frameCount: entries.filter(isMemoryEntry).length,
     receiptCount,
     latestBuddyId: latest?.buddyId ?? null,
     latestPurpose: latest && isMemoryEntry(latest) ? latest.purpose : null,
@@ -134,6 +187,8 @@ export function summarizeReceiptLedger(entries: ReceiptLedgerEntry[]): ReceiptLe
     latestPromptExcluded: latest && isMemoryEntry(latest) ? latest.promptExcluded : 0,
     actionCount,
     latestActionDecision: latestAction?.decision ?? null,
+    executionCount,
+    latestExecutionOutcome: latestExecution?.outcome ?? null,
   };
 }
 
@@ -173,6 +228,20 @@ function toActionLedgerEntry(buddyId: string, receipt: ActionReceipt): ActionRec
     risk: receipt.risk,
     posture: receipt.posture,
     confirmed: receipt.confirmed,
+    receipts: [receipt],
+  };
+}
+
+function toExecutionLedgerEntry(buddyId: string, receipt: ExecutionReceipt): ExecutionReceiptLedgerEntry {
+  return {
+    kind: "execution",
+    entryId: `execution:${buddyId}:${receipt.receipt_id}`,
+    buddyId,
+    recordedAt: receipt.executed_at,
+    effector: receipt.effector,
+    actionReceiptId: receipt.action_receipt_id,
+    executorCalled: receipt.executor_called,
+    outcome: receipt.outcome,
     receipts: [receipt],
   };
 }

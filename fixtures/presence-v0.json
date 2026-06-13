@@ -243,6 +243,15 @@
     "decision": "allow",
     "receiptId": "action:hermes:receipt_review:t0",
     "requestId": "req-1",
-    "summary": "Opening the receipt ledger."
+    "summary": "Opening the receipt ledger.",
+    "outcome": {
+      "executed": true,
+      "executionReceiptId": "exec:hermes:receipt_review:t0",
+      "route": {
+        "provider": "claude",
+        "locality": "cloud",
+        "downgraded": false
+      }
+    }
   }
 }

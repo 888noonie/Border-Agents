@@ -170,6 +170,77 @@ describe("action gate cues", () => {
       }),
     ).toBeNull();
   });
+
+  test("action_request carries a typed intent + route hint and round-trips", () => {
+    const request = presence.actionRequest("crab", "repo_edit", {
+      requestId: "req-9",
+      intent: {
+        operation: "write_patch",
+        target: { kind: "repo_path", value: ".border-agents/proofs/x.patch" },
+        payloadDigest: "sha256:abc",
+        summary: "write proof patch",
+      },
+      routeHint: { provider: "claude", locality: "cloud" },
+      ts: 1,
+    });
+    expect(overTheWire(request)).toMatchObject({
+      kind: "action_request",
+      effector: "repo_edit",
+      intent: { operation: "write_patch", target: { kind: "repo_path" } },
+      routeHint: { provider: "claude", locality: "cloud" },
+    });
+  });
+
+  test("action_result carries an execution outcome + route provenance and round-trips", () => {
+    const result = presence.actionResult(
+      "crab",
+      {
+        effector: "repo_edit",
+        decision: "allow",
+        receiptId: "action:forge:repo_edit:t",
+        outcome: {
+          executed: true,
+          executionReceiptId: "exec:forge:repo_edit:t",
+          route: { provider: "claude", locality: "cloud", downgraded: false },
+        },
+      },
+      { ts: 1 },
+    );
+    expect(overTheWire(result)).toMatchObject({
+      kind: "action_result",
+      outcome: { executed: true, route: { provider: "claude", downgraded: false } },
+    });
+  });
+
+  test("rejects a malformed intent (target with an unknown kind)", () => {
+    expect(
+      parsePresenceMessage({
+        protocol: PRESENCE_PROTOCOL,
+        v: 0,
+        kind: "action_request",
+        buddy: "crab",
+        ts: 1,
+        effector: "repo_edit",
+        intent: { operation: "write_patch", target: { kind: "registry", value: "x" } },
+      }),
+    ).toBeNull();
+  });
+
+  test("rejects an outcome whose executed flag is not a boolean", () => {
+    expect(
+      parsePresenceMessage({
+        protocol: PRESENCE_PROTOCOL,
+        v: 0,
+        kind: "action_result",
+        buddy: "crab",
+        ts: 1,
+        effector: "repo_edit",
+        decision: "allow",
+        receiptId: "r1",
+        outcome: { executed: "yes" },
+      }),
+    ).toBeNull();
+  });
 });
 
 describe("attached handshake", () => {

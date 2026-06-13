@@ -223,17 +223,39 @@ export type PresenceTargetLost = PresenceEnvelope<
 >;
 
 /**
+ * The world-facing execution outcome on an `action_result` (additive, v0). `executed` is
+ * the load-bearing bit: it lets a dumb body truthfully show "blocked before run" vs
+ * "executed and receipted" without any policy reasoning. The full `ExecutionReceipt` stays
+ * soul-side (law 7); only this thin summary + its id cross the wire. `route` records which
+ * provider carried the effect, and whether it was a downgrade ("buddies persist, providers
+ * rotate"). Present only on `allow` paths.
+ */
+export interface PresenceActionOutcome {
+  executed: boolean;
+  executionReceiptId?: string;
+  route?: { provider: string; locality: "local" | "cloud"; downgraded: boolean; fallbackOf?: string };
+}
+
+/**
  * Outcome of an `action_request` the soul ran through the governance action gate
  * (src/core/actionGate.ts) — soul → body. Distinct from `output` (rendered artifact
  * bytes) and `say` (ephemeral speech): an authorization outcome is a governance result
  * the body renders as a badge/affordance, so it can key on `decision` without sniffing
  * prose. The full `ActionReceipt` stays soul-side in the ledger (law 7 — the body never
  * holds the authorization, only a cue about it); only `decision` + `receiptId` + an
- * optional human `summary` cross the wire. `requestId` correlates back to the request.
+ * optional human `summary` (+ optional execution `outcome`) cross the wire. `requestId`
+ * correlates back to the request.
  */
 export type PresenceActionResult = PresenceEnvelope<
   "action_result",
-  { effector: string; decision: ActionDecision; receiptId: string; requestId?: string; summary?: string }
+  {
+    effector: string;
+    decision: ActionDecision;
+    receiptId: string;
+    requestId?: string;
+    summary?: string;
+    outcome?: PresenceActionOutcome;
+  }
 >;
 
 export type PresenceToBodyMessage =
@@ -297,17 +319,46 @@ export type PresenceTargetDragRequested = PresenceEnvelope<
 >;
 
 /**
+ * Wire-side typed intent on an `action_request` (additive, v0). The protocol stays
+ * manifest-free: `operation` and `target.kind` are validated as strings here and checked
+ * against the manifest + gate in the soul handler. This is the membrane on the wire — only
+ * a typed `intent` may authorize an `act` effector; `context` is legacy and NEVER
+ * authoritative (it exists for old `/review` convenience). The body fills these fields; it
+ * does not interpret them.
+ */
+export interface PresenceActionIntent {
+  operation: string;
+  target?: { kind: "repo_path" | "file_path" | "url" | "command" | "none"; value?: string };
+  payloadDigest?: string;
+  summary?: string;
+}
+
+/** Advisory hint about the route the body believes it is on. The soul resolves the
+ * authoritative route and records it on the ExecutionReceipt — this never decides anything. */
+export interface PresenceRouteHint {
+  provider?: string;
+  locality?: "local" | "cloud";
+}
+
+/**
  * User asked the buddy to run one of its granted effectors (e.g. a `/review` affordance
- * → `receipt_review`). This is only a *request*: authorization happens in the soul's
- * action gate, never in the body (law 7). `effector` is a free string on the wire and is
- * validated against the manifest in the soul handler, so the protocol stays manifest-free.
- * `confirmed: true` is the follow-up after a `needs_confirmation` result — it can only
- * clear the confirmation floor, never widen a hard block. `requestId` correlates the
- * resulting `action_result` back to this request.
+ * → `receipt_review`, or `/review repo_edit scratch.md` → a typed `repo_edit` intent).
+ * This is only a *request*: authorization happens in the soul's action gate, never in the
+ * body (law 7). `effector` is a free string on the wire and is validated against the
+ * manifest in the soul handler, so the protocol stays manifest-free. `confirmed: true` is
+ * the follow-up after a `needs_confirmation` result — it can only clear the confirmation
+ * floor, never widen a hard block. `requestId` correlates the resulting `action_result`.
  */
 export type PresenceActionRequest = PresenceEnvelope<
   "action_request",
-  { effector: string; context?: string; confirmed?: boolean; requestId?: string }
+  {
+    effector: string;
+    context?: string;
+    confirmed?: boolean;
+    requestId?: string;
+    intent?: PresenceActionIntent;
+    routeHint?: PresenceRouteHint;
+  }
 >;
 
 export type PresenceToSoulMessage =
@@ -374,6 +425,43 @@ function isNonEmptyString(value: unknown): value is string {
 
 function isStringArray(value: unknown): value is string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string");
+}
+
+const ACTION_TARGET_KINDS: readonly string[] = ["repo_path", "file_path", "url", "command", "none"];
+
+function isActionIntent(value: unknown): value is PresenceActionIntent {
+  if (!isObject(value)) return false;
+  if (!isNonEmptyString(value.operation)) return false;
+  if (value.target !== undefined) {
+    if (!isObject(value.target)) return false;
+    if (typeof value.target.kind !== "string" || !ACTION_TARGET_KINDS.includes(value.target.kind)) return false;
+    if (value.target.value !== undefined && typeof value.target.value !== "string") return false;
+  }
+  if (value.payloadDigest !== undefined && typeof value.payloadDigest !== "string") return false;
+  if (value.summary !== undefined && typeof value.summary !== "string") return false;
+  return true;
+}
+
+function isRouteHint(value: unknown): value is PresenceRouteHint {
+  if (!isObject(value)) return false;
+  if (value.provider !== undefined && typeof value.provider !== "string") return false;
+  if (value.locality !== undefined && value.locality !== "local" && value.locality !== "cloud") return false;
+  return true;
+}
+
+function isActionOutcome(value: unknown): value is PresenceActionOutcome {
+  if (!isObject(value)) return false;
+  if (typeof value.executed !== "boolean") return false;
+  if (value.executionReceiptId !== undefined && typeof value.executionReceiptId !== "string") return false;
+  if (value.route !== undefined) {
+    const route = value.route;
+    if (!isObject(route)) return false;
+    if (!isNonEmptyString(route.provider)) return false;
+    if (route.locality !== "local" && route.locality !== "cloud") return false;
+    if (typeof route.downgraded !== "boolean") return false;
+    if (route.fallbackOf !== undefined && typeof route.fallbackOf !== "string") return false;
+  }
+  return true;
 }
 
 function isEdge(value: unknown): value is PresenceEdge {
@@ -528,7 +616,8 @@ function isValidForKind(kind: PresenceKind, raw: Record<string, unknown>): boole
         isActionDecision(raw.decision) &&
         isNonEmptyString(raw.receiptId) &&
         (raw.requestId === undefined || typeof raw.requestId === "string") &&
-        (raw.summary === undefined || typeof raw.summary === "string")
+        (raw.summary === undefined || typeof raw.summary === "string") &&
+        (raw.outcome === undefined || isActionOutcome(raw.outcome))
       );
     case "target_acquired":
       return (
@@ -566,7 +655,9 @@ function isValidForKind(kind: PresenceKind, raw: Record<string, unknown>): boole
         isNonEmptyString(raw.effector) &&
         (raw.context === undefined || typeof raw.context === "string") &&
         (raw.confirmed === undefined || typeof raw.confirmed === "boolean") &&
-        (raw.requestId === undefined || typeof raw.requestId === "string")
+        (raw.requestId === undefined || typeof raw.requestId === "string") &&
+        (raw.intent === undefined || isActionIntent(raw.intent)) &&
+        (raw.routeHint === undefined || isRouteHint(raw.routeHint))
       );
     case "target_drag_requested":
       return (
@@ -698,7 +789,14 @@ export const presence = {
   },
   actionResult(
     buddy: string,
-    payload: { effector: string; decision: ActionDecision; receiptId: string; requestId?: string; summary?: string },
+    payload: {
+      effector: string;
+      decision: ActionDecision;
+      receiptId: string;
+      requestId?: string;
+      summary?: string;
+      outcome?: PresenceActionOutcome;
+    },
     opts: EnvelopeOptions = {},
   ): PresenceActionResult {
     return envelope("action_result", buddy, { ...payload }, opts) as PresenceActionResult;
@@ -764,10 +862,21 @@ export const presence = {
   actionRequest(
     buddy: string,
     effector: string,
-    opts: { context?: string; confirmed?: boolean; requestId?: string } & EnvelopeOptions = {},
+    opts: {
+      context?: string;
+      confirmed?: boolean;
+      requestId?: string;
+      intent?: PresenceActionIntent;
+      routeHint?: PresenceRouteHint;
+    } & EnvelopeOptions = {},
   ): PresenceActionRequest {
-    const { context, confirmed, requestId, ts } = opts;
-    return envelope("action_request", buddy, { effector, context, confirmed, requestId }, { ts }) as PresenceActionRequest;
+    const { context, confirmed, requestId, intent, routeHint, ts } = opts;
+    return envelope(
+      "action_request",
+      buddy,
+      { effector, context, confirmed, requestId, intent, routeHint },
+      { ts },
+    ) as PresenceActionRequest;
   },
   targetDragRequested(
     buddy: string,

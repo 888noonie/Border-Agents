@@ -54,7 +54,18 @@ export const PRESENCE_FIXTURES = {
   action_request: presence.actionRequest(BUDDY, "receipt_review", { requestId: "req-1", ts: 1018 }),
   action_result: presence.actionResult(
     BUDDY,
-    { effector: "receipt_review", decision: "allow", receiptId: "action:hermes:receipt_review:t0", requestId: "req-1", summary: "Opening the receipt ledger." },
+    {
+      effector: "receipt_review",
+      decision: "allow",
+      receiptId: "action:hermes:receipt_review:t0",
+      requestId: "req-1",
+      summary: "Opening the receipt ledger.",
+      outcome: {
+        executed: true,
+        executionReceiptId: "exec:hermes:receipt_review:t0",
+        route: { provider: "claude", locality: "cloud", downgraded: false },
+      },
+    },
     { ts: 1019 },
   ),
 } as const;

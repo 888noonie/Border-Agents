@@ -16,7 +16,7 @@ gateway_pids="$(
 )"
 
 process_pids="$(
-  pgrep -f 'target/debug/border-agents|tauri dev|border-agents|gateway-dev|vite --host 127.0.0.1 --port 1420' 2>/dev/null \
+  pgrep -f 'target/debug/border-agents|tauri dev|border-agents|gateway-dev|soul-server|tsx scripts/soul-server|vite --host 127.0.0.1 --port 1420' 2>/dev/null \
     | sort -u || true
 )"
 
@@ -27,7 +27,7 @@ frame_driver_pids="$(pgrep -x 'bb-frame-driver' 2>/dev/null | sort -u || true)"
 pids="$(printf '%s\n%s\n%s\n%s\n%s\n' "$port_pids" "$gateway_pids" "$process_pids" "$body_pids" "$frame_driver_pids" | awk 'NF' | sort -u)"
 
 if [ -z "$pids" ]; then
-  echo "No Border Buddies desktop, gateway, or dev-server processes found."
+  echo "No Border Buddies desktop, soul, gateway, frame driver, or dev-server processes found."
   exit 0
 fi
 
@@ -35,5 +35,5 @@ echo "Stopping Border Buddies processes: $pids"
 kill $pids 2>/dev/null || true
 sleep 1
 kill -9 $pids 2>/dev/null || true
-echo "Stopped Border Buddies desktop/dev/gateway processes."
+echo "Stopped Border Buddies soul/gateway/frame/body/dev processes."
 echo "Diagnostic report: cd Border-Agents && npm run report"

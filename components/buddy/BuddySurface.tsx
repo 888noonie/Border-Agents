@@ -25,8 +25,9 @@ import {
 import { advanceOnboarding, currentAct, type OnboardingAct, type OnboardingEvent } from "../../src/wizardOnboarding";
 import { lifecycleReceiptKinds, recordLifecycleReceipt } from "../../src/lifecycleReceipts";
 import { type UserPosture } from "../../src/core/userPosture";
-import { type ActionReceipt } from "../../src/core";
-import { handleActionRequest } from "../../src/soulActions";
+import { type ActionIntent, type ActionReceipt, type ExecutionReceipt } from "../../src/core";
+import { type EffectorId } from "../../src/buddyManifest";
+import { handleActionRequest, parseActionCommand } from "../../src/soulActions";
 import { connectionLabelForState } from "../../src/useBuddyGateway";
 import { ActionReceiptCard } from "./ActionReceiptCard";
 import { BuddyActionMenu } from "./BuddyActionMenu";
@@ -213,9 +214,13 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
   const [history, setHistory] = useState<BuddyChatLine[]>([]);
   // The latest governance action-gate outcome, rendered as a receipt card. `pendingEffector`
-  // holds the effector awaiting confirmation so a Confirm re-invokes the gate with confirmed.
+  // /`pendingTarget` hold the effector + typed target awaiting confirmation so a Confirm
+  // re-invokes the gate with the SAME intent + `confirmed`. `executionReceipt` is the
+  // world-facing outcome (route + executed) shown once an action runs.
   const [actionReceipt, setActionReceipt] = useState<ActionReceipt | null>(null);
+  const [executionReceipt, setExecutionReceipt] = useState<ExecutionReceipt | null>(null);
   const [pendingEffector, setPendingEffector] = useState<string | null>(null);
+  const [pendingTarget, setPendingTarget] = useState<string | undefined>(undefined);
   const [panelShift, setPanelShift] = useState({ x: 0, y: 0 });
   const [surfaceUi, setSurfaceUi] = useState<BuddySurfaceUiState>(() =>
     loadStoredBuddySurfaceUi(buddy.id, preferCenterFit),
@@ -339,23 +344,23 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
     const trimmedMessage = message.trim();
 
     if (gatewayBusy) {
-      return "Hermes is thinking…";
+      return `${buddy.shortName} is thinking…`;
     }
 
     if (hasGateway) {
       if (gatewayOnline) {
-        return trimmedMessage || gatewayDetail || "Hermes gateway ready.";
+        return trimmedMessage || gatewayDetail || `${buddy.shortName} gateway ready.`;
       }
 
       if (gatewayState === "connecting") {
-        return "Connecting to Hermes gateway…";
+        return `Connecting to ${buddy.shortName} gateway…`;
       }
 
       if (gatewayState === "error" || gatewayState === "disconnected") {
-        return trimmedMessage || gatewayDetail || "Hermes gateway attention required.";
+        return trimmedMessage || gatewayDetail || `${buddy.shortName} gateway attention required.`;
       }
 
-      return trimmedMessage || "Hermes gateway offline.";
+      return trimmedMessage || `${buddy.shortName} gateway offline.`;
     }
 
     return trimmedMessage || `${buddy.shortName} ready.`;
@@ -583,25 +588,47 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
     }
   }
 
+  // Build the typed ActionIntent for an effector + target. The gate authorizes the EFFECT
+  // (operation + target), not just the grant — so `/review repo_edit AGENTS.md` is blocked
+  // where `/review repo_edit .border-agents/proofs/x.patch` is allowed. No target → no intent
+  // (the effector-level path, e.g. read-only receipt_review).
+  function buildIntent(effectorId: string, target?: string): ActionIntent | undefined {
+    if (!target) {
+      return undefined;
+    }
+    return {
+      effectorId: effectorId as EffectorId,
+      operation: "write_patch",
+      target: { kind: "repo_path", path: target },
+      summary: `${effectorId} ${target}`,
+    };
+  }
+
   // Run a buddy action through the soul-side governance gate. The body never authorizes
   // (AGENTS.md law 7) — it hands the request to the gate, which emits the ActionReceipt and
-  // persists it. Confirmation re-runs the same effector with `confirmed`, which can clear the
-  // risk floor but never a hard block.
-  function runActionReview(effectorId: string, confirmed: boolean) {
-    const { receipt } = handleActionRequest({
+  // persists it. Confirmation re-runs the SAME effector + target with `confirmed`, which can
+  // clear the risk floor but never a hard block. On `allow` the executor runs and an
+  // ExecutionReceipt (route + executed) comes back.
+  function runActionReview(effectorId: string, target: string | undefined, confirmed: boolean) {
+    const { receipt, execution } = handleActionRequest({
       buddy: buddy.id,
       effectorId,
       settings,
       posture,
       history: history.map((line) => ({ role: line.role, text: line.text })),
+      intent: buildIntent(effectorId, target),
       confirmed,
     });
     setActionReceipt(receipt);
-    setPendingEffector(receipt.decision === "needs_confirmation" ? effectorId : null);
+    setExecutionReceipt(execution ?? null);
+    const stillPending = receipt.decision === "needs_confirmation";
+    setPendingEffector(stillPending ? effectorId : null);
+    setPendingTarget(stillPending ? target : undefined);
     updateSurfaceUi({ activeTab: "message" });
+    const ran = execution?.executor_called && execution.outcome === "ok" ? ` · ran via ${execution.route.provider}` : "";
     setHistory((current) => [
       ...current,
-      { id: createLineId(), role: "status", text: `${receipt.effector}: ${receipt.decision}` },
+      { id: createLineId(), role: "status", text: `${receipt.effector}: ${receipt.decision}${ran}` },
     ]);
   }
 
@@ -611,19 +638,20 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
       return;
     }
 
-    // Slash commands that drive the governance action gate, intercepted before any
-    // text reaches the provider. `/review [effector]` requests an effector (default the
-    // read-only receipt_review); `/confirm` confirms a pending needs_confirmation action.
-    if (trimmed.startsWith("/review") || trimmed === "/confirm") {
+    // Slash commands that drive the governance action gate, intercepted before any text
+    // reaches the provider, via the SHARED parser so every body interprets them identically.
+    // `/review [effector [target]]` requests an effector against an optional typed target;
+    // `/confirm` confirms a pending needs_confirmation action with the same intent.
+    const command = parseActionCommand(trimmed);
+    if (command) {
       setDraft("");
-      if (trimmed === "/confirm") {
+      if (command.kind === "confirm") {
         if (pendingEffector) {
-          runActionReview(pendingEffector, true);
+          runActionReview(pendingEffector, pendingTarget, true);
         }
         return;
       }
-      const effectorId = trimmed.slice("/review".length).trim() || "receipt_review";
-      runActionReview(effectorId, false);
+      runActionReview(command.effectorId, command.target, false);
       return;
     }
 
@@ -848,7 +876,10 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
                 actionReceipt ? (
                   <ActionReceiptCard
                     receipt={actionReceipt}
-                    onConfirm={pendingEffector ? () => runActionReview(pendingEffector, true) : undefined}
+                    execution={executionReceipt ?? undefined}
+                    onConfirm={
+                      pendingEffector ? () => runActionReview(pendingEffector, pendingTarget, true) : undefined
+                    }
                   />
                 ) : bubbleTab === "setup" && wizardEnabled && onboardingModel ? (
                   <OnboardingWizardPanel

@@ -19,12 +19,52 @@
 // (scripts/gateway-dev.mjs) is a disposable stand-in and must never reimplement
 // this logic — it only relays the request and renders the result.
 
-import type { EffectorId, EffectorKind, EffectorSpec } from "../buddyManifest";
+import type { EffectorId, EffectorKind, EffectorSpec, RouteProvider } from "../buddyManifest";
 import { getPurposePolicy, type BuiltInPurpose } from "./policies";
 import type { DerivationStep, PurposePolicy, SafeContextFrame } from "./types";
 import { requiresConfirmation, resolvePosturePolicy, type UserPosture } from "./userPosture";
 
 export type ActionDecision = "allow" | "needs_confirmation" | "blocked";
+
+// --- The execution membrane (GPT roundtable, 2026-06-13) ----------------------
+//
+// An effector grant ("Forge may edit the repo") is not enough to authorize an
+// effect ("write THIS patch to AGENTS.md"). The gate therefore evaluates a typed
+// `ActionIntent` — the specific operation + target the body wants — not just the
+// effector id. This is what lets a single `repo_edit` effector be allowed for a
+// scratch file yet hard-blocked for `AGENTS.md`. Authorization is intent-level.
+
+export interface ActionTarget {
+  /** What kind of thing the action touches; drives which protection policy applies. */
+  kind: "repo_path" | "file_path" | "url" | "command";
+  /** The concrete target — a repo-relative path, URL, or command string. */
+  path: string;
+}
+
+export interface ActionIntent {
+  effectorId: EffectorId;
+  /** Effector-specific verb, e.g. "write_patch" | "apply_patch". */
+  operation: string;
+  target: ActionTarget;
+  /** Hash of the payload (diff/command/body) so the receipt pins WHAT was authorized. */
+  payloadDigest?: string;
+  /** One-line, user-facing description of the intended effect. */
+  summary: string;
+}
+
+// The provider route the buddy is currently running on. Carried separately from the
+// policy decision because a route change is itself a trust-boundary crossing: a
+// buddy that silently falls back from a local/low-retention route to a cloud route
+// has a different trust posture even though the user did nothing. `downgraded` makes
+// that crossing explicit so the gate can refuse to let it happen silently.
+export interface ActionRoute {
+  provider: RouteProvider;
+  /** The preferred provider this route fell back from, if any. */
+  fallbackOf?: RouteProvider;
+  locality: "local" | "cloud";
+  /** True when this route is lower-trust than the buddy's preferred route. */
+  downgraded: boolean;
+}
 
 export interface ActionReceipt {
   receipt_id: string; // `action:{buddy}:{effector}:{derived_at}`
@@ -39,6 +79,86 @@ export interface ActionReceipt {
   derived_at: string;
   /** Same DerivationStep shape as GradeReceipt; includes posture clamps. */
   rules: DerivationStep[];
+}
+
+// The world-facing outcome of running an authorized action. Kept SEPARATE from
+// `ActionReceipt`: authorization is deterministic and policy-shaped; execution is
+// nondeterministic and effect-shaped. They are different borders. An ExecutionReceipt
+// is only ever produced when the gate returned `allow` AND the executor ran — and it
+// records the route that actually carried the effect (provider provenance).
+export interface ExecutionReceipt {
+  receipt_id: string; // `exec:{buddy}:{effector}:{executed_at}`
+  /** Links back to the authorizing ActionReceipt — the pair is the full audit story. */
+  action_receipt_id: string;
+  effector: EffectorId;
+  buddy: string;
+  operation: string;
+  target: ActionTarget;
+  /** Which provider route carried this effect — the "buddies persist, providers rotate" trail. */
+  route: ActionRoute;
+  /** Always false unless the gate allowed the action. The no-execute-on-block invariant. */
+  executor_called: boolean;
+  outcome: "ok" | "error" | "skipped";
+  detail?: string;
+  executed_at: string;
+}
+
+// Repo targets the gate will NEVER write to, regardless of grant, backing, or
+// confirmation. These are the trust-critical surfaces (the laws, the gate itself,
+// the dependency manifest, version control). Matched by exact path or path prefix.
+export const PROTECTED_REPO_TARGETS: readonly string[] = [
+  "AGENTS.md",
+  "src/core/",
+  ".git/",
+  "package.json",
+  "package-lock.json",
+];
+
+/**
+ * Canonicalize a repo-relative path: strip leading slashes, resolve `.` and `..`
+ * segments, and report whether the path climbs out of the repo root. This is the
+ * trust-critical step — without resolving `..`, `src/foo/../../AGENTS.md` or
+ * `.border-agents/proofs/../../etc/passwd` would slip past a naive prefix match.
+ */
+export function canonicalizeRepoPath(path: string): { path: string; escapes: boolean } {
+  const segments = path.replace(/^\/+/, "").split("/");
+  const out: string[] = [];
+  let escapes = false;
+  for (const segment of segments) {
+    if (segment === "" || segment === ".") {
+      continue;
+    }
+    if (segment === "..") {
+      if (out.length === 0) {
+        escapes = true; // climbed above the repo root — never writable
+      } else {
+        out.pop();
+      }
+      continue;
+    }
+    out.push(segment);
+  }
+  return { path: out.join("/"), escapes };
+}
+
+/**
+ * Is this intent aimed at a protected target? Only repo-path targets are guarded here;
+ * other target kinds get their own policy as effectors graduate. A path that escapes the
+ * repo root (via `..`) is always protected. Pure and exported so surfaces and tests can
+ * pre-flight a target without invoking the full gate.
+ */
+export function isProtectedTarget(intent: ActionIntent): boolean {
+  if (intent.target.kind !== "repo_path") {
+    return false;
+  }
+  const { path, escapes } = canonicalizeRepoPath(intent.target.path);
+  if (escapes) {
+    return true;
+  }
+  return PROTECTED_REPO_TARGETS.some((entry) => {
+    const dir = entry.endsWith("/") ? entry.slice(0, -1) : entry;
+    return path === dir || path.startsWith(`${dir}/`);
+  });
 }
 
 const RISK_RANK: Record<PurposePolicy["risk"], number> = { low: 0, medium: 1, high: 2 };
@@ -72,6 +192,10 @@ export function authorizeEffectorAction(args: {
   posture: UserPosture;
   purpose: BuiltInPurpose;
   frame: SafeContextFrame;
+  /** The specific operation + target. When present, the gate authorizes the EFFECT, not just the effector. */
+  intent?: ActionIntent;
+  /** The provider route the buddy is running on. A downgraded route forces confirmation. */
+  route?: ActionRoute;
   confirmed?: boolean;
   now?: string;
 }): ActionReceipt {
@@ -110,6 +234,23 @@ export function authorizeEffectorAction(args: {
     return receipt("blocked", policy.risk);
   }
 
+  // Intent-level hard block: a protected target may never be written, regardless of
+  // grant, backing, or confirmation. This is the membrane — the gate authorizes the
+  // EFFECT, not just the effector. Runs before backing/confirmation so it can never be
+  // waived. Mirrors the manifest's "reachable, not replace" stance at the target level.
+  if (args.intent && isProtectedTarget(args.intent)) {
+    rules.push(
+      rule(
+        "target",
+        args.intent.target.path,
+        "action_intent.target",
+        "target is a protected surface and may never be written by an effector",
+        "action.blocked.protected_target",
+      ),
+    );
+    return receipt("blocked", effectiveRisk(effector.kind, policy.risk));
+  }
+
   const risk = effectiveRisk(effector.kind, policy.risk);
 
   // Action backing: an `act` effector or any high-risk action must be backed by
@@ -132,10 +273,14 @@ export function authorizeEffectorAction(args: {
   }
 
   // --- Confirmation floor. High/medium risk always confirms, in every posture;
-  // low risk defers to the interaction posture. Confirmation can clear ONLY this
-  // gate, never the hard blocks above. ---
+  // low risk defers to the interaction posture. A DOWNGRADED route also forces the
+  // floor: degradation to a lower-trust provider is never silent. Confirmation can
+  // clear ONLY this floor, never the hard blocks above. ---
 
-  if (requiresConfirmation(args.posture, risk)) {
+  const riskFloor = requiresConfirmation(args.posture, risk);
+  const routeDowngraded = args.route?.downgraded === true;
+
+  if (riskFloor || routeDowngraded) {
     if (confirmed) {
       rules.push(
         rule(
@@ -148,15 +293,29 @@ export function authorizeEffectorAction(args: {
       );
       return receipt("allow", risk);
     }
-    rules.push(
-      rule(
-        "risk",
-        risk,
-        `user_posture:${args.posture}`,
-        "action risk requires explicit confirmation before it may run",
-        "action.confirm.risk_floor",
-      ),
-    );
+    // Record the stronger reason first: the risk floor if it applies, else the route
+    // downgrade. Either way the action holds until the user confirms.
+    if (riskFloor) {
+      rules.push(
+        rule(
+          "risk",
+          risk,
+          `user_posture:${args.posture}`,
+          "action risk requires explicit confirmation before it may run",
+          "action.confirm.risk_floor",
+        ),
+      );
+    } else {
+      rules.push(
+        rule(
+          "route",
+          args.route?.provider ?? "unknown",
+          args.route?.fallbackOf ? `route_fallback:${args.route.fallbackOf}` : "route_fallback",
+          "buddy fell back to a lower-trust route; confirm before continuing on it",
+          "action.confirm.route_downgrade",
+        ),
+      );
+    }
     return receipt("needs_confirmation", risk);
   }
 

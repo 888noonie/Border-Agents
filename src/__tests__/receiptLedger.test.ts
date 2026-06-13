@@ -137,6 +137,7 @@ describe("receiptLedger", () => {
 
     const summary = summarizeReceiptLedger(entries);
     expect(summary.entryCount).toBe(2);
+    expect(summary.frameCount).toBe(1); // only the memory entry is a graded frame
     expect(summary.receiptCount).toBe(2); // 1 memory receipt + 1 action receipt
     expect(summary.actionCount).toBe(1);
     expect(summary.latestActionDecision).toBe("allow");

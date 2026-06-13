@@ -21,6 +21,13 @@ else
   bb_log() { printf '[BB] %s\n' "$*"; }
 fi
 
+# Load .env (HERMES_NAME / HERMES_PROVIDER / HERMES_MODEL, etc.) like the other launchers
+# (bb-start, bb-soul, …) do — so the canonical single-instance body launcher sees the same
+# per-buddy config and the native head reads its display name + provider from one place.
+if declare -f bb_source_env >/dev/null 2>&1; then
+  bb_source_env "$ROOT"
+fi
+
 # --- stop any running instance(s) so we never stack buddies ---
 stop_existing() {
   # -x: exact process-name match, so we never hit the cargo/bash wrappers.

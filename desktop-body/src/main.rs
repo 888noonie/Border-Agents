@@ -22,7 +22,11 @@
 mod presence;
 mod render;
 
-use std::time::{Duration, Instant};
+use std::{
+    io::Write,
+    process::{Command, Stdio},
+    time::{Duration, Instant},
+};
 
 use calloop::channel::Event as ChannelEvent;
 use calloop::timer::{TimeoutAction, Timer};
@@ -63,6 +67,7 @@ use wayland_protocols::wp::relative_pointer::zv1::client::{
 const CLICK_SLOP: f64 = 5.0;
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
+const INPUT_PASTE_MAX_CHARS: usize = 8_000;
 
 /// Drop the buddy with its head within this many pixels of a screen edge and it tucks
 /// against that edge.
@@ -105,6 +110,80 @@ fn buddy_env(buddy: &str, suffix: &str) -> Option<String> {
     std::env::var(buddy_env_key(buddy, suffix)).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
 
+fn copy_to_clipboard(text: &str) -> Result<(), String> {
+    let trimmed = text.trim_end();
+    if trimmed.is_empty() {
+        return Err("nothing to copy".to_string());
+    }
+
+    if run_clipboard_command("wl-copy", &[], trimmed).is_ok() {
+        return Ok(());
+    }
+    run_clipboard_command("xclip", &["-selection", "clipboard"], trimmed)
+        .map_err(|err| format!("install wl-copy or xclip ({err})"))
+}
+
+fn run_clipboard_command(program: &str, args: &[&str], text: &str) -> Result<(), String> {
+    let mut child = Command::new(program)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|err| err.to_string())?;
+
+    match child.stdin.take() {
+        Some(mut stdin) => stdin.write_all(text.as_bytes()).map_err(|err| err.to_string())?,
+        None => return Err("clipboard command did not open stdin".to_string()),
+    }
+
+    let status = child.wait().map_err(|err| err.to_string())?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("{program} exited with {status}"))
+    }
+}
+
+fn read_clipboard_text() -> Result<String, String> {
+    if let Ok(text) = read_clipboard_command("wl-paste", &["--no-newline"]) {
+        return Ok(text);
+    }
+    read_clipboard_command("xclip", &["-selection", "clipboard", "-out"])
+        .map_err(|err| format!("install wl-paste or xclip ({err})"))
+}
+
+fn read_clipboard_command(program: &str, args: &[&str]) -> Result<String, String> {
+    let output = Command::new(program)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|err| err.to_string())?;
+    if !output.status.success() {
+        return Err(format!("{program} exited with {}", output.status));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+fn sanitize_paste(text: &str) -> String {
+    text.chars()
+        .filter_map(|ch| {
+            if ch == '\n' || ch == '\r' || ch == '\t' {
+                Some(' ')
+            } else if ch.is_control() {
+                None
+            } else {
+                Some(ch)
+            }
+        })
+        .take(INPUT_PASTE_MAX_CHARS)
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 enum TorsoSurface {
     Session,
     Text { title: String, body: String },
@@ -117,7 +196,7 @@ enum TorsoSurface {
 
 enum TorsoSurfaceSnapshot {
     Session {
-        buddy: String,
+        name: String,
         provider: String,
         model: String,
         gateway: String,
@@ -153,9 +232,9 @@ impl TorsoSurfaceSnapshot {
         image: Option<&'a render::TorsoImage>,
     ) -> render::TorsoOutput<'a> {
         match self {
-            TorsoSurfaceSnapshot::Session { buddy, provider, model, gateway, status, note } => {
+            TorsoSurfaceSnapshot::Session { name, provider, model, gateway, status, note } => {
                 render::TorsoOutput::Session(render::SessionCard {
-                    buddy,
+                    name,
                     provider,
                     model,
                     gateway,
@@ -280,6 +359,7 @@ fn main() {
         speech: None,
         torso_surface: TorsoSurface::Session,
         torso_image: None,
+        name_label: String::new(),
         provider_label: String::new(),
         model_label: String::new(),
         gateway_label: String::new(),
@@ -298,8 +378,10 @@ fn main() {
         pinned_offset: None,
         pinned_bubble_w: env_i32("BB_PINNED_BUBBLE_W", 248) as f32,
         keyboard: None,
+        modifiers: Modifiers::default(),
         input_text: String::new(),
         input_focused: false,
+        pending_review: false,
         facing: Facing::Right,
         body_len: render::BODY_LEN_DEFAULT,
         color: env_color("BB_COLOR"),
@@ -409,6 +491,9 @@ struct PressState {
 enum PressTarget {
     Head,
     Input,
+    Paste,
+    /// The on-body Review / Confirm governance button (visible while chat is open).
+    Review,
     TorsoAction(TorsoAction),
     /// The legs/feet zone — dragging it vertically stretches the body.
     Feet,
@@ -461,6 +546,9 @@ struct App {
     /// in the enum) so a redraw blits it without re-decoding, and so the snapshot stays
     /// owned. Set from an `output` cue's inline bytes via `decode_image_bytes`.
     torso_image: Option<render::TorsoImage>,
+    /// Display name for the header (e.g. "Border Wizard"); `HERMES_NAME` env override,
+    /// defaulting to the title-cased wire id. Distinct from `buddy` (the wire id).
+    name_label: String,
     provider_label: String,
     model_label: String,
     gateway_label: String,
@@ -491,10 +579,15 @@ struct App {
     /// Keyboard, acquired when the seat advertises the capability. Drives the on-body
     /// text input that replaces the old "Say hello" button.
     keyboard: Option<wl_keyboard::WlKeyboard>,
+    /// Latest keyboard modifier state from the compositor; used for shortcuts like paste.
+    modifiers: Modifiers,
     /// The text the user is typing to the buddy (only mutated while `input_focused`).
     input_text: String,
     /// Whether the input box has focus — gates keystrokes and shows the caret.
     input_focused: bool,
+    /// True after the soul's last action_result for this body asked for confirmation, so
+    /// the Review button renders (and acts) as Confirm. Cleared on any allow/blocked result.
+    pending_review: bool,
     /// Which side the bubble/input sit on — recomputed from screen position so the
     /// UI always faces the screen centre, never the docked edge.
     facing: Facing,
@@ -538,6 +631,10 @@ fn output_label(app: &App) -> String {
 
 impl App {
     fn init_hermes_surface(&mut self) {
+        // Display name: HERMES_NAME (or <BUDDY>_NAME) override, else the title-cased wire id.
+        // The soul sending identity over the wire is the eventual single-source fix; until
+        // then the body is env-configured, exactly as provider/model below already are.
+        self.name_label = buddy_env(&self.buddy, "NAME").unwrap_or_else(|| render::title_case(&self.buddy));
         self.provider_label = buddy_env(&self.buddy, "PROVIDER").unwrap_or_else(|| "echo".to_string());
         self.model_label = buddy_env(&self.buddy, "MODEL").unwrap_or_else(|| "not configured".to_string());
         self.gateway_label = std::env::var("BB_PRESENCE_URL")
@@ -621,6 +718,7 @@ impl App {
         let torso_image = self.torso_image.as_ref();
         let speech = self.speech.clone();
         let input_text = self.input_text.clone();
+        let input_placeholder = format!("Ask {}...", self.name_label);
         let pinned = self.pinned_layout();
         let (Some(pool), Some(layer)) = (self.pool.as_mut(), self.layer.as_ref()) else {
             return;
@@ -636,7 +734,9 @@ impl App {
             chat_open: self.chat_open,
             tucked: self.tucked.map(edge_to_bump),
             input_text: &input_text,
+            input_placeholder: &input_placeholder,
             input_focused: self.input_focused,
+            review_pending: self.pending_review,
             layout,
             pinned,
             frame: None,
@@ -664,7 +764,7 @@ impl App {
         // Owned snapshot — the decoded image is lent separately in draw() (see torso_image).
         match &self.torso_surface {
             TorsoSurface::Session => TorsoSurfaceSnapshot::Session {
-                buddy: self.buddy.clone(),
+                name: self.name_label.clone(),
                 provider: self.provider_label.clone(),
                 model: self.model_label.clone(),
                 gateway: self.gateway_label.clone(),
@@ -710,6 +810,7 @@ impl App {
     fn show_reply_in_torso(&mut self, text: &str) {
         self.torso_surface = classify_torso_surface(text);
         self.awaiting_reply = false;
+        self.pending_review = false;
         self.session_note = "Latest provider output loaded in the torso.".to_string();
     }
 
@@ -725,6 +826,7 @@ impl App {
         data_base64: Option<String>,
     ) {
         self.awaiting_reply = false;
+        self.pending_review = false;
         match surface {
             "text" => {
                 let body = text.unwrap_or_default();
@@ -916,8 +1018,11 @@ impl App {
             }
             if self.chat_open {
                 rects.push(layout.input_region_rect().as_i32());
+                rects.push(layout.paste_button_rect().as_i32());
+                rects.push(layout.review_button_rect().as_i32());
             }
             rects.push(layout.torso_action_rect(TorsoAction::Expand).as_i32());
+            rects.push(layout.torso_action_rect(TorsoAction::Copy).as_i32());
             rects.push(layout.torso_action_rect(TorsoAction::Scroll).as_i32());
             rects
         };
@@ -966,13 +1071,16 @@ impl App {
             presence::Cue::ActionResult { decision, summary, .. } => {
                 // Present the soul's authorization outcome — the body renders it, it never
                 // decides it (law 7). A non-`allow` outcome draws an alert expression so the
-                // user notices the gate held or wants confirmation.
+                // user notices the gate held or wants confirmation. `needs_confirmation`
+                // flips the on-body Review button into a Confirm button until resolved.
+                self.pending_review = decision == "needs_confirmation";
                 if decision != "allow" {
                     self.set_emotion(Emotion::Alert);
                 }
                 if let Some(text) = summary {
                     self.say(text);
                 }
+                self.update_input_region();
             }
             presence::Cue::TargetAcquired { target_id, title, app_id, bounds } => {
                 if self.tucked.is_some() {
@@ -980,7 +1088,7 @@ impl App {
                 }
                 eprintln!("[bb-presence] tracked target {target_id} ({app_id} — {title:?})");
                 if !self.pinned_to_target {
-                    self.speech = Some(format!("Right-click Hermes to pin to {app_id}."));
+                    self.speech = Some(format!("Right-click {} to pin to {app_id}.", self.name_label));
                     self.pinned_offset = None;
                 }
                 self.frame_target = Some(FrameTarget { id: target_id, title, app_id, bounds });
@@ -1113,19 +1221,47 @@ impl App {
     /// Backspace, defocus on Escape, otherwise append printable text.
     fn on_key(&mut self, event: KeyEvent) {
         let ks = event.keysym;
-        if ks == Keysym::Return || ks == Keysym::KP_Enter {
+        if self.modifiers.ctrl && (ks == Keysym::v || ks == Keysym::V) {
+            self.paste_clipboard_into_input();
+        } else if ks == Keysym::Return || ks == Keysym::KP_Enter {
             self.submit_input();
         } else if ks == Keysym::BackSpace {
             self.input_text.pop();
         } else if ks == Keysym::Escape {
             self.input_focused = false;
         } else if let Some(text) = event.utf8 {
-            for ch in text.chars() {
-                if !ch.is_control() {
-                    self.input_text.push(ch);
-                }
+            self.append_input_text(&text);
+        }
+    }
+
+    fn append_input_text(&mut self, text: &str) {
+        for ch in text.chars() {
+            if !ch.is_control() {
+                self.input_text.push(ch);
             }
         }
+    }
+
+    fn paste_clipboard_into_input(&mut self) {
+        match read_clipboard_text().map(|text| sanitize_paste(&text)).and_then(|text| {
+            if text.is_empty() {
+                Err("clipboard has no text".to_string())
+            } else {
+                Ok(text)
+            }
+        }) {
+            Ok(text) => {
+                if self.input_text.chars().last().is_some_and(|ch| !ch.is_whitespace()) {
+                    self.input_text.push(' ');
+                }
+                self.append_input_text(&text);
+                self.speech = Some("Pasted into input.".to_string());
+            }
+            Err(err) => {
+                self.speech = Some(format!("Paste failed: {err}"));
+            }
+        }
+        self.update_input_region();
     }
 
     /// Send what the user typed to the soul as a `said` event and echo it locally so
@@ -1138,6 +1274,7 @@ impl App {
         self.send_to_soul(presence::said_json(&self.buddy, &text));
         self.set_emotion(Emotion::Thinking);
         self.awaiting_reply = true;
+        self.pending_review = false;
         self.presence_status = format!("{} is thinking", self.buddy);
         self.torso_surface = TorsoSurface::Text {
             title: "Reply pending".to_string(),
@@ -1174,6 +1311,10 @@ impl App {
             }
         } else if render::point_in_head(x, y) {
             PressTarget::Head
+        } else if self.chat_open && layout.paste_button_rect().contains(x, y) {
+            PressTarget::Paste
+        } else if self.chat_open && layout.review_button_rect().contains(x, y) {
+            PressTarget::Review
         } else if self.chat_open && layout.input_region_rect().contains(x, y) {
             PressTarget::Input
         } else if let Some(action) = render::torso_action_at(&layout, x, y) {
@@ -1286,6 +1427,14 @@ impl App {
                 self.toggle_chat();
             }
             PressTarget::Input => self.input_focused = true,
+            PressTarget::Paste => {
+                self.input_focused = true;
+                self.paste_clipboard_into_input();
+            }
+            PressTarget::Review => {
+                self.input_focused = false;
+                self.request_review();
+            }
             PressTarget::TorsoAction(action) => {
                 self.input_focused = false;
                 self.on_torso_action(action);
@@ -1296,12 +1445,46 @@ impl App {
         }
     }
 
+    /// Ask the soul to run the read-only `receipt_review` effector through the action gate.
+    /// First press requests it; once the soul replies `needs_confirmation` the button becomes
+    /// Confirm and the next press re-requests with `confirmed`. The body only asks — the soul
+    /// authorizes and sends back the ActionReceipt it renders (AGENTS.md law 7).
+    fn request_review(&mut self) {
+        let confirmed = self.pending_review;
+        self.send_to_soul(presence::action_request_json(
+            &self.buddy,
+            "receipt_review",
+            confirmed,
+            None,
+        ));
+        self.speech = Some(if confirmed {
+            "Confirming review…".to_string()
+        } else {
+            "Requesting receipt review…".to_string()
+        });
+        self.update_input_region();
+    }
+
     fn on_torso_action(&mut self, action: TorsoAction) {
         self.speech = Some(match action {
             TorsoAction::Expand => "Fullscreen image open will land here.".to_string(),
+            TorsoAction::Copy => match self.current_text_output() {
+                Some(text) => match copy_to_clipboard(text) {
+                    Ok(()) => "Copied text output.".to_string(),
+                    Err(err) => format!("Copy failed: {err}"),
+                },
+                None => "No text output to copy.".to_string(),
+            },
             TorsoAction::Scroll => "Torso scroll controls will land here.".to_string(),
         });
         self.update_input_region();
+    }
+
+    fn current_text_output(&self) -> Option<&str> {
+        match &self.torso_surface {
+            TorsoSurface::Text { body, .. } if !body.trim().is_empty() => Some(body.as_str()),
+            _ => None,
+        }
     }
 
     // --- tuck / summon -------------------------------------------------------
@@ -1620,9 +1803,10 @@ impl KeyboardHandler for App {
         _q: &QueueHandle<Self>,
         _kb: &wl_keyboard::WlKeyboard,
         _serial: u32,
-        _modifiers: Modifiers,
+        modifiers: Modifiers,
         _layout: u32,
     ) {
+        self.modifiers = modifiers;
     }
 }
 

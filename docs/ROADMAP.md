@@ -95,6 +95,14 @@ Build order:
    head to choose any attachment point on/near the target; that offset follows the
    window as it moves. This is still presentation-only: the body does not read,
    move, or act on the target window.
+   Governance parity over the wire (2026-06-13): `scripts/soul-server.ts` (the real
+   soul, `npm run soul:dev`) serves the presence protocol over WebSocket and runs the
+   **actual** action gate (`handleActionRequest`) — replacing the dev gateway's
+   `gateway-stub`. A body that types `/review` / `/confirm` (or emits an `action_request`
+   cue) now receives a real `ActionReceipt` with a persisted, file-backed ledger, matching
+   the browser proof. Native on-body Review/Confirm button added (`desktop-body/`): emits
+   `action_request`, flips to Confirm on `needs_confirmation` (compile + layout test;
+   live COSMIC click not yet verified headlessly). Remaining Step 4 work: Wizard Act 0 host.
 5. **Governance vertical slice** ✅ — a buddy action produces a receipt, joining the
    presence layer to the governance core. Delivered (2026-06-13):
    - `authorizeEffectorAction` + `ActionReceipt` (`src/core/actionGate.ts`): the
@@ -122,11 +130,39 @@ Build order:
      real Veritas surface → asserts `needs_confirmation` + derivation → clicks Confirm →
      asserts `allow` + the action ledger opens.
 
+**Execution membrane — first real `act` effector (2026-06-13, post-roundtable)** ✅ — the gate
+graduated from effector-level to **intent-level** authorization (GPT roundtable):
+   - `ActionIntent` (operation + target) + `ExecutionReceipt` (world-facing outcome, route
+     provenance) in `src/core/actionGate.ts` — authorization and execution are different
+     borders. `repo_edit` is the first true `act` effector, live behind a stricter
+     `GATED_WIRED_ACT_EFFECTORS` lane (intent schema + outcome receipt required); the
+     read-only `reach` lane is untouched.
+   - Hard block `action.blocked.protected_target`: `AGENTS.md` / `src/core` / deps / `.git`
+     can never be written, even after confirmation. `..` is canonicalized so traversal
+     (`src/foo/../../AGENTS.md`) can't disguise a protected target (and the executor sandbox
+     guard uses the same resolution — defense in depth).
+   - Route doctrine: `action.confirm.route_downgrade` — a fallback to a lower-trust provider
+     re-enters the confirmation floor (degradation is never silent). Route rides on the
+     `ExecutionReceipt` and the wire `action_result.outcome`.
+   - Protocol v0 (additive): typed `intent` + `routeHint` on `action_request`, `outcome`
+     `{ executed, executionReceiptId, route }` on `action_result`. `context` is legacy and
+     never authoritative. Mirrored in the Rust body (`desktop-body/src/presence.rs`) with a
+     cross-language golden fixture exercising the outcome byte-for-byte.
+   - Browser proof: Forge `/review repo_edit <path>` renders the decision, derivation, and
+     execution outcome; `e2e/governance-act-effector.spec.ts` drives the block paths on the
+     real surface (protected target → blocked, no Confirm affordance; traversal → blocked;
+     safe target without backing → `no_action_grant`). The `allow` path for an act effector
+     needs an action-backed memory turn (proven at the soul layer, `soulActions` "Case C").
+
 Known TODOs before main: polish pinned placement controls, remove or quarantine the
-old full-frame renderer/tests if the pin UX remains the chosen path, drive the native
-body's `/review` affordance + Confirm button (the browser path is the current proof, now
-guarded by `e2e/governance-action.spec.ts`), and surface action entries in the dock's
-ledger summary UI.
+old full-frame renderer/tests if the pin UX remains the chosen path, manually verify the
+native Review/Confirm click on a live COSMIC session, surface action entries in the dock's
+ledger summary UI, wire the **native body to emit a typed `repo_edit` intent** (the body→soul
+Rust intent builder + on-body affordance — the soul→body outcome is already mirrored), and
+add a **live (on-disk) `act` executor** behind the gate for the visible harm demo (the
+current executor is a guarded proof that does not write to disk). Backlog from roundtable 2:
+confirmation budgets (fatigue), intent-parser fuzzing, publish the protocol as a versioned
+crate with a conformance suite.
 
 ---
 

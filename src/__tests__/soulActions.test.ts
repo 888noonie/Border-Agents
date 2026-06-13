@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { handleActionRequest } from "../soulActions";
+import { handleActionRequest, parseActionCommand } from "../soulActions";
 import { readReceiptLedger } from "../receiptLedger";
 import type { BuddySettings } from "../buddyProfiles";
 import type { SessionChatLine } from "../liveGovernance";
@@ -147,5 +147,27 @@ describe("handleActionRequest", () => {
     const ledger = readReceiptLedger(storage);
     expect(ledger).toHaveLength(1);
     expect(ledger[0].buddyId).toBe("veritas");
+  });
+});
+
+describe("parseActionCommand", () => {
+  test("/review defaults to receipt_review", () => {
+    expect(parseActionCommand("/review")).toEqual({ kind: "review", effectorId: "receipt_review" });
+    expect(parseActionCommand("  /review  ")).toEqual({ kind: "review", effectorId: "receipt_review" });
+  });
+
+  test("/review <effector> carries the named effector", () => {
+    expect(parseActionCommand("/review terminal")).toEqual({ kind: "review", effectorId: "terminal" });
+  });
+
+  test("/confirm is the confirm command", () => {
+    expect(parseActionCommand("/confirm")).toEqual({ kind: "confirm" });
+  });
+
+  test("free text and near-misses are not action commands", () => {
+    expect(parseActionCommand("hello there")).toBeNull();
+    expect(parseActionCommand("/reviewer")).toBeNull(); // must be /review or "/review "
+    expect(parseActionCommand("/confirming")).toBeNull();
+    expect(parseActionCommand("")).toBeNull();
   });
 });

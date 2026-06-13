@@ -344,23 +344,23 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
     const trimmedMessage = message.trim();
 
     if (gatewayBusy) {
-      return "Hermes is thinking…";
+      return `${buddy.shortName} is thinking…`;
     }
 
     if (hasGateway) {
       if (gatewayOnline) {
-        return trimmedMessage || gatewayDetail || "Hermes gateway ready.";
+        return trimmedMessage || gatewayDetail || `${buddy.shortName} gateway ready.`;
       }
 
       if (gatewayState === "connecting") {
-        return "Connecting to Hermes gateway…";
+        return `Connecting to ${buddy.shortName} gateway…`;
       }
 
       if (gatewayState === "error" || gatewayState === "disconnected") {
-        return trimmedMessage || gatewayDetail || "Hermes gateway attention required.";
+        return trimmedMessage || gatewayDetail || `${buddy.shortName} gateway attention required.`;
       }
 
-      return trimmedMessage || "Hermes gateway offline.";
+      return trimmedMessage || `${buddy.shortName} gateway offline.`;
     }
 
     return trimmedMessage || `${buddy.shortName} ready.`;

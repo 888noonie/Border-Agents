@@ -86,15 +86,21 @@ export const BUDDY_MEMORY_LABELS: Record<BuddyMemoryMode, string> = {
 };
 
 export const BUDDY_PROFILES: Record<string, BuddyProfile> = {
+  // The bootstrap presence: the one buddy guaranteed present before any provider is
+  // connected, so it can host onboarding. Its DISPLAY identity is the provider-agnostic
+  // "Border Wizard" (it must not wear a provider's avatar — buddies persist, providers
+  // rotate). The wire id stays "hermes": it is threaded through the cross-language golden
+  // fixtures (TS + Rust byte-parity), onboarding state, and the soul server, and users
+  // never see it — same persona/id indirection we already use (owl→veritas).
   hermes: {
     schemaVersion: 1,
     identity: {
       id: "hermes",
-      name: "Hermes",
-      shortName: "Hermes",
-      ownerKind: "model",
-      ownerLabel: "Grok",
-      role: "Fast Signal Companion",
+      name: "Border Wizard",
+      shortName: "Wizard",
+      ownerKind: "agent",
+      ownerLabel: "Border Agents",
+      role: "Onboarding Host",
     },
     adapterDefaults: {
       provider: "grok",

@@ -453,8 +453,8 @@ const buddies: DockBuddy[] = [
   {
     id: hermesManifest.id,
     name: hermesManifest.name,
-    shortName: "Hermes",
-    ownerKind: "model",
+    shortName: "Wizard",
+    ownerKind: "agent",
     ownerLabel: hermesManifest.owner,
     role: hermesManifest.role,
     personality: hermesManifest.personality,
@@ -2312,7 +2312,7 @@ function DockChrome({
                 Examples: intervention requests, receipt warnings, graded memory status, future announcements.
                 Pauses on hover. Uses duplicated segments for seamless loop. */}
             {!adjustOpen && !clickThrough && !recentHeal && (
-              <div className="dock-controls__ticker" aria-label="Hermes status and outstanding items ticker" role="status">
+              <div className="dock-controls__ticker" aria-label="Border Wizard status and outstanding items ticker" role="status">
                 <div className="dock-ticker__track">
                   {tickerSegments.slice(0, 1).map((segment, i) => (
                     <span key={i} className="dock-ticker__segment" aria-hidden={i > 0}>

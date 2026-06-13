@@ -193,7 +193,7 @@ export function BuddySettingsDialog({
                   </span>
                 </div>
                 <p className="buddy-dialog__gateway-detail">
-                  Desktop gateway routes Hermes chat through the configured provider adapter.
+                  Desktop gateway routes Border Wizard chat through the configured provider adapter.
                 </p>
                 {gatewayDetail ? <p className="buddy-dialog__gateway-detail">{gatewayDetail}</p> : null}
                 <label className="buddy-dialog__field">

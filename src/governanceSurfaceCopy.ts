@@ -26,8 +26,8 @@ export function buildGovernanceSurfaceCopy(args: {
       ],
       passThroughMessage:
         ledgerSummary.entryCount > 0
-          ? `Pass-through on - Hermes is not clickable. ${ledgerSummary.entryCount} graded frames remain saved locally.`
-          : "Pass-through on - Hermes is not clickable. No live graded frame has been saved yet.",
+          ? `Pass-through on - Border Wizard is not clickable. ${ledgerSummary.entryCount} graded frames remain saved locally.`
+          : "Pass-through on - Border Wizard is not clickable. No live graded frame has been saved yet.",
     };
   }
 
@@ -55,7 +55,7 @@ export function buildGovernanceSurfaceCopy(args: {
       `Prompt: ${nexus.promptSummary.included} in context, ${nexus.promptSummary.excluded} excluded`,
       `Ledger: ${ledgerSummary.entryCount} frames and ${ledgerSummary.receiptCount} receipts saved locally`,
     ],
-    passThroughMessage: `Pass-through on - Hermes is not clickable. Latest ${purposeLabel(snapshot.purpose).toLowerCase()} frame keeps ${nexus.promptSummary.included} prompt entries and ${veritas.warnings.length} warning${veritas.warnings.length === 1 ? "" : "s"}.`,
+    passThroughMessage: `Pass-through on - Border Wizard is not clickable. Latest ${purposeLabel(snapshot.purpose).toLowerCase()} frame keeps ${nexus.promptSummary.included} prompt entries and ${veritas.warnings.length} warning${veritas.warnings.length === 1 ? "" : "s"}.`,
   };
 }
 

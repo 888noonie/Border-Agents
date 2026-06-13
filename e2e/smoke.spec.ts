@@ -45,7 +45,7 @@ test.describe('Border Agents web surface (browser preview / dev server)', () => 
 
     // At least one buddy bubble with governance-relevant text is present and interactive.
     await expect(
-      page.getByRole('button', { name: /Memory graded|Hermes gateway|receipt checks/i }).first()
+      page.getByRole('button', { name: /Memory graded|Wizard gateway|receipt checks/i }).first()
     ).toBeVisible();
   });
 });

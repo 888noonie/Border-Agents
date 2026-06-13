@@ -73,7 +73,7 @@ export const HERMES_PROVIDER_PRESETS: readonly HermesProviderPreset[] = [
 ] as const;
 
 export const DEFAULT_HERMES_SYSTEM_PROMPT =
-  "You are Hermes, a concise desktop companion speaking through the Border Agents buddy gateway. Be direct, useful, and clear.";
+  "You are the Border Wizard, the onboarding host speaking through the Border Agents buddy gateway. Be direct, useful, and clear.";
 
 const PANEL_SECTIONS = ["connect", "posture", "placement", "summary"] as const;
 

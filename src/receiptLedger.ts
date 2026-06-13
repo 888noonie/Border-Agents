@@ -82,6 +82,8 @@ export function isMemoryEntry(entry: ReceiptLedgerEntry): entry is MemoryReceipt
 
 export interface ReceiptLedgerSummary {
   entryCount: number;
+  /** How many entries are memory-grading frames (the union `entryCount` also counts action/execution entries). */
+  frameCount: number;
   receiptCount: number;
   latestBuddyId: string | null;
   latestPurpose: string | null;
@@ -175,6 +177,7 @@ export function summarizeReceiptLedger(entries: ReceiptLedgerEntry[]): ReceiptLe
 
   return {
     entryCount: entries.length,
+    frameCount: entries.filter(isMemoryEntry).length,
     receiptCount,
     latestBuddyId: latest?.buddyId ?? null,
     latestPurpose: latest && isMemoryEntry(latest) ? latest.purpose : null,

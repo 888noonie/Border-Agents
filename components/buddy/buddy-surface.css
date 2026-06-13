@@ -1197,6 +1197,27 @@
   font-weight: 600;
   cursor: pointer;
 }
+.action-receipt-card__execution {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(43, 108, 255, 0.08);
+  border: 1px solid rgba(43, 108, 255, 0.25);
+}
+.action-receipt-card__execution[data-executed="true"] {
+  background: rgba(46, 196, 120, 0.1);
+  border-color: rgba(46, 196, 120, 0.3);
+}
+.action-receipt-card__exec-state {
+  font-weight: 600;
+  color: #cdd6e6;
+}
+.action-receipt-card__exec-detail {
+  font-size: 11px;
+  color: #97a1b4;
+}
 .action-receipt-card__ledger h4 {
   margin: 4px 0;
   color: #cdd6e6;

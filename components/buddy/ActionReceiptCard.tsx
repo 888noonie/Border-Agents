@@ -1,4 +1,4 @@
-import type { ActionReceipt } from "../../src/core";
+import type { ActionReceipt, ExecutionReceipt } from "../../src/core";
 import { isActionEntry, readReceiptLedger } from "../../src/receiptLedger";
 
 const DECISION_LABEL: Record<ActionReceipt["decision"], string> = {
@@ -9,6 +9,8 @@ const DECISION_LABEL: Record<ActionReceipt["decision"], string> = {
 
 type ActionReceiptCardProps = {
   receipt: ActionReceipt;
+  /** The world-facing execution outcome (route + executed), shown once an action has run. */
+  execution?: ExecutionReceipt;
   /** Present the confirm affordance (only meaningful when decision is needs_confirmation). */
   onConfirm?: () => void;
 };
@@ -19,7 +21,7 @@ type ActionReceiptCardProps = {
  * gate is waiting on the user, and — once allowed — the read-only receipt ledger that
  * `receipt_review` exists to open.
  */
-export function ActionReceiptCard({ receipt, onConfirm }: ActionReceiptCardProps) {
+export function ActionReceiptCard({ receipt, execution, onConfirm }: ActionReceiptCardProps) {
   const ledger = receipt.decision === "allow" ? readReceiptLedger().filter(isActionEntry) : [];
 
   return (
@@ -45,6 +47,24 @@ export function ActionReceiptCard({ receipt, onConfirm }: ActionReceiptCardProps
         <button type="button" className="action-receipt-card__confirm" onClick={onConfirm}>
           Confirm and run
         </button>
+      ) : null}
+
+      {execution ? (
+        <section
+          className="action-receipt-card__execution"
+          data-executed={execution.executor_called && execution.outcome === "ok" ? "true" : "false"}
+          data-outcome={execution.outcome}
+          aria-label="Execution outcome"
+        >
+          <span className="action-receipt-card__exec-state">
+            {execution.executor_called && execution.outcome === "ok"
+              ? `Executed via ${execution.route.provider}${execution.route.downgraded ? " (downgraded route)" : ""}`
+              : execution.outcome === "skipped"
+                ? "Authorized — not executed on this surface"
+                : `Execution ${execution.outcome}`}
+          </span>
+          {execution.detail ? <span className="action-receipt-card__exec-detail">{execution.detail}</span> : null}
+        </section>
       ) : null}
 
       {receipt.decision === "allow" ? (

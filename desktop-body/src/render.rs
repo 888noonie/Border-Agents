@@ -560,7 +560,9 @@ pub fn viseme_spec(v: Viseme) -> MouthSpec {
 // --- view + sprite ---------------------------------------------------------------
 
 pub struct SessionCard<'a> {
-    pub buddy: &'a str,
+    /// Display name shown in the header (e.g. "Border Wizard") — distinct from the wire
+    /// id ("hermes"). The body no longer title-cases the id for display.
+    pub name: &'a str,
     pub provider: &'a str,
     pub model: &'a str,
     pub gateway: &'a str,
@@ -1399,7 +1401,7 @@ fn draw_session_card(pixmap: &mut Pixmap, font: &Font, rect: Rect, card: &Sessio
         PANEL_LINE_H - 1.0,
         text_w,
         1,
-        &format!("{} surface", title_case(card.buddy)),
+        &format!("{} surface", card.name),
         [102, 88, 76],
     ) + 4.0;
     y = draw_wrapped_block(
@@ -1835,7 +1837,7 @@ fn solid(color: Color) -> Paint<'static> {
     paint
 }
 
-fn title_case(text: &str) -> String {
+pub fn title_case(text: &str) -> String {
     let mut chars = text.chars();
     let Some(first) = chars.next() else { return String::new() };
     let mut out = first.to_uppercase().to_string();
@@ -2218,7 +2220,7 @@ mod tests {
             emotion: Emotion::Happy,
             speech: Some("Framing Firefox."),
             torso_output: TorsoOutput::Session(SessionCard {
-                buddy: "hermes",
+                name: "Border Wizard",
                 provider: "echo",
                 model: "not configured",
                 gateway: "ws://127.0.0.1:17387/border-buddies",

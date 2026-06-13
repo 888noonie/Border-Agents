@@ -117,7 +117,7 @@ enum TorsoSurface {
 
 enum TorsoSurfaceSnapshot {
     Session {
-        buddy: String,
+        name: String,
         provider: String,
         model: String,
         gateway: String,
@@ -153,9 +153,9 @@ impl TorsoSurfaceSnapshot {
         image: Option<&'a render::TorsoImage>,
     ) -> render::TorsoOutput<'a> {
         match self {
-            TorsoSurfaceSnapshot::Session { buddy, provider, model, gateway, status, note } => {
+            TorsoSurfaceSnapshot::Session { name, provider, model, gateway, status, note } => {
                 render::TorsoOutput::Session(render::SessionCard {
-                    buddy,
+                    name,
                     provider,
                     model,
                     gateway,
@@ -280,6 +280,7 @@ fn main() {
         speech: None,
         torso_surface: TorsoSurface::Session,
         torso_image: None,
+        name_label: String::new(),
         provider_label: String::new(),
         model_label: String::new(),
         gateway_label: String::new(),
@@ -464,6 +465,9 @@ struct App {
     /// in the enum) so a redraw blits it without re-decoding, and so the snapshot stays
     /// owned. Set from an `output` cue's inline bytes via `decode_image_bytes`.
     torso_image: Option<render::TorsoImage>,
+    /// Display name for the header (e.g. "Border Wizard"); `HERMES_NAME` env override,
+    /// defaulting to the title-cased wire id. Distinct from `buddy` (the wire id).
+    name_label: String,
     provider_label: String,
     model_label: String,
     gateway_label: String,
@@ -544,6 +548,10 @@ fn output_label(app: &App) -> String {
 
 impl App {
     fn init_hermes_surface(&mut self) {
+        // Display name: HERMES_NAME (or <BUDDY>_NAME) override, else the title-cased wire id.
+        // The soul sending identity over the wire is the eventual single-source fix; until
+        // then the body is env-configured, exactly as provider/model below already are.
+        self.name_label = buddy_env(&self.buddy, "NAME").unwrap_or_else(|| render::title_case(&self.buddy));
         self.provider_label = buddy_env(&self.buddy, "PROVIDER").unwrap_or_else(|| "echo".to_string());
         self.model_label = buddy_env(&self.buddy, "MODEL").unwrap_or_else(|| "not configured".to_string());
         self.gateway_label = std::env::var("BB_PRESENCE_URL")
@@ -671,7 +679,7 @@ impl App {
         // Owned snapshot — the decoded image is lent separately in draw() (see torso_image).
         match &self.torso_surface {
             TorsoSurface::Session => TorsoSurfaceSnapshot::Session {
-                buddy: self.buddy.clone(),
+                name: self.name_label.clone(),
                 provider: self.provider_label.clone(),
                 model: self.model_label.clone(),
                 gateway: self.gateway_label.clone(),

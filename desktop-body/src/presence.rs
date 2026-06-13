@@ -371,6 +371,9 @@ pub enum Cue {
         receipt_id: String,
         request_id: Option<String>,
         summary: Option<String>,
+        /// World-facing execution outcome (present only on `allow` paths). `executed` is the
+        /// load-bearing bit; `route` is the provider provenance ("providers rotate").
+        outcome: Option<ActionOutcome>,
     },
     /// Border-target tracking (the "Morph Frame" seam): a platform driver tells the body
     /// where a native OS window is so it can wrap its hollow torso around it. Split three
@@ -380,6 +383,25 @@ pub enum Cue {
     TargetAcquired { target_id: String, title: String, app_id: String, bounds: TargetBounds },
     TargetMoved { target_id: String, bounds: TargetBounds },
     TargetLost { target_id: String, reason: TargetLostReason },
+}
+
+/// The provider route that carried an executed effect. Mirrors the TS `PresenceActionOutcome`
+/// route shape; `locality` is the closed set `local | cloud`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActionRoute {
+    pub provider: String,
+    pub locality: String,
+    pub downgraded: bool,
+    pub fallback_of: Option<String>,
+}
+
+/// World-facing execution outcome on an `action_result`. The full ExecutionReceipt stays
+/// soul-side; the body holds only this thin cue so it can render "executed" vs "not run".
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActionOutcome {
+    pub executed: bool,
+    pub execution_receipt_id: Option<String>,
+    pub route: Option<ActionRoute>,
 }
 
 /// A parsed to-body message: which buddy it concerns, and the cue to apply.
@@ -435,7 +457,35 @@ fn parse_action_result(v: &Value) -> Option<Cue> {
     let receipt_id = nonempty(v.get("receiptId"))?;
     let request_id = v.get("requestId").and_then(|s| s.as_str()).map(String::from);
     let summary = v.get("summary").and_then(|s| s.as_str()).map(String::from);
-    Some(Cue::ActionResult { effector, decision, receipt_id, request_id, summary })
+    // An `outcome` is optional, but if present it must be well-formed — a malformed outcome
+    // drops the whole cue (mirrors the TS `isActionOutcome` guard) rather than rendering
+    // a half-known execution state.
+    let outcome = match v.get("outcome") {
+        None => None,
+        Some(raw) => Some(parse_action_outcome(raw)?),
+    };
+    Some(Cue::ActionResult { effector, decision, receipt_id, request_id, summary, outcome })
+}
+
+/// Parse the optional `outcome` on an `action_result`. `executed` must be a boolean; if a
+/// `route` is present, its `provider` must be non-empty and `locality` one of `local|cloud`.
+fn parse_action_outcome(v: &Value) -> Option<ActionOutcome> {
+    let executed = v.get("executed")?.as_bool()?;
+    let execution_receipt_id = v.get("executionReceiptId").and_then(|s| s.as_str()).map(String::from);
+    let route = match v.get("route") {
+        None => None,
+        Some(r) => {
+            let provider = nonempty(r.get("provider"))?;
+            let locality = r.get("locality")?.as_str()?.to_string();
+            if !matches!(locality.as_str(), "local" | "cloud") {
+                return None;
+            }
+            let downgraded = r.get("downgraded")?.as_bool()?;
+            let fallback_of = r.get("fallbackOf").and_then(|s| s.as_str()).map(String::from);
+            Some(ActionRoute { provider, locality, downgraded, fallback_of })
+        }
+    };
+    Some(ActionOutcome { executed, execution_receipt_id, route })
 }
 
 /// A required, non-empty string field (mirrors the TS `isNonEmptyString` guard).
@@ -693,15 +743,35 @@ mod tests {
         let result = parse_to_body(&fixture("action_result")).unwrap();
         assert_eq!(result.buddy, "hermes");
         match result.cue {
-            Cue::ActionResult { effector, decision, receipt_id, request_id, summary } => {
+            Cue::ActionResult { effector, decision, receipt_id, request_id, summary, outcome } => {
                 assert_eq!(effector, "receipt_review");
                 assert_eq!(decision, "allow");
                 assert!(!receipt_id.is_empty());
                 assert_eq!(request_id.as_deref(), Some("req-1"));
                 assert!(summary.is_some());
+                // Execution outcome + route provenance cross the wire and parse identically.
+                let outcome = outcome.expect("fixture carries an execution outcome");
+                assert!(outcome.executed);
+                assert_eq!(outcome.execution_receipt_id.as_deref(), Some("exec:hermes:receipt_review:t0"));
+                let route = outcome.route.expect("fixture carries a route");
+                assert_eq!(route.provider, "claude");
+                assert_eq!(route.locality, "cloud");
+                assert!(!route.downgraded);
             }
             other => panic!("expected action_result, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn action_outcome_validation_mirrors_ts() {
+        // No outcome at all is fine (blocked/needs_confirmation paths).
+        assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"action_result","buddy":"h","ts":1,"effector":"repo_edit","decision":"blocked","receiptId":"r1"}"#).is_some());
+        // A non-boolean `executed` drops the whole cue.
+        assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"action_result","buddy":"h","ts":1,"effector":"repo_edit","decision":"allow","receiptId":"r1","outcome":{"executed":"yes"}}"#).is_none());
+        // An unknown route locality drops the cue (closed set, not a free string).
+        assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"action_result","buddy":"h","ts":1,"effector":"repo_edit","decision":"allow","receiptId":"r1","outcome":{"executed":true,"route":{"provider":"gpt","locality":"orbit","downgraded":false}}}"#).is_none());
+        // A well-formed outcome with a downgraded route parses.
+        assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"action_result","buddy":"h","ts":1,"effector":"repo_edit","decision":"allow","receiptId":"r1","outcome":{"executed":true,"route":{"provider":"gpt","locality":"cloud","downgraded":true,"fallbackOf":"claude"}}}"#).is_some());
     }
 
     #[test]

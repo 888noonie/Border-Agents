@@ -208,12 +208,29 @@ function finish(
     appendExecutionReceiptToLedger({ buddyId: ledgerBuddyId, receipt: execution, storage: args.storage });
   }
 
+  // Structured execution outcome on the wire (not just the human summary): `executed` is
+  // the load-bearing bit, and the route is the provider provenance. Present only when an
+  // executor was consulted (i.e. on an `allow`). The full ExecutionReceipt stays soul-side.
+  const outcome = execution
+    ? {
+        executed: execution.executor_called && execution.outcome === "ok",
+        executionReceiptId: execution.receipt_id,
+        route: {
+          provider: execution.route.provider,
+          locality: execution.route.locality,
+          downgraded: execution.route.downgraded,
+          ...(execution.route.fallbackOf ? { fallbackOf: execution.route.fallbackOf } : {}),
+        },
+      }
+    : undefined;
+
   const result = presence.actionResult(args.buddy, {
     effector: receipt.effector,
     decision: receipt.decision,
     receiptId: receipt.receipt_id,
     requestId: args.requestId,
     summary: summarize(receipt, label, execution),
+    ...(outcome ? { outcome } : {}),
   });
 
   return { receipt, result, execution };

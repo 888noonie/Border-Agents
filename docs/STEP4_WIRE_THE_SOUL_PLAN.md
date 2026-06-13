@@ -42,6 +42,33 @@ hydrate`, emitting `clicked/grabbed/dragged/dropped/summoned/dismissed`. First d
 is the scripted Wizard onboarding host. Same protocol the browser body already speaks
 (`src/presenceProtocol.ts`, JS mirror `extensions/browser/presence.js`).
 
+## 0b. Governance parity over the wire — the real soul (2026-06-13) ✅
+
+The gap flagged in the `What It Is` reviewer note ("native body does not run the
+governance action path; receipts are browser-only") is closed. The dev gateway is a JS
+relay that cannot import the TS core, so its `action_request` handler only ever emitted a
+`gateway-stub` `action_result`. **`scripts/soul-server.ts`** (run via tsx, `npm run
+soul:dev`) is the real soul runtime the architecture always implied: it serves the presence
+protocol over WebSocket and runs the **actual** gate (`handleActionRequest` →
+`authorizeEffectorAction`), the same one the browser body calls in-process.
+
+- Binds `ws://127.0.0.1:17387/border-buddies` (the body's default `BB_PRESENCE_URL`), so
+  `BB_BUDDY=owl npm run body:dev` connects with no config.
+- `attached` → replies `hydrate` + greeting; `said` → `parseActionCommand` routes `/review`
+  / `/confirm` through the gate; a typed `action_request` cue is authorized directly.
+- Emits a **real** `action_result` (real `receiptId`, real decision) and persists the
+  receipt to a file-backed ledger (`BB_SOUL_LEDGER`), so the native body now sees the exact
+  needs_confirmation → confirm → allow round-trip the browser proves — including the
+  persona→governance id resolution (`owl` → `veritas`) over the wire.
+- Verified by a live WebSocket smoke run and 154 green vitest (incl. `parseActionCommand`).
+- AGENTS.md law 7 intact: the body sends text / an action request; the SOUL authorizes; the
+  body only renders the result. No new "do something" kinds were added to the body.
+
+On-body Review/Confirm affordance (2026-06-13) ✅ — a Review button appears when chat is
+open; click emits `action_request` for `receipt_review`; on `needs_confirmation` the
+button flips to Confirm. Verified by compile + layout regression test; live COSMIC click
+not yet verified headlessly. Remaining for full Step 4: Wizard Act 0 host (commit 5 below).
+
 ## 1. Integration approach — thread + calloop channel (recommended)
 
 The body is a synchronous `calloop` + Wayland loop (`main.rs:162`). Do **not** pull in
@@ -175,6 +202,10 @@ proves Act 0 end-to-end.
 4. `feat(presence): COSMIC target lifecycle relay + pinned Hermes proof` — frame
    driver, target cue schema/fixtures, gateway relay, pinned head/bubble/input UX.
 5. `feat(gateway): wizard onboarding host (Act 0)` behind `BB_SOUL=wizard`.
+6. `feat(soul): real presence soul-server runs the action gate over WebSocket` —
+   `scripts/soul-server.ts` + `parseActionCommand` + tests. **✅ done (governance parity).**
+7. `feat(presence): native body Review/Confirm affordance` — on-body button, layout test.
+   **✅ done (live COSMIC click pending manual verify).**
 
 ## 9. Decisions (resolved in review)
 

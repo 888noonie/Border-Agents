@@ -300,6 +300,7 @@ fn main() {
         keyboard: None,
         input_text: String::new(),
         input_focused: false,
+        pending_review: false,
         facing: Facing::Right,
         body_len: render::BODY_LEN_DEFAULT,
         color: env_color("BB_COLOR"),
@@ -409,6 +410,8 @@ struct PressState {
 enum PressTarget {
     Head,
     Input,
+    /// The on-body Review / Confirm governance button (visible while chat is open).
+    Review,
     TorsoAction(TorsoAction),
     /// The legs/feet zone — dragging it vertically stretches the body.
     Feet,
@@ -495,6 +498,9 @@ struct App {
     input_text: String,
     /// Whether the input box has focus — gates keystrokes and shows the caret.
     input_focused: bool,
+    /// True after the soul's last action_result for this body asked for confirmation, so
+    /// the Review button renders (and acts) as Confirm. Cleared on any allow/blocked result.
+    pending_review: bool,
     /// Which side the bubble/input sit on — recomputed from screen position so the
     /// UI always faces the screen centre, never the docked edge.
     facing: Facing,
@@ -637,6 +643,7 @@ impl App {
             tucked: self.tucked.map(edge_to_bump),
             input_text: &input_text,
             input_focused: self.input_focused,
+            review_pending: self.pending_review,
             layout,
             pinned,
             frame: None,
@@ -916,6 +923,7 @@ impl App {
             }
             if self.chat_open {
                 rects.push(layout.input_region_rect().as_i32());
+                rects.push(layout.review_button_rect().as_i32());
             }
             rects.push(layout.torso_action_rect(TorsoAction::Expand).as_i32());
             rects.push(layout.torso_action_rect(TorsoAction::Scroll).as_i32());
@@ -966,13 +974,16 @@ impl App {
             presence::Cue::ActionResult { decision, summary, .. } => {
                 // Present the soul's authorization outcome — the body renders it, it never
                 // decides it (law 7). A non-`allow` outcome draws an alert expression so the
-                // user notices the gate held or wants confirmation.
+                // user notices the gate held or wants confirmation. `needs_confirmation`
+                // flips the on-body Review button into a Confirm button until resolved.
+                self.pending_review = decision == "needs_confirmation";
                 if decision != "allow" {
                     self.set_emotion(Emotion::Alert);
                 }
                 if let Some(text) = summary {
                     self.say(text);
                 }
+                self.update_input_region();
             }
             presence::Cue::TargetAcquired { target_id, title, app_id, bounds } => {
                 if self.tucked.is_some() {
@@ -1174,6 +1185,8 @@ impl App {
             }
         } else if render::point_in_head(x, y) {
             PressTarget::Head
+        } else if self.chat_open && layout.review_button_rect().contains(x, y) {
+            PressTarget::Review
         } else if self.chat_open && layout.input_region_rect().contains(x, y) {
             PressTarget::Input
         } else if let Some(action) = render::torso_action_at(&layout, x, y) {
@@ -1286,6 +1299,10 @@ impl App {
                 self.toggle_chat();
             }
             PressTarget::Input => self.input_focused = true,
+            PressTarget::Review => {
+                self.input_focused = false;
+                self.request_review();
+            }
             PressTarget::TorsoAction(action) => {
                 self.input_focused = false;
                 self.on_torso_action(action);
@@ -1294,6 +1311,26 @@ impl App {
                 self.input_focused = false;
             }
         }
+    }
+
+    /// Ask the soul to run the read-only `receipt_review` effector through the action gate.
+    /// First press requests it; once the soul replies `needs_confirmation` the button becomes
+    /// Confirm and the next press re-requests with `confirmed`. The body only asks — the soul
+    /// authorizes and sends back the ActionReceipt it renders (AGENTS.md law 7).
+    fn request_review(&mut self) {
+        let confirmed = self.pending_review;
+        self.send_to_soul(presence::action_request_json(
+            &self.buddy,
+            "receipt_review",
+            confirmed,
+            None,
+        ));
+        self.speech = Some(if confirmed {
+            "Confirming review…".to_string()
+        } else {
+            "Requesting receipt review…".to_string()
+        });
+        self.update_input_region();
     }
 
     fn on_torso_action(&mut self, action: TorsoAction) {

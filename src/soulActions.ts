@@ -56,7 +56,7 @@ function isKnownEffector(id: string): id is EffectorId {
  * null for anything that is not an action command (free text → the provider, not the gate).
  */
 export type ActionCommand =
-  | { kind: "review"; effectorId: string }
+  | { kind: "review"; effectorId: string; target?: string }
   | { kind: "confirm" };
 
 export function parseActionCommand(text: string): ActionCommand | null {
@@ -65,8 +65,15 @@ export function parseActionCommand(text: string): ActionCommand | null {
     return { kind: "confirm" };
   }
   if (trimmed === "/review" || trimmed.startsWith("/review ")) {
-    const effectorId = trimmed.slice("/review".length).trim() || "receipt_review";
-    return { kind: "review", effectorId };
+    // `/review` → receipt_review; `/review <effector>` → that effector;
+    // `/review <effector> <target...>` → that effector against a typed target.
+    const rest = trimmed.slice("/review".length).trim();
+    if (rest === "") {
+      return { kind: "review", effectorId: "receipt_review" };
+    }
+    const [effectorId, ...targetParts] = rest.split(/\s+/);
+    const target = targetParts.join(" ").trim();
+    return target ? { kind: "review", effectorId, target } : { kind: "review", effectorId };
   }
   return null;
 }

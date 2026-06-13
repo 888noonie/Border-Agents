@@ -298,6 +298,21 @@ describe("parseActionCommand", () => {
     expect(parseActionCommand("/review terminal")).toEqual({ kind: "review", effectorId: "terminal" });
   });
 
+  test("/review <effector> <target> carries a typed target", () => {
+    expect(parseActionCommand("/review repo_edit scratch.md")).toEqual({
+      kind: "review",
+      effectorId: "repo_edit",
+      target: "scratch.md",
+    });
+    expect(parseActionCommand("/review repo_edit .border-agents/proofs/x.patch")).toEqual({
+      kind: "review",
+      effectorId: "repo_edit",
+      target: ".border-agents/proofs/x.patch",
+    });
+    // No target → no target field (back-compat with the effector-only form).
+    expect(parseActionCommand("/review repo_edit")).toEqual({ kind: "review", effectorId: "repo_edit" });
+  });
+
   test("/confirm is the confirm command", () => {
     expect(parseActionCommand("/confirm")).toEqual({ kind: "confirm" });
   });

@@ -95,6 +95,14 @@ Build order:
    head to choose any attachment point on/near the target; that offset follows the
    window as it moves. This is still presentation-only: the body does not read,
    move, or act on the target window.
+   Governance parity over the wire (2026-06-13): `scripts/soul-server.ts` (the real
+   soul, `npm run soul:dev`) serves the presence protocol over WebSocket and runs the
+   **actual** action gate (`handleActionRequest`) — replacing the dev gateway's
+   `gateway-stub`. A body that types `/review` / `/confirm` (or emits an `action_request`
+   cue) now receives a real `ActionReceipt` with a persisted, file-backed ledger, matching
+   the browser proof. Native on-body Review/Confirm button added (`desktop-body/`): emits
+   `action_request`, flips to Confirm on `needs_confirmation` (compile + layout test;
+   live COSMIC click not yet verified headlessly). Remaining Step 4 work: Wizard Act 0 host.
 5. **Governance vertical slice** ✅ — a buddy action produces a receipt, joining the
    presence layer to the governance core. Delivered (2026-06-13):
    - `authorizeEffectorAction` + `ActionReceipt` (`src/core/actionGate.ts`): the
@@ -123,10 +131,9 @@ Build order:
      asserts `allow` + the action ledger opens.
 
 Known TODOs before main: polish pinned placement controls, remove or quarantine the
-old full-frame renderer/tests if the pin UX remains the chosen path, drive the native
-body's `/review` affordance + Confirm button (the browser path is the current proof, now
-guarded by `e2e/governance-action.spec.ts`), and surface action entries in the dock's
-ledger summary UI.
+old full-frame renderer/tests if the pin UX remains the chosen path, manually verify the
+native Review/Confirm click on a live COSMIC session, surface action entries in the dock's
+ledger summary UI, and put one real `act` effector behind the gate (hard-block proof).
 
 ---
 

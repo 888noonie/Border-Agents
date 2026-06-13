@@ -182,6 +182,17 @@ impl Layout {
         Rect { x, y, w: size, h: size }
     }
 
+    /// Small on-body governance control, shown while the chat input is open. Clicking it
+    /// asks the soul to run the read-only `receipt_review` effector through the action
+    /// gate; once the gate returns needs_confirmation the body flips it to a Confirm
+    /// button. The body only requests and renders — the soul authorizes (law 7).
+    pub fn review_button_rect(&self) -> Rect {
+        let w = 80.0;
+        let h = 20.0;
+        let col_x = self.ui_x(BUBBLE_W);
+        Rect { x: col_x + BUBBLE_W - w, y: INPUT_Y - h - 5.0, w, h }
+    }
+
 }
 
 #[derive(Clone, Copy)]
@@ -607,6 +618,9 @@ pub struct BodyView<'a> {
     pub tucked: Option<BumpEdge>,
     pub input_text: &'a str,
     pub input_focused: bool,
+    /// The on-body Review control is a Confirm button when the soul's last action_result
+    /// asked for confirmation. The body only renders this state; it never authorizes.
+    pub review_pending: bool,
     pub layout: Layout,
     pub pinned: Option<PinnedLayout>,
     pub frame: Option<FrameLayout>,
@@ -710,6 +724,7 @@ impl Sprite {
                     view.input_focused,
                     view.t,
                 );
+                draw_review_button(&mut pixmap, font, &view.layout, view.review_pending);
             }
         }
 
@@ -1087,6 +1102,27 @@ fn draw_pinned_input(
             pixmap.stroke_path(&path, &solid(Color::from_rgba8(18, 28, 46, 230)), &stroke, Transform::identity(), None);
         }
     }
+}
+
+/// The on-body Review / Confirm control (governance affordance). Plain text labels — the
+/// loaded font has no guarantee of glyph icons. Confirm state is tinted to read as "active".
+fn draw_review_button(pixmap: &mut Pixmap, font: &Font, layout: &Layout, pending: bool) {
+    let rect = layout.review_button_rect();
+    let (bg, fg, label) = if pending {
+        (Color::from_rgba8(56, 188, 214, 240), [8, 30, 38], "Confirm")
+    } else {
+        (Color::from_rgba8(247, 251, 255, 238), [24, 40, 64], "Review")
+    };
+    draw_round_rect(pixmap, rect, bg);
+    if let Some(path) = round_rect_path(rect, 9.0) {
+        let mut stroke = Stroke::default();
+        stroke.width = 1.0;
+        pixmap.stroke_path(&path, &solid(Color::from_rgba8(0, 0, 0, 110)), &stroke, Transform::identity(), None);
+    }
+    let tw = measure(font, label, TEXT_PX);
+    let x = rect.x + (rect.w - tw) / 2.0;
+    let y = rect.y + 14.0;
+    draw_line(pixmap, font, label, x, y, TEXT_PX, fg);
 }
 
 fn draw_frame_hands_and_feet(pixmap: &mut Pixmap, frame: FrameLayout, color: [u8; 3]) {
@@ -2074,6 +2110,21 @@ mod tests {
     }
 
     #[test]
+    fn review_button_sits_above_the_input_and_shares_its_column() {
+        for facing in [Facing::Left, Facing::Right] {
+            let l = Layout { facing, body_len: BODY_LEN_MIN };
+            let btn = l.review_button_rect();
+            let input = l.input_region_rect();
+            // Above the input, not overlapping it.
+            assert!(btn.y + btn.h <= input.y, "review button overlaps input ({facing:?})");
+            // Within the bubble/input column (right-aligned to it).
+            assert!(btn.x >= input.x - 0.5);
+            assert!(btn.x + btn.w <= input.x + input.w + 0.5);
+            assert!(btn.y >= 0.0);
+        }
+    }
+
+    #[test]
     fn output_panel_lives_inside_stretchable_torso() {
         let short = Layout { facing: Facing::Right, body_len: BODY_LEN_MIN };
         let tall = Layout { facing: Facing::Right, body_len: BODY_LEN_MAX };
@@ -2178,6 +2229,7 @@ mod tests {
             tucked: None,
             input_text: "",
             input_focused: false,
+            review_pending: false,
             layout: Layout::initial(),
             pinned: None,
             frame: Some(frame),

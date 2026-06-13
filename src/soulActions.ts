@@ -26,6 +26,29 @@ function isKnownEffector(id: string): id is EffectorId {
   return Object.prototype.hasOwnProperty.call(EFFECTOR_SPECS, id);
 }
 
+/**
+ * Parse the on-body / composer slash commands that drive the action gate, so every body
+ * (browser composer, native on-body input, future surfaces) interprets them identically.
+ * `/review [effector]` requests an effector (default the read-only `receipt_review`);
+ * `/confirm` confirms whatever needs_confirmation action is pending for that buddy. Returns
+ * null for anything that is not an action command (free text → the provider, not the gate).
+ */
+export type ActionCommand =
+  | { kind: "review"; effectorId: string }
+  | { kind: "confirm" };
+
+export function parseActionCommand(text: string): ActionCommand | null {
+  const trimmed = text.trim();
+  if (trimmed === "/confirm") {
+    return { kind: "confirm" };
+  }
+  if (trimmed === "/review" || trimmed.startsWith("/review ")) {
+    const effectorId = trimmed.slice("/review".length).trim() || "receipt_review";
+    return { kind: "review", effectorId };
+  }
+  return null;
+}
+
 function summarize(receipt: ActionReceipt, label: string): string {
   switch (receipt.decision) {
     case "allow":

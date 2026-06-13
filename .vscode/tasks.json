@@ -1,21 +1,65 @@
 {
   "version": "2.0.0",
-  // Run tasks track the ONE live rendering path: the native desktop body
-  // (desktop-body, wlr-layer-shell) + the COSMIC frame driver + the dev gateway.
-  // The old Tauri transparent overlay (src-tauri) failed on ghosting and is NOT
-  // launched here. The browser preview is only a UI dev harness, not a "buddy".
+  // Run tasks track the live native stack: soul (or gateway/wizard) + frame driver +
+  // desktop body. Only one process may bind ws://127.0.0.1:17387 — Start ALL picks
+  // the soul mode; use Start ALL (wizard) for onboarding.
   "tasks": [
     // ── RUN ─────────────────────────────────────────────────────────────────
+    {
+      "label": "Start ALL",
+      "type": "shell",
+      "command": "bash",
+      "args": ["scripts/bb-start-all.sh"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "BB_START_SOUL": "governance",
+          "BB_TARGET": "${input:frameTarget}"
+        }
+      },
+      "group": { "kind": "build", "isDefault": true },
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "focus": true, "group": "stack" },
+      "problemMatcher": ["$rustc"],
+      "detail": "Full stack: real soul (action gate) + COSMIC frame driver + native body. Logs to .bb-logs/"
+    },
+    {
+      "label": "Start ALL (wizard)",
+      "type": "shell",
+      "command": "bash",
+      "args": ["scripts/bb-start-all.sh"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "BB_START_SOUL": "wizard",
+          "BB_TARGET": "${input:frameTarget}"
+        }
+      },
+      "group": "build",
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "focus": true, "group": "stack" },
+      "problemMatcher": ["$rustc"],
+      "detail": "Onboarding stack: wizard gateway soul + frame driver + native body (no real action gate — use Start ALL for governance)"
+    },
     {
       "label": "Start (gateway + body)",
       "type": "shell",
       "command": "bash",
       "args": ["scripts/bb-start.sh"],
       "options": { "cwd": "${workspaceFolder}" },
-      "group": { "kind": "build", "isDefault": true },
+      "group": "build",
       "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "focus": true, "group": "stack" },
       "problemMatcher": [],
-      "detail": "Bring the whole stack up: dev gateway + native desktop body. Logs to .bb-logs/bb-latest.log"
+      "detail": "Light stack: dev gateway + native body only (no frame driver, no real soul gate)"
+    },
+    {
+      "label": "Soul",
+      "type": "shell",
+      "command": "bash",
+      "args": ["scripts/bb-soul.sh"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "focus": true, "group": "stack" },
+      "problemMatcher": [],
+      "detail": "Real soul only (npm run soul:dev) — runs the actual action gate on ws://127.0.0.1:17387/border-buddies"
     },
     {
       "label": "Gateway",
@@ -26,7 +70,7 @@
       "group": "build",
       "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "focus": true, "group": "stack" },
       "problemMatcher": [],
-      "detail": "Dev gateway only (default/echo soul) on ws://127.0.0.1:17387/border-buddies"
+      "detail": "Dev gateway only (echo/provider soul) on ws://127.0.0.1:17387/border-buddies — relays frame cues; action gate is stubbed"
     },
     {
       "label": "Gateway (wizard soul)",
@@ -51,12 +95,16 @@
     {
       "label": "Frame driver",
       "type": "shell",
-      "command": "cargo run --release --manifest-path desktop-body/Cargo.toml --bin bb-frame-driver",
-      "options": { "cwd": "${workspaceFolder}", "env": { "BB_TARGET": "${input:frameTarget}" } },
+      "command": "bash",
+      "args": ["scripts/bb-frame.sh"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "BB_TARGET": "${input:frameTarget}" }
+      },
       "group": "build",
       "presentation": { "reveal": "always", "panel": "dedicated", "clear": true, "focus": true, "group": "stack" },
       "problemMatcher": ["$rustc"],
-      "detail": "Track a native COSMIC window by title/app_id substring and emit target_* presence cues so a buddy can frame it"
+      "detail": "Track a native COSMIC window and emit target_* presence cues (relayed by soul or gateway)"
     },
     {
       "label": "UI preview (browser)",
@@ -79,7 +127,7 @@
       "group": "none",
       "presentation": { "reveal": "always", "panel": "shared", "clear": true },
       "problemMatcher": [],
-      "detail": "Stop desktop body, Vite dev server, and gateway"
+      "detail": "Stop soul, gateway, frame driver, desktop body, and Vite dev server"
     },
     {
       "label": "Stop body",
@@ -90,6 +138,16 @@
       "presentation": { "reveal": "always", "panel": "shared", "clear": true },
       "problemMatcher": [],
       "detail": "Stop just the native desktop body"
+    },
+    {
+      "label": "Stop soul",
+      "type": "shell",
+      "command": "bash -c 'pkill -f \"tsx scripts/soul-server\" 2>/dev/null; ss -ltnp 2>/dev/null | awk \"/:17387 /\" | sed -n \"s/.*pid=\\([0-9][0-9]*\\).*/\\1/p\" | xargs -r kill 2>/dev/null; echo done'",
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "none",
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true },
+      "problemMatcher": [],
+      "detail": "Stop the real soul server (and anything else on port 17387)"
     },
     {
       "label": "Stop frame driver",

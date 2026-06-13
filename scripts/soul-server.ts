@@ -27,7 +27,7 @@ import { join } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 
 import { handleActionRequest, parseActionCommand } from "../src/soulActions";
-import { parsePresenceMessage, presence } from "../src/presenceProtocol";
+import { PRESENCE_PROTOCOL, parsePresenceMessage, presence } from "../src/presenceProtocol";
 import { createDefaultBuddySettings, BUDDY_PROFILES, type BuddyProfile } from "../src/buddyProfiles";
 import type { UserPosture } from "../src/core";
 
@@ -131,10 +131,28 @@ const server = createServer((_request, response) => {
 });
 
 const wss = new WebSocketServer({ server, path: PATH });
+const clients = new Set<WebSocket>();
+
+// Frame driver target lifecycle cues — relay to bodies, same as gateway-dev.mjs.
+const TO_BODY_RELAY_KINDS = new Set(["target_acquired", "target_moved", "target_lost"]);
+
+function relayPresenceCue(sender: WebSocket, message: Record<string, unknown>) {
+  const json = JSON.stringify(message);
+  let count = 0;
+  for (const client of clients) {
+    if (client === sender || client.readyState !== client.OPEN) {
+      continue;
+    }
+    client.send(json);
+    count += 1;
+  }
+  log("relayed presence cue", { kind: message.kind, buddy: message.buddy, clients: count });
+}
 
 wss.on("connection", (socket, request) => {
+  clients.add(socket);
   const remote = request.socket.remoteAddress ?? "unknown";
-  log(`body connected from ${remote}`);
+  log(`client connected from ${remote}`);
 
   socket.on("message", (raw) => {
     let parsed: unknown;
@@ -143,6 +161,20 @@ wss.on("connection", (socket, request) => {
     } catch {
       return; // not JSON — ignore, never crash
     }
+
+    // Frame driver (and future platform helpers) emit target_* cues; bodies consume them.
+    if (typeof parsed === "object" && parsed !== null) {
+      const wire = parsed as Record<string, unknown>;
+      if (
+        wire.protocol === PRESENCE_PROTOCOL &&
+        typeof wire.kind === "string" &&
+        TO_BODY_RELAY_KINDS.has(wire.kind)
+      ) {
+        relayPresenceCue(socket, wire);
+        return;
+      }
+    }
+
     const message = parsePresenceMessage(parsed);
     // Drop malformed / unknown cues; never crash the soul (mirrors the TS strict parser).
     if (!message) return;
@@ -195,7 +227,10 @@ wss.on("connection", (socket, request) => {
     }
   });
 
-  socket.on("close", () => log(`body disconnected from ${remote}`));
+  socket.on("close", () => {
+    clients.delete(socket);
+    log(`client disconnected from ${remote}`);
+  });
   socket.on("error", (error) => log("socket error", { error: String(error) }));
 });
 

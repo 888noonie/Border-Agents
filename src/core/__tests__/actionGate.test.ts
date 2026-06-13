@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { authorizeEffectorAction } from "../actionGate";
+import { authorizeEffectorAction, isProtectedTarget, type ActionIntent, type ActionRoute } from "../actionGate";
 import { emptyFrame } from "../grader";
 import type { MemoryPacket, RetrievedMemory, SafeContextFrame } from "../types";
 import { EFFECTOR_SPECS, type EffectorSpec } from "../../buddyManifest";
@@ -13,6 +13,19 @@ const REVIEW = EFFECTOR_SPECS.receipt_review;
 // exercise the act-kind path of the gate without flipping the manifest.
 const WIRED_ACT: EffectorSpec = { ...EFFECTOR_SPECS.terminal, wired: true };
 const UNWIRED_ACT = EFFECTOR_SPECS.terminal; // wired: false
+// repo_edit is the first true `act` effector going behind the membrane; fabricate a
+// wired copy so the gate exercises intent-level authorization without flipping the manifest.
+const WIRED_REPO_EDIT: EffectorSpec = { ...EFFECTOR_SPECS.repo_edit, wired: true };
+
+function repoIntent(path: string, operation = "write_patch"): ActionIntent {
+  return {
+    effectorId: "repo_edit",
+    operation,
+    target: { kind: "repo_path", path },
+    payloadDigest: "sha256:patch",
+    summary: `${operation} ${path}`,
+  };
+}
 
 function backedFrame(): SafeContextFrame {
   const frame = emptyFrame("agent_action");
@@ -160,6 +173,135 @@ describe("authorizeEffectorAction", () => {
     });
     expect(receipt.receipt_id).toBe(`action:veritas:receipt_review:${NOW}`);
     expect(receipt.rules.length).toBeGreaterThan(0);
+  });
+});
+
+// The execution membrane: the gate authorizes the EFFECT (intent + target), not just
+// the effector. This is the proof that converts "very good demo" into "infrastructure".
+describe("execution membrane — intent-level authorization", () => {
+  const base = {
+    buddy: "forge",
+    effector: WIRED_REPO_EDIT,
+    granted: true,
+    posture: "work" as const,
+    purpose: "agent_action" as const, // high risk — repo_edit is real code change
+    now: NOW,
+  };
+
+  test("isProtectedTarget guards the laws, the gate, version control, and deps", () => {
+    expect(isProtectedTarget(repoIntent("AGENTS.md"))).toBe(true);
+    expect(isProtectedTarget(repoIntent("src/core/actionGate.ts"))).toBe(true);
+    expect(isProtectedTarget(repoIntent("./src/core/grader.ts"))).toBe(true);
+    expect(isProtectedTarget(repoIntent("package.json"))).toBe(true);
+    expect(isProtectedTarget(repoIntent(".border-agents/proofs/first-act.patch"))).toBe(false);
+    expect(isProtectedTarget(repoIntent("src/components/foo.tsx"))).toBe(false);
+  });
+
+  // Case A — blocked before confirmation: no trusted action backing.
+  test("Case A: a safe target with no action-backed memory is blocked (no_action_grant), executor never reached", () => {
+    const receipt = authorizeEffectorAction({
+      ...base,
+      frame: emptyFrame("agent_action"),
+      intent: repoIntent(".border-agents/proofs/first-act.patch"),
+    });
+    expect(receipt.decision).toBe("blocked");
+    expect(receipt.rules.some((r) => r.policy_rule === "action.blocked.no_action_grant")).toBe(true);
+  });
+
+  // Case B — blocked EVEN AFTER confirmation: a protected target is a hard block.
+  test("Case B: a protected target is blocked even when granted, backed, and confirmed", () => {
+    const receipt = authorizeEffectorAction({
+      ...base,
+      frame: backedFrame(),
+      intent: repoIntent("AGENTS.md", "apply_patch"),
+      confirmed: true,
+    });
+    expect(receipt.decision).toBe("blocked");
+    expect(receipt.rules.some((r) => r.policy_rule === "action.blocked.protected_target")).toBe(true);
+  });
+
+  test("the protected-target block runs before backing — it cannot be reached by adding memory", () => {
+    const receipt = authorizeEffectorAction({
+      ...base,
+      frame: backedFrame(),
+      intent: repoIntent("src/core/actionGate.ts"),
+    });
+    expect(receipt.decision).toBe("blocked");
+    expect(receipt.rules.some((r) => r.policy_rule === "action.blocked.protected_target")).toBe(true);
+  });
+
+  // Case C — allowed only on a safe target, with backing and confirmation.
+  test("Case C: a safe target with backing needs confirmation, then allows once confirmed", () => {
+    const pending = authorizeEffectorAction({
+      ...base,
+      frame: backedFrame(),
+      intent: repoIntent(".border-agents/proofs/first-act.patch"),
+    });
+    expect(pending.decision).toBe("needs_confirmation");
+
+    const allowed = authorizeEffectorAction({
+      ...base,
+      frame: backedFrame(),
+      intent: repoIntent(".border-agents/proofs/first-act.patch"),
+      confirmed: true,
+    });
+    expect(allowed.decision).toBe("allow");
+    expect(allowed.rules.some((r) => r.policy_rule === "action.allow.confirmed")).toBe(true);
+  });
+});
+
+// A route change is a trust-boundary crossing: a downgrade to a lower-trust provider
+// is never silent — it re-enters the confirmation floor.
+describe("route downgrade — degradation is never silent", () => {
+  const localRoute: ActionRoute = { provider: "lm_studio", locality: "local", downgraded: false };
+  const downgradedRoute: ActionRoute = {
+    provider: "gpt",
+    fallbackOf: "claude",
+    locality: "cloud",
+    downgraded: true,
+  };
+
+  // A low-risk reach under play would normally allow outright; a downgraded route forces confirmation.
+  const lowRiskAllow = {
+    buddy: "veritas",
+    effector: REVIEW,
+    granted: true,
+    posture: "play" as const,
+    purpose: "summarize_history" as const, // low risk → allow under play
+    frame: emptyFrame("summarize_history"),
+    now: NOW,
+  };
+
+  test("a non-downgraded route does not add a confirmation floor", () => {
+    const receipt = authorizeEffectorAction({ ...lowRiskAllow, route: localRoute });
+    expect(receipt.decision).toBe("allow");
+  });
+
+  test("a downgraded route turns an otherwise-allow into needs_confirmation", () => {
+    const receipt = authorizeEffectorAction({ ...lowRiskAllow, route: downgradedRoute });
+    expect(receipt.decision).toBe("needs_confirmation");
+    expect(receipt.rules.some((r) => r.policy_rule === "action.confirm.route_downgrade")).toBe(true);
+  });
+
+  test("confirming clears the route-downgrade floor", () => {
+    const receipt = authorizeEffectorAction({ ...lowRiskAllow, route: downgradedRoute, confirmed: true });
+    expect(receipt.decision).toBe("allow");
+  });
+
+  test("a downgraded route can never turn a hard block into an allow", () => {
+    const receipt = authorizeEffectorAction({
+      buddy: "veritas",
+      effector: REVIEW,
+      granted: false, // hard block
+      posture: "play",
+      purpose: "summarize_history",
+      frame: emptyFrame("summarize_history"),
+      route: downgradedRoute,
+      confirmed: true,
+      now: NOW,
+    });
+    expect(receipt.decision).toBe("blocked");
+    expect(receipt.rules.some((r) => r.policy_rule === "action.blocked.ungranted")).toBe(true);
   });
 });
 

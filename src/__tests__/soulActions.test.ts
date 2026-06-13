@@ -150,6 +150,144 @@ describe("handleActionRequest", () => {
   });
 });
 
+// The first true `act` effector through the full seam: body request → resolve → gate
+// (intent-level) → executor (only on allow) → ledger. Proves the membrane end-to-end,
+// not just the core gate — the layer the owl→veritas seam slipped through.
+describe("repo_edit through the execution membrane", () => {
+  const ACTING: BuddySettings = { ...BASE_SETTINGS, allowAction: true }; // agent_action (high risk)
+
+  function repoIntent(path: string, operation = "write_patch") {
+    return {
+      effectorId: "repo_edit" as const,
+      operation,
+      target: { kind: "repo_path" as const, path },
+      payloadDigest: "sha256:patch",
+      summary: `${operation} ${path}`,
+    };
+  }
+
+  // Case A — blocked before confirmation: a safe target but no action-backed memory.
+  test("Case A: safe target with memory off is blocked (no_action_grant), executor never runs", () => {
+    const storage = memoryStorage();
+    const { receipt, execution } = handleActionRequest({
+      buddy: "forge",
+      effectorId: "repo_edit",
+      settings: { ...ACTING, memoryMode: "off" },
+      posture: "work",
+      history: ACTION_HISTORY,
+      intent: repoIntent(".border-agents/proofs/first-act.patch"),
+      storage,
+      now: "2026-06-13T12:00:00Z",
+    });
+    expect(receipt.decision).toBe("blocked");
+    expect(receipt.rules.some((r) => r.policy_rule === "action.blocked.no_action_grant")).toBe(true);
+    expect(execution).toBeUndefined();
+    expect(readReceiptLedger(storage).some((e) => e.kind === "execution")).toBe(false);
+  });
+
+  // Case B — blocked EVEN AFTER confirmation: a protected target is a hard block.
+  test("Case B: protected target (AGENTS.md) is blocked even when backed and confirmed; nothing executes", () => {
+    const storage = memoryStorage();
+    const { receipt, execution } = handleActionRequest({
+      buddy: "forge",
+      effectorId: "repo_edit",
+      settings: ACTING,
+      posture: "work",
+      history: ACTION_HISTORY,
+      intent: repoIntent("AGENTS.md", "apply_patch"),
+      confirmed: true,
+      storage,
+      now: "2026-06-13T12:00:00Z",
+    });
+    expect(receipt.decision).toBe("blocked");
+    expect(receipt.rules.some((r) => r.policy_rule === "action.blocked.protected_target")).toBe(true);
+    expect(execution).toBeUndefined();
+    expect(readReceiptLedger(storage).some((e) => e.kind === "execution")).toBe(false);
+  });
+
+  // Case C — allowed on a safe target, with backing + confirmation; executor runs once,
+  // and the ledger records the ActionReceipt BEFORE the ExecutionReceipt.
+  test("Case C: safe target needs confirmation, then on confirm the executor runs and an ExecutionReceipt lands after the ActionReceipt", () => {
+    const storage = memoryStorage();
+    const intent = repoIntent(".border-agents/proofs/first-act.patch");
+
+    const pending = handleActionRequest({
+      buddy: "forge",
+      effectorId: "repo_edit",
+      settings: ACTING,
+      posture: "work",
+      history: ACTION_HISTORY,
+      intent,
+      storage,
+      now: "2026-06-13T12:00:00Z",
+    });
+    expect(pending.receipt.decision).toBe("needs_confirmation");
+    expect(pending.execution).toBeUndefined();
+
+    const done = handleActionRequest({
+      buddy: "forge",
+      effectorId: "repo_edit",
+      settings: ACTING,
+      posture: "work",
+      history: ACTION_HISTORY,
+      intent,
+      confirmed: true,
+      storage,
+      now: "2026-06-13T12:00:05Z",
+    });
+    expect(done.receipt.decision).toBe("allow");
+    expect(done.execution?.executor_called).toBe(true);
+    expect(done.execution?.outcome).toBe("ok");
+    // Route provenance rides on the execution receipt — "buddies persist, providers rotate".
+    expect(done.execution?.route.provider).toBe("claude"); // forge's preferred route
+    expect(done.execution?.action_receipt_id).toBe(done.receipt.receipt_id);
+
+    const ledger = readReceiptLedger(storage);
+    const actionIdx = ledger.findIndex((e) => e.kind === "action" && e.recordedAt === "2026-06-13T12:00:05Z");
+    const execIdx = ledger.findIndex((e) => e.kind === "execution");
+    expect(actionIdx).toBeGreaterThanOrEqual(0);
+    expect(execIdx).toBeGreaterThan(actionIdx); // authorized, THEN executed
+  });
+
+  // The executor's own sandbox guard is independent of the gate: even if the gate allowed a
+  // non-sandbox target, the default executor refuses to act on it (defense in depth).
+  test("executor refuses a non-sandbox target even when allowed (skipped, not ok)", () => {
+    const storage = memoryStorage();
+    const { receipt, execution } = handleActionRequest({
+      buddy: "forge",
+      effectorId: "repo_edit",
+      settings: ACTING,
+      posture: "work",
+      history: ACTION_HISTORY,
+      intent: repoIntent("src/components/widget.tsx"), // not protected, but outside the sandbox
+      confirmed: true,
+      storage,
+      now: "2026-06-13T12:00:00Z",
+    });
+    expect(receipt.decision).toBe("allow");
+    expect(execution?.executor_called).toBe(true);
+    expect(execution?.outcome).toBe("skipped");
+  });
+
+  // The act path must also resolve persona ids — the same seam that bit receipt_review.
+  test("a persona-id (crab) repo_edit resolves to forge for grant + audit identity", () => {
+    const storage = memoryStorage();
+    const { receipt, result } = handleActionRequest({
+      buddy: "crab",
+      effectorId: "repo_edit",
+      settings: ACTING,
+      posture: "work",
+      history: ACTION_HISTORY,
+      intent: repoIntent(".border-agents/proofs/first-act.patch"),
+      storage,
+      now: "2026-06-13T12:00:00Z",
+    });
+    expect(receipt.rules.some((r) => r.policy_rule === "action.blocked.ungranted")).toBe(false);
+    expect(receipt.buddy).toBe("forge");
+    expect(result.buddy).toBe("crab");
+  });
+});
+
 describe("parseActionCommand", () => {
   test("/review defaults to receipt_review", () => {
     expect(parseActionCommand("/review")).toEqual({ kind: "review", effectorId: "receipt_review" });

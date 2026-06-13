@@ -6,6 +6,8 @@ import {
   CAPABILITY_ORDER,
   EFFECTOR_SPECS,
   GATED_WIRED_EFFECTORS,
+  GATED_WIRED_REACH_EFFECTORS,
+  GATED_WIRED_ACT_EFFECTORS,
   ROUTE_PROVIDER_LABELS,
   currentRouteLabel,
   effectorsFor,
@@ -33,13 +35,34 @@ describe("buddy manifest", () => {
     }
   });
 
-  it("only receipt_review is gated live, and only read-only effectors may be gated", () => {
+  it("gates receipt_review on the read-only reach lane", () => {
     expect(EFFECTOR_SPECS.receipt_review.wired).toBe(true);
     expect(isWired("receipt_review")).toBe(true);
-    expect([...GATED_WIRED_EFFECTORS]).toEqual(["receipt_review"]);
-    for (const id of GATED_WIRED_EFFECTORS) {
-      expect(EFFECTOR_SPECS[id].kind, `gated effector ${id} must be reach`).toBe("reach");
+    expect([...GATED_WIRED_REACH_EFFECTORS]).toEqual(["receipt_review"]);
+    // The reach lane is read-only by invariant — an act effector can never enter it.
+    for (const id of GATED_WIRED_REACH_EFFECTORS) {
+      expect(EFFECTOR_SPECS[id].kind, `reach-lane effector ${id} must be reach`).toBe("reach");
     }
+  });
+
+  it("gates repo_edit on the stricter act lane, never the reach lane", () => {
+    expect(EFFECTOR_SPECS.repo_edit.wired).toBe(true);
+    expect(isWired("repo_edit")).toBe(true);
+    expect(GATED_WIRED_ACT_EFFECTORS.map((e) => e.id)).toEqual(["repo_edit"]);
+    // Every act-lane entry is an act effector declaring the stricter membrane guarantees,
+    // and never also sits in the reach lane.
+    for (const entry of GATED_WIRED_ACT_EFFECTORS) {
+      expect(EFFECTOR_SPECS[entry.id].kind, `act-lane effector ${entry.id} must be act`).toBe("act");
+      expect(entry.requiresIntentSchema).toBe(true);
+      expect(entry.requiresOutcomeReceipt).toBe(true);
+      expect(GATED_WIRED_REACH_EFFECTORS.has(entry.id)).toBe(false);
+    }
+  });
+
+  it("the union of both lanes is exactly the wired effectors", () => {
+    const wired = Object.values(EFFECTOR_SPECS).filter((s) => s.wired).map((s) => s.id).sort();
+    expect([...GATED_WIRED_EFFECTORS].sort()).toEqual(wired);
+    expect([...GATED_WIRED_EFFECTORS].sort()).toEqual(["receipt_review", "repo_edit"].sort());
   });
 
   it("resolves persona ids to governance ids, and leaves governance/unknown ids untouched", () => {

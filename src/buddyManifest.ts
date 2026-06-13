@@ -202,7 +202,10 @@ export const EFFECTOR_SPECS: Record<EffectorId, EffectorSpec> = {
   slides_build: act("slides_build", "Build slides", "Assemble a slide deck; user reviews before any export or share."),
   file_export: act("file_export", "Export file", "Write an artifact to disk at a user-confirmed path. Confirm overwrite."),
   terminal: act("terminal", "Run terminal command", "Execute a shell command. Highest-risk effector: requires per-command confirmation."),
-  repo_edit: act("repo_edit", "Edit repository", "Apply code changes; surface a reviewable diff before writing to the working tree."),
+  // First true `act` effector behind the membrane — gated through GATED_WIRED_ACT_EFFECTORS.
+  // The gate authorizes the EFFECT (typed intent + target), not just the grant; protected
+  // targets (AGENTS.md, src/core, deps, .git) are hard-blocked even after confirmation.
+  repo_edit: { ...act("repo_edit", "Edit repository", "Apply code changes via a typed ActionIntent; protected targets are hard-blocked; surface a reviewable diff before writing."), wired: true },
   voice_in: reach("voice_in", "Listen (voice)", "Capture microphone input on an explicit push-to-talk; no always-on listening.", true),
   voice_out: act("voice_out", "Speak (voice)", "Synthesize speech output. User controls volume and can mute instantly."),
   summarize_long: act("summarize_long", "Summarise long context", "Condense text the user already has; never invent content not in the source."),
@@ -294,11 +297,34 @@ export const BUDDY_MANIFEST: Record<string, BuddyManifestEntry> = {
   },
 };
 
-// Effectors allowed to ship `wired: true` because they have been switched on behind the
-// governance gate during the governance slice. Membership is the ONLY way an effector may
-// be live: `validateBuddyManifest` throws on any wired effector outside this set, and every
-// member must be `reach` (read-only hand-off) — an `act` effector can never be smuggled live.
-export const GATED_WIRED_EFFECTORS: ReadonlySet<EffectorId> = new Set<EffectorId>(["receipt_review"]);
+// Two gated-live lanes. An effector may ship `wired: true` ONLY through one of them;
+// `validateBuddyManifest` throws on any wired effector outside both.
+//
+//   Reach lane — read-only hand-offs (open/inspect the real tool). Always safe to be live.
+//   Act lane   — effectors that perform an effect in place of the tool. A `reach` rail is
+//                not enough here, so this lane is STRICTER: each entry must declare a typed
+//                intent schema and an execution-outcome receipt (and the gate/soul suites
+//                prove the no-execute-on-block invariant). This is the only way an `act`
+//                effector goes live — never by flipping a spec in place.
+export const GATED_WIRED_REACH_EFFECTORS: ReadonlySet<EffectorId> = new Set<EffectorId>(["receipt_review"]);
+
+export interface GatedActEffector {
+  id: EffectorId;
+  /** The effector must authorize a typed `ActionIntent` (target-level), not just the grant. */
+  requiresIntentSchema: true;
+  /** Running it must emit a separate ExecutionReceipt (the world-facing outcome + route). */
+  requiresOutcomeReceipt: true;
+}
+
+export const GATED_WIRED_ACT_EFFECTORS: readonly GatedActEffector[] = [
+  { id: "repo_edit", requiresIntentSchema: true, requiresOutcomeReceipt: true },
+];
+
+// The union of both lanes — every effector allowed to ship `wired: true`.
+export const GATED_WIRED_EFFECTORS: ReadonlySet<EffectorId> = new Set<EffectorId>([
+  ...GATED_WIRED_REACH_EFFECTORS,
+  ...GATED_WIRED_ACT_EFFECTORS.map((entry) => entry.id),
+]);
 
 export const BUDDY_MANIFEST_ORDER: string[] = ["forge", "veritas", "nova", "nexus", "aether"];
 
@@ -344,18 +370,31 @@ export function currentRouteLabel(entry: BuddyManifestEntry): string {
 // first violation so a bad edit fails loudly rather than smuggling a live or
 // dangling effector into the body layer.
 export function validateBuddyManifest(): void {
-  // No effector ships wired unless it has been explicitly gated. Live tools are switched
-  // on behind the action gate (GATED_WIRED_EFFECTORS), not by editing a spec in place.
+  // No effector ships wired unless it has been explicitly gated through one of the two
+  // lanes. Live tools are switched on behind the action gate, not by editing a spec in place.
   for (const spec of Object.values(EFFECTOR_SPECS)) {
     if (spec.wired && !GATED_WIRED_EFFECTORS.has(spec.id)) {
       throw new Error(`effector "${spec.id}" is wired but not gated; effectors stay stubbed until gated`);
     }
   }
-  // A gated-live effector must be read-only (`reach`). An `act` effector performs work in
-  // place of the tool and may never be smuggled live through the gated allow-set.
-  for (const id of GATED_WIRED_EFFECTORS) {
+  // Reach lane: read-only hand-offs only. An `act` effector can never be smuggled in here.
+  for (const id of GATED_WIRED_REACH_EFFECTORS) {
     if (EFFECTOR_SPECS[id].kind !== "reach") {
-      throw new Error(`gated effector "${id}" is not a reach effector; only read-only effectors may be gated live`);
+      throw new Error(`gated reach effector "${id}" is not a reach effector; the reach lane is read-only`);
+    }
+  }
+  // Act lane: must be `act`, must declare the stricter membrane guarantees, and may not also
+  // sit in the reach lane. An act effector goes live ONLY through this stricter path.
+  for (const entry of GATED_WIRED_ACT_EFFECTORS) {
+    const spec = EFFECTOR_SPECS[entry.id];
+    if (spec.kind !== "act") {
+      throw new Error(`gated act effector "${entry.id}" is not an act effector`);
+    }
+    if (GATED_WIRED_REACH_EFFECTORS.has(entry.id)) {
+      throw new Error(`effector "${entry.id}" cannot be in both gated lanes`);
+    }
+    if (!entry.requiresIntentSchema || !entry.requiresOutcomeReceipt) {
+      throw new Error(`gated act effector "${entry.id}" must require a typed intent schema and an outcome receipt`);
     }
   }
 

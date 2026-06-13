@@ -22,7 +22,7 @@ export type BuddyUiBubbleTab = {
   id: string;
   label: string;
   icon: string;
-  tone: "message" | "settings" | "gateway" | "dock";
+  tone: "message" | "setup" | "settings" | "gateway" | "dock";
   content: ReactNode;
 };
 

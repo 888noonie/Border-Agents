@@ -3,6 +3,7 @@ import { bbLog } from "./bbDiagnostics";
 import { BuddyGatewayClient } from "./gatewayClient";
 import {
   type GatewayConnectionState,
+  type GatewayMedia,
   type GatewayMessage,
   type GatewaySource,
 } from "./gatewayProtocol";
@@ -28,7 +29,7 @@ type UseBuddyGatewayOptions = {
   settings: GatewaySettings;
   source: GatewaySource;
   enabled?: boolean;
-  onBubble?: (buddyId: string, text: string) => void;
+  onBubble?: (buddyId: string, text: string, media?: GatewayMedia) => void;
   onStatus?: (detail: string) => void;
 };
 
@@ -93,7 +94,8 @@ export function useBuddyGateway({
         },
         onMessage: (message: GatewayMessage) => {
           if (message.type === "bubble" || message.type === "chat_reply") {
-            onBubbleRef.current?.(message.buddy, message.text);
+            const media = message.type === "chat_reply" ? message.media : undefined;
+            onBubbleRef.current?.(message.buddy, message.text, media);
             setBusy(false);
           }
 

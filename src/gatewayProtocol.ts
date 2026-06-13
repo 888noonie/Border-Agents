@@ -52,11 +52,21 @@ export type GatewayChatMessage = {
   context?: string;
 };
 
+// Rich media attached to a reply (an image or file), delivered as inline base64 — the
+// browser renders it as a data URL; mirrors the presence `output` cue for the bodies.
+export type GatewayMedia = {
+  surface: "image" | "file";
+  mediaType: string;
+  dataBase64: string;
+  caption?: string;
+};
+
 export type GatewayChatReplyMessage = {
   type: "chat_reply";
   buddy: string;
   text: string;
   requestId?: string;
+  media?: GatewayMedia;
 };
 
 export type GatewayErrorMessage = {

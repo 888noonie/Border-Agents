@@ -56,7 +56,7 @@ Delivered / scaffolded:
 - Collapsible workbench sections with colored counters for compact buddy panels
 - Trust Workbench action state: verify, selected source, receipt export preview, trusted-only context summary
 - Receipt detail viewer with receipt id, packet/chunk ids, grade, prompt status, final reason, and derivation steps
-- Remembered user mode selector: Work / Play / Private posture for dock, gateway, receipts, and future file review defaults
+- Work / Play / Private posture as a deterministic core primitive (`src/core/userPosture.ts`): tighten-only over the purpose policies, with a separate non-authorization interaction layer and a hard confirmation floor on medium/high-risk actions
 - Refined speech bubble behavior: docked buddies show minimal status output; undocked buddies show tabbed controls
 - Persisted undocked speech bubble state: active tab, collapsed sections, center/full-height fit, and settings-overflow guard
 - Tests for workbench section collapse and receipt expansion
@@ -70,6 +70,63 @@ Next deliverables:
 - Durable receipt export/download path
 - Dedicated receipt viewer layout for longer derivation trails
 - Wire file-system review surfaces to the active user mode posture
+
+---
+
+## Presence layer — one soul, many bodies ⏳
+
+Goal: a portable presence surface for buddies, with the body/soul trust boundary
+(AGENTS.md law 7) baked in. Born from the overlay rebuild — see
+`docs/OVERLAY_POSTMORTEM_AND_REBUILD_PLAN.md`.
+
+Build order:
+
+1. **Presence protocol v0** ✅ — typed, versioned soul⟷body schema
+   (`src/presenceProtocol.ts`); JS mirror for the browser body; dev gateway soul.
+2. **Layer-shell spike** ✅ — pure-Rust per-buddy surface on `wlr-layer-shell`
+   (`desktop-body/`), pixel-exact placement, click-through, no GTK/WebKit/GPU.
+3. **Animated body** ✅ (user-verified) — face, blink, emotion, speech bubble, menu;
+   drag-stable via relative pointer; on-screen clamp; correct buffer-size rendering.
+4. **Wire the soul** ⏳ — presence WebSocket client in the Rust body; first driver is
+   the scripted **Wizard** onboarding host (`docs/WIZARD_ONBOARDING_SCRIPT.md`).
+   Current `presence-layer` proof (2026-06-13): the body consumes target lifecycle
+   cues from a COSMIC window-tracking helper and can pin/unpin Hermes to a tracked
+   native window as a small head + speech/input surface. The user can drag the pinned
+   head to choose any attachment point on/near the target; that offset follows the
+   window as it moves. This is still presentation-only: the body does not read,
+   move, or act on the target window.
+5. **Governance vertical slice** ✅ — a buddy action produces a receipt, joining the
+   presence layer to the governance core. Delivered (2026-06-13):
+   - `authorizeEffectorAction` + `ActionReceipt` (`src/core/actionGate.ts`): the
+     deterministic action-side mirror of `GradeReceipt`. Hard blocks (ungranted /
+     unwired / no trusted `may_use_for_action` backing) run first and ignore
+     confirmation; the risk floor (`act` effectors floored to medium) drives
+     `needs_confirmation`; confirmation can clear the floor but never a hard block.
+   - Typed `action_request` (body→soul) and `action_result` (soul→body) presence
+     cues, mirrored in the Rust body (`desktop-body/src/presence.rs`) and fixtures.
+   - Soul handler `handleActionRequest` (`src/soulActions.ts`): cue → gate → ledger.
+   - Receipt ledger extended to a discriminated memory/action union, backward
+     compatible (`src/receiptLedger.ts`).
+   - First live effector: `receipt_review` flipped `wired: true` behind
+     `GATED_WIRED_EFFECTORS` (read-only `reach` only; invariant preserved, not deleted).
+   - Browser proof: `/review` (and `/confirm`) on a buddy runs the gate and renders the
+     `ActionReceipt` (decision + derivation + confirm affordance + ledger) — posture
+     threaded from the docks. Dev gateway relays the cue as a stand-in (real
+     authorization stays in the TS soul, never the disposable gateway).
+   - Persona→governance id resolution (`resolveManifestId` in `src/buddyManifest.ts`): the
+     dock/body address buddies by persona id (e.g. `owl`); the gate keys grants by
+     governance id (e.g. `veritas`). `handleActionRequest` resolves once so the receipt and
+     ledger carry the governance (audit) identity while the result cue stays addressed to
+     the persona. (Without this the browser `/review` fell through to `blocked`/ungranted.)
+   - End-to-end Playwright proof (`e2e/governance-action.spec.ts`): drives `/review` on the
+     real Veritas surface → asserts `needs_confirmation` + derivation → clicks Confirm →
+     asserts `allow` + the action ledger opens.
+
+Known TODOs before main: polish pinned placement controls, remove or quarantine the
+old full-frame renderer/tests if the pin UX remains the chosen path, drive the native
+body's `/review` affordance + Confirm button (the browser path is the current proof, now
+guarded by `e2e/governance-action.spec.ts`), and surface action entries in the dock's
+ledger summary UI.
 
 ---
 

@@ -1,5 +1,5 @@
 import { useRef, type FormEvent, type ReactNode } from "react";
-import type { GatewayConnectionState } from "../../src/gatewayProtocol";
+import type { GatewayConnectionState, GatewayMedia } from "../../src/gatewayProtocol";
 import { connectionLabelForState } from "../../src/useBuddyGateway";
 import type { BuddyDisplayMode } from "./BuddySurface";
 import "./buddy-surface.css";
@@ -8,6 +8,8 @@ export type BuddyChatLine = {
   id: string;
   role: "user" | "assistant" | "status";
   text: string;
+  // Rich output attached to this line (an image/file), rendered below the text.
+  media?: GatewayMedia;
 };
 
 type BuddyPanelProps = {
@@ -94,6 +96,7 @@ export function BuddyPanel({
                 ].join(" ")}
               >
                 {line.text}
+                {line.media ? <BuddyLineMedia media={line.media} /> : null}
               </div>
             ))
           )}
@@ -200,5 +203,31 @@ export function BuddyPanel({
         </footer>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * Renders rich output attached to a chat line. Images become an inline preview from a
+ * base64 data URL (the gateway inlines the bytes — no external fetch); files become a
+ * download link. Both stay honest: the actual provider payload, not a placeholder.
+ */
+function BuddyLineMedia({ media }: { media: GatewayMedia }) {
+  const dataUrl = `data:${media.mediaType};base64,${media.dataBase64}`;
+  if (media.surface === "image") {
+    return (
+      <figure className="buddy-panel__media buddy-panel__media--image">
+        <img src={dataUrl} alt={media.caption ?? "Generated image"} />
+        {media.caption ? <figcaption>{media.caption}</figcaption> : null}
+      </figure>
+    );
+  }
+  return (
+    <a
+      className="buddy-panel__media buddy-panel__media--file"
+      href={dataUrl}
+      download={media.caption ?? "download"}
+    >
+      ⬇ {media.caption ?? "Download file"}
+    </a>
   );
 }

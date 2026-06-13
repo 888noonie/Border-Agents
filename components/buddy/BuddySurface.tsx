@@ -13,14 +13,27 @@ import {
   BUDDY_PROFILES,
   type BuddySettings,
 } from "../../src/buddyProfiles";
-import type { GatewayConnectionState } from "../../src/gatewayProtocol";
+import type { GatewayConnectionState, GatewayMedia } from "../../src/gatewayProtocol";
 import type { GatewaySettings } from "../../src/gatewaySettings";
 import { buildBuddyGovernanceSnapshot, type BuddyGovernanceSnapshot } from "../../src/liveGovernance";
+import { buildOnboardingPanelModel, type OnboardingPanelSection, type HermesProviderPresetId, HERMES_PROVIDER_PRESETS } from "../../src/onboardingPanelModel";
+import {
+  loadStoredOnboardingSurfaceState,
+  saveStoredOnboardingSurfaceState,
+  type OnboardingSurfaceDraft,
+} from "../../src/onboardingSurfaceState";
+import { advanceOnboarding, currentAct, type OnboardingAct, type OnboardingEvent } from "../../src/wizardOnboarding";
+import { lifecycleReceiptKinds, recordLifecycleReceipt } from "../../src/lifecycleReceipts";
+import { type UserPosture } from "../../src/core/userPosture";
+import { type ActionReceipt } from "../../src/core";
+import { handleActionRequest } from "../../src/soulActions";
 import { connectionLabelForState } from "../../src/useBuddyGateway";
+import { ActionReceiptCard } from "./ActionReceiptCard";
 import { BuddyActionMenu } from "./BuddyActionMenu";
 import { BuddyPanel, type BuddyChatLine } from "./BuddyPanel";
 import { BuddySettingsDialog } from "./BuddySettingsDialog";
 import { BuddyUiBubble } from "./BuddyUiBubble";
+import { OnboardingWizardPanel } from "./OnboardingWizardPanel";
 import { TrustWorkbenchPanel } from "../trust-workbench/TrustWorkbenchPanel";
 import "./buddy-surface.css";
 
@@ -51,7 +64,7 @@ type DockBuddy = {
   message?: string;
 };
 
-type BubbleTabId = "message" | "settings" | "gateway" | "dock";
+type BubbleTabId = "message" | "setup" | "settings" | "gateway" | "dock";
 
 type BuddySurfaceUiState = {
   activeTab: BubbleTabId;
@@ -92,7 +105,11 @@ type BuddySurfaceProps = {
   gatewayUrl: string;
   gatewayAutoConnect: boolean;
   message: string;
+  /** Rich media (image/file) attached to the latest reply, rendered in the panel. */
+  messageMedia?: GatewayMedia | null;
   settings: BuddySettings;
+  /** The active Work/Play/Private posture, for routing buddy actions through the gate. */
+  posture?: UserPosture;
   onGatewayConnect: () => void;
   onGatewayDisconnect: () => void;
   onGatewaySettingsChange: (settings: GatewaySettings) => void;
@@ -103,6 +120,8 @@ type BuddySurfaceProps = {
   onRequestDock?: () => void;
   onSendChat: (payload: { text: string; purpose?: string; context?: string }) => boolean;
   onSettingsChange: (settings: BuddySettings) => void;
+  onPostureChange?: (posture: UserPosture) => void;
+  onPlacementChange?: (placement: { enabledBuddyIds: readonly string[]; buddyEdges: Readonly<Record<string, string>> }) => void;
   onGovernanceSnapshotChange?: (snapshot: BuddyGovernanceSnapshot | null) => void;
 };
 
@@ -167,7 +186,9 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
     gatewayUrl,
     gatewayAutoConnect,
     message,
+    messageMedia,
     settings,
+    posture = "work",
     onGatewayConnect,
     onGatewayDisconnect,
     onGatewaySettingsChange,
@@ -176,6 +197,8 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
     onRequestDock,
     onSendChat,
     onSettingsChange,
+    onPostureChange,
+    onPlacementChange,
     onGovernanceSnapshotChange,
   },
   ref,
@@ -189,10 +212,18 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
   const [menuOpen, setMenuOpen] = useState(false);
   const [menuAnchor, setMenuAnchor] = useState<HTMLElement | null>(null);
   const [history, setHistory] = useState<BuddyChatLine[]>([]);
+  // The latest governance action-gate outcome, rendered as a receipt card. `pendingEffector`
+  // holds the effector awaiting confirmation so a Confirm re-invokes the gate with confirmed.
+  const [actionReceipt, setActionReceipt] = useState<ActionReceipt | null>(null);
+  const [pendingEffector, setPendingEffector] = useState<string | null>(null);
   const [panelShift, setPanelShift] = useState({ x: 0, y: 0 });
   const [surfaceUi, setSurfaceUi] = useState<BuddySurfaceUiState>(() =>
     loadStoredBuddySurfaceUi(buddy.id, preferCenterFit),
   );
+  const [onboardingSurface, setOnboardingSurface] = useState(() =>
+    loadStoredOnboardingSurfaceState(),
+  );
+  const [onboardingHubSection, setOnboardingHubSection] = useState<OnboardingPanelSection | null>(null);
   const lastMessageRef = useRef("");
   const governanceSnapshotChangeRef = useRef(onGovernanceSnapshotChange);
   // A message typed while the gateway is still offline is parked here so it can
@@ -207,10 +238,23 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
 
   const profile = BUDDY_PROFILES[buddy.id];
   const gatewayOnline = hasGateway && gatewayState === "connected";
+  const wizardEnabled = buddy.id === "hermes";
   const bubbleSide = edge === "right" ? "left" : "right";
   const bubbleVertical = edge === "top" || dockSlot < 0.22 ? "below" : "above";
   const trustWorkbenchMode = buddy.id === "fox" ? "nexus" : buddy.id === "owl" ? "veritas" : null;
   const bubbleTab = surfaceUi.activeTab;
+  const onboardingModel = useMemo(
+    () =>
+      wizardEnabled
+        ? buildOnboardingPanelModel({
+            state: onboardingSurface.progress,
+            receiptKinds: onboardingSurface.receiptKinds,
+            sectionOverride: onboardingHubSection,
+            capabilities: BUDDY_PROFILES[buddy.id]?.capabilities ?? null,
+          })
+        : null,
+    [buddy.id, onboardingHubSection, onboardingSurface.progress, onboardingSurface.receiptKinds, wizardEnabled],
+  );
   const governanceSnapshot = useMemo(
     () =>
       buildBuddyGovernanceSnapshot({
@@ -237,6 +281,36 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
   useEffect(() => {
     saveStoredBuddySurfaceUi(buddy.id, surfaceUi);
   }, [buddy.id, surfaceUi]);
+
+  useEffect(() => {
+    saveStoredOnboardingSurfaceState(onboardingSurface);
+  }, [onboardingSurface]);
+
+  useEffect(() => {
+    if (!wizardEnabled || !onboardingModel) {
+      return;
+    }
+    if (onboardingModel.mode === "hub" && onboardingHubSection === null) {
+      setOnboardingHubSection("summary");
+      return;
+    }
+    if (onboardingModel.mode !== "hub" && onboardingHubSection !== null) {
+      setOnboardingHubSection(null);
+    }
+  }, [onboardingHubSection, onboardingModel, wizardEnabled]);
+
+  // The panel stands in for the Host soul's timer on timeout-advancing acts
+  // (find_me): linger long enough to read the cue, then move the script along.
+  // advanceWizard is intentionally outside the deps (see bubbleTabs note); the
+  // functional update inside it keeps a late firing safe.
+  const idleAutoAdvanceMs = onboardingModel?.idle?.autoAdvanceMs ?? null;
+  useEffect(() => {
+    if (idleAutoAdvanceMs === null) {
+      return;
+    }
+    const timer = window.setTimeout(() => advanceWizard("timeout"), idleAutoAdvanceMs);
+    return () => window.clearTimeout(timer);
+  }, [idleAutoAdvanceMs, onboardingModel?.act.id]);
 
   useEffect(() => {
     governanceSnapshotChangeRef.current = onGovernanceSnapshotChange;
@@ -304,9 +378,14 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
     lastMessageRef.current = trimmed;
     setHistory((current) => [
       ...current,
-      { id: createLineId(), role: "assistant", text: trimmed },
+      {
+        id: createLineId(),
+        role: "assistant",
+        text: trimmed,
+        media: messageMedia ?? undefined,
+      },
     ]);
-  }, [message]);
+  }, [message, messageMedia]);
 
   useEffect(() => {
     if (gatewayDetail && gatewayState === "connected") {
@@ -504,9 +583,47 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
     }
   }
 
+  // Run a buddy action through the soul-side governance gate. The body never authorizes
+  // (AGENTS.md law 7) — it hands the request to the gate, which emits the ActionReceipt and
+  // persists it. Confirmation re-runs the same effector with `confirmed`, which can clear the
+  // risk floor but never a hard block.
+  function runActionReview(effectorId: string, confirmed: boolean) {
+    const { receipt } = handleActionRequest({
+      buddy: buddy.id,
+      effectorId,
+      settings,
+      posture,
+      history: history.map((line) => ({ role: line.role, text: line.text })),
+      confirmed,
+    });
+    setActionReceipt(receipt);
+    setPendingEffector(receipt.decision === "needs_confirmation" ? effectorId : null);
+    updateSurfaceUi({ activeTab: "message" });
+    setHistory((current) => [
+      ...current,
+      { id: createLineId(), role: "status", text: `${receipt.effector}: ${receipt.decision}` },
+    ]);
+  }
+
   function handleSubmit() {
     const trimmed = draft.trim();
     if (!trimmed) {
+      return;
+    }
+
+    // Slash commands that drive the governance action gate, intercepted before any
+    // text reaches the provider. `/review [effector]` requests an effector (default the
+    // read-only receipt_review); `/confirm` confirms a pending needs_confirmation action.
+    if (trimmed.startsWith("/review") || trimmed === "/confirm") {
+      setDraft("");
+      if (trimmed === "/confirm") {
+        if (pendingEffector) {
+          runActionReview(pendingEffector, true);
+        }
+        return;
+      }
+      const effectorId = trimmed.slice("/review".length).trim() || "receipt_review";
+      runActionReview(effectorId, false);
       return;
     }
 
@@ -565,6 +682,113 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
     }));
   }
 
+  function updateOnboardingDraft(patch: Partial<OnboardingSurfaceDraft>) {
+    setOnboardingSurface((current) => ({
+      ...current,
+      draft: { ...current.draft, ...patch },
+    }));
+  }
+
+  function advanceWizard(event: string) {
+    if (!onboardingModel) {
+      return;
+    }
+
+    // Record a real, durable lifecycle milestone — but only when the act genuinely
+    // advances AND carries a receipt (first_contact/find_me carry none). The ledger
+    // is append-only, so re-running a step in the hub honestly logs a fresh dated
+    // milestone; `lifecycleReceiptKinds` collapses it for the linear-vs-hub decision.
+    const advancingAct = currentAct(onboardingSurface.progress);
+    const advances = advancingAct.advanceOn.includes(event as OnboardingEvent);
+    const recordedKinds =
+      advancingAct.receipt && advances
+        ? lifecycleReceiptKinds(
+            recordLifecycleReceipt({
+              kind: advancingAct.receipt,
+              detail: receiptDetail(advancingAct, onboardingSurface.draft),
+            }),
+          )
+        : null;
+
+    // Progress is advanced inside the functional update so a delayed caller (the
+    // find_me auto-advance timer) can never clobber state written after its closure
+    // was captured. Receipt kinds come from the durable ledger we just wrote.
+    setOnboardingSurface((current) => ({
+      ...current,
+      progress: advanceOnboarding(current.progress, event as OnboardingEvent),
+      receiptKinds: recordedKinds ?? current.receiptKinds,
+    }));
+
+    // Settings writes are keyed on the panel event itself — each event is only ever
+    // emitted by its own section, in both linear and hub mode.
+    if (event === "panel:connection_ok") {
+      const draft = onboardingSurface.draft;
+      // Layering: the browser only ever connects to the LOCAL gateway over its
+      // WebSocket URL — it never talks to the provider directly. The provider
+      // endpoint + API key the user entered here belong gateway-side in `.env`
+      // (the gateway holds the secret and makes the HTTPS call). So we keep the
+      // existing gateway URL and only enable/trigger autoConnect; writing
+      // draft.apiBase into GatewaySettings.url would point the socket at the
+      // provider's REST endpoint and break the connection.
+      onGatewaySettingsChange({ url: gatewayUrl, autoConnect: true });
+      const presetBuddyProvider = presetProvider(draft.provider);
+      onSettingsChange({ ...settings, provider: presetBuddyProvider, modelLabel: draft.model });
+      if (hasGateway && !gatewayOnline) {
+        onGatewayConnect();
+      }
+    }
+    if (event === "panel:posture_set") {
+      onPostureChange?.(onboardingSurface.draft.posture);
+    }
+    if (event === "panel:next") {
+      onPlacementChange?.({
+        enabledBuddyIds: onboardingSurface.draft.enabledBuddyIds,
+        buddyEdges: onboardingSurface.draft.buddyEdges,
+      });
+    }
+
+    // Handoff fires only on the linear flow's first completion — hub-mode saves keep
+    // the user on the section they were editing instead of yanking them away.
+    const nextState = advanceOnboarding(onboardingSurface.progress, event as OnboardingEvent);
+    if (!onboardingSurface.progress.completed && nextState.completed) {
+      setOnboardingHubSection("summary");
+      updateSurfaceUi({ activeTab: "message" });
+    }
+  }
+
+  function presetProvider(id: HermesProviderPresetId) {
+    return HERMES_PROVIDER_PRESETS.find((p) => p.id === id)?.buddyProvider ?? "custom";
+  }
+
+  // Honest, minimal detail captured alongside each milestone — what was actually set,
+  // never the secret itself (the API key is recorded as present/absent, not its value).
+  function receiptDetail(
+    act: OnboardingAct,
+    draft: OnboardingSurfaceDraft,
+  ): Record<string, string | number | boolean> | undefined {
+    switch (act.receipt) {
+      case "credential.stored":
+        return {
+          provider: presetProvider(draft.provider),
+          model: draft.model,
+          apiBase: draft.apiBase,
+          apiKeyPresent: draft.apiKey.trim().length > 0,
+        };
+      case "posture.set":
+        return { posture: draft.posture };
+      case "placement.set":
+        return { enabledBuddyCount: draft.enabledBuddyIds.length };
+      default:
+        return undefined;
+    }
+  }
+
+  function selectWizardSection(section: OnboardingPanelSection) {
+    if (onboardingModel?.mode === "hub") {
+      setOnboardingHubSection(section);
+    }
+  }
+
 
   const menuActions = [
     {
@@ -621,7 +845,20 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
               gatewayState={gatewayState}
               history={history}
               panelContent={
-                trustWorkbenchMode ? (
+                actionReceipt ? (
+                  <ActionReceiptCard
+                    receipt={actionReceipt}
+                    onConfirm={pendingEffector ? () => runActionReview(pendingEffector, true) : undefined}
+                  />
+                ) : bubbleTab === "setup" && wizardEnabled && onboardingModel ? (
+                  <OnboardingWizardPanel
+                    model={onboardingModel}
+                    draft={onboardingSurface.draft}
+                    onAdvance={advanceWizard}
+                    onDraftChange={updateOnboardingDraft}
+                    onSectionSelect={selectWizardSection}
+                  />
+                ) : trustWorkbenchMode ? (
                   <TrustWorkbenchPanel
                     mode={trustWorkbenchMode}
                     title={trustWorkbenchMode === "nexus" ? "Nexus context grades" : "Veritas receipt checks"}
@@ -647,6 +884,39 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
           </BubbleSection>
         ),
       },
+      ...(wizardEnabled && onboardingModel
+        ? [
+            {
+              id: "setup",
+              label: "Setup",
+              icon: "✦",
+              tone: "setup" as const,
+              content: (
+                <BubbleSection
+                  expanded={surfaceUi.expandedSections.setup === true}
+                  summary={
+                    onboardingModel.mode === "hub"
+                      ? "Setup hub is ready."
+                      : `Next: ${onboardingModel.act.title}`
+                  }
+                  title="Onboarding wizard"
+                  onToggle={() => toggleBubbleSection("setup")}
+                >
+                  <BubbleAction
+                    title={onboardingModel.mode === "hub" ? "Setup hub" : onboardingModel.act.title}
+                    detail={
+                      onboardingModel.mode === "hub"
+                        ? "Jump back into connection, posture, placement, or receipts."
+                        : "Open the guided setup panel and keep moving through the current act."
+                    }
+                    actionLabel="Open setup"
+                    onAction={() => updateSurfaceUi({ activeTab: "setup" })}
+                  />
+                </BubbleSection>
+              ),
+            },
+          ]
+        : []),
       {
         id: "settings",
         label: "Settings",
@@ -741,10 +1011,17 @@ export const BuddySurface = forwardRef<BuddySurfaceHandle, BuddySurfaceProps>(fu
     history,
     trustWorkbenchMode,
     governanceSnapshot,
+    onboardingSurface.draft,
     settings.memoryMode,
     settings.modelLabel,
     statusBubbleText,
     surfaceUi,
+    bubbleTab,
+    // advanceWizard / selectWizardSection / updateOnboardingDraft are recreated each
+    // render; like the other inline handlers here they're intentionally omitted so the
+    // memo only rebuilds when the state they close over changes.
+    onboardingModel,
+    wizardEnabled,
   ]);
 
   return (
@@ -985,6 +1262,7 @@ function normalizeBuddySurfaceUi(candidate: Partial<BuddySurfaceUiState> | null 
     activeTab,
     expandedSections: {
       message: expandedCandidate.message === true,
+      setup: expandedCandidate.setup === true,
       settings: expandedCandidate.settings === true,
       gateway: expandedCandidate.gateway === true,
       dock: expandedCandidate.dock === true,
@@ -995,7 +1273,7 @@ function normalizeBuddySurfaceUi(candidate: Partial<BuddySurfaceUiState> | null 
 }
 
 function isBubbleTabId(value: unknown): value is BubbleTabId {
-  return value === "message" || value === "settings" || value === "gateway" || value === "dock";
+  return value === "message" || value === "setup" || value === "settings" || value === "gateway" || value === "dock";
 }
 
 export function buddySurfaceStatusLabel(

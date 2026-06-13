@@ -1,0 +1,1712 @@
+//! Border Agents desktop presence body — animated body (build-order step 3).
+//!
+//! Step 2 proved a per-buddy surface on the wlr overlay layer with pixel-exact
+//! anchor+margin placement, margin-update dragging, click-through input regions,
+//! and chosen-output placement (see git history / README). Step 3+ turns that
+//! static sprite into an *animated clay figure* (a Morph-style buddy: head as the
+//! dock/drag handle, slender stretchable torso, speech bubble + chat input that
+//! auto-face inward) — all software-rendered (tiny-skia + fontdue), still no
+//! GTK/WebKit/GPU.
+//!
+//! The presentation state (emotion / speech / chat) is exposed through a small
+//! internal API (`set_emotion`, `say`, `toggle_chat`) driven by presence-protocol
+//! events over the WebSocket. Mood belongs to the soul (`express` cues), never
+//! to a local button.
+//!
+//! Run:  cargo run --release            # active output, top-left
+//!       BB_OUTPUT_INDEX=1 cargo run     # second monitor
+//!       BB_MARGIN_LEFT=400 BB_MARGIN_TOP=200 cargo run
+//!       BB_COLOR="#7c5cff" cargo run    # recolour the clay
+//! Drag the head to move/dock; click the head to chat; drag the feet to stretch.
+
+mod presence;
+mod render;
+
+use std::time::{Duration, Instant};
+
+use calloop::channel::Event as ChannelEvent;
+use calloop::timer::{TimeoutAction, Timer};
+use calloop::{EventLoop, LoopSignal};
+use calloop_wayland_source::WaylandSource;
+use render::{BodyView, BumpEdge, Emotion, Facing, Sprite, TorsoAction};
+use smithay_client_toolkit::{
+    compositor::{CompositorHandler, CompositorState, Region},
+    delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
+    delegate_registry, delegate_seat, delegate_shm,
+    output::{OutputHandler, OutputState},
+    registry::{ProvidesRegistryState, RegistryState},
+    registry_handlers,
+    seat::{
+        keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers},
+        pointer::{PointerEvent, PointerEventKind, PointerHandler},
+        Capability, SeatHandler, SeatState,
+    },
+    shell::{
+        wlr_layer::{
+            Anchor, KeyboardInteractivity, Layer, LayerShell, LayerShellHandler, LayerSurface,
+            LayerSurfaceConfigure,
+        },
+        WaylandSurface,
+    },
+    shm::{slot::SlotPool, Shm, ShmHandler},
+};
+use smithay_client_toolkit::reexports::client::{
+    globals::registry_queue_init,
+    protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
+    Connection, Dispatch, Proxy, QueueHandle,
+};
+use wayland_protocols::wp::relative_pointer::zv1::client::{
+    zwp_relative_pointer_manager_v1::ZwpRelativePointerManagerV1,
+    zwp_relative_pointer_v1::{Event as RelativePointerEvent, ZwpRelativePointerV1},
+};
+
+const CLICK_SLOP: f64 = 5.0;
+const BTN_LEFT: u32 = 0x110;
+const BTN_RIGHT: u32 = 0x111;
+
+/// Drop the buddy with its head within this many pixels of a screen edge and it tucks
+/// against that edge.
+const TUCK_THRESHOLD: f64 = 40.0;
+
+fn env_i32(key: &str, fallback: i32) -> i32 {
+    std::env::var(key).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(fallback)
+}
+
+/// Per-frame trace logging (every compositor resize, every inbound cue) is gated behind
+/// `BB_DEBUG` — it floods stderr during drags/animation, which is just noise in normal
+/// use (and enough volume to get a supervised process killed). Off by default.
+fn debug_log_enabled() -> bool {
+    use std::sync::OnceLock;
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| {
+        std::env::var("BB_DEBUG").map(|v| !v.is_empty() && v != "0").unwrap_or(false)
+    })
+}
+
+/// Parse `BB_COLOR` ("#C96D3C" or "C96D3C") into the clay colour; falls back to
+/// the Morph terracotta default. Easy per-buddy recolouring without a rebuild.
+fn env_color(key: &str) -> [u8; 3] {
+    let Some(raw) = std::env::var(key).ok() else { return render::CLAY_DEFAULT };
+    let hex = raw.trim().trim_start_matches('#');
+    if hex.len() != 6 {
+        return render::CLAY_DEFAULT;
+    }
+    match u32::from_str_radix(hex, 16) {
+        Ok(v) => [(v >> 16) as u8, (v >> 8) as u8, v as u8],
+        Err(_) => render::CLAY_DEFAULT,
+    }
+}
+
+fn buddy_env_key(buddy: &str, suffix: &str) -> String {
+    format!("{}_{}", buddy.trim().to_ascii_uppercase().replace('-', "_"), suffix)
+}
+
+fn buddy_env(buddy: &str, suffix: &str) -> Option<String> {
+    std::env::var(buddy_env_key(buddy, suffix)).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
+
+enum TorsoSurface {
+    Session,
+    Text { title: String, body: String },
+    // A decoded provider image is held separately on `App.torso_image`; this variant
+    // just marks that the torso is in image mode and carries its caption/hint.
+    Image { title: String, caption: String, hint: String },
+    ImageStub { title: String, caption: String, hint: String },
+    FileStub { title: String, caption: String, hint: String },
+}
+
+enum TorsoSurfaceSnapshot {
+    Session {
+        buddy: String,
+        provider: String,
+        model: String,
+        gateway: String,
+        status: String,
+        note: String,
+    },
+    Text {
+        title: String,
+        body: String,
+    },
+    // The decoded image lives on App.torso_image and is lent into `as_render` as a
+    // separate (disjoint) field borrow, so this owned snapshot doesn't borrow self.
+    Image {
+        title: String,
+        caption: String,
+        hint: String,
+    },
+    ImageStub {
+        title: String,
+        caption: String,
+        hint: String,
+    },
+    FileStub {
+        title: String,
+        caption: String,
+        hint: String,
+    },
+}
+
+impl TorsoSurfaceSnapshot {
+    fn as_render<'a>(
+        &'a self,
+        image: Option<&'a render::TorsoImage>,
+    ) -> render::TorsoOutput<'a> {
+        match self {
+            TorsoSurfaceSnapshot::Session { buddy, provider, model, gateway, status, note } => {
+                render::TorsoOutput::Session(render::SessionCard {
+                    buddy,
+                    provider,
+                    model,
+                    gateway,
+                    status,
+                    note,
+                })
+            }
+            TorsoSurfaceSnapshot::Text { title, body } => {
+                render::TorsoOutput::Text(render::TextCard { title, body })
+            }
+            TorsoSurfaceSnapshot::Image { title, caption, hint } => {
+                let _ = (title, caption, hint);
+                render::TorsoOutput::Image(render::ImageCard { image })
+            }
+            TorsoSurfaceSnapshot::ImageStub { title, caption, hint } => {
+                render::TorsoOutput::ImageStub(render::MediaStubCard { title, caption, hint })
+            }
+            TorsoSurfaceSnapshot::FileStub { title, caption, hint } => {
+                render::TorsoOutput::FileStub(render::MediaStubCard { title, caption, hint })
+            }
+        }
+    }
+}
+
+fn classify_torso_surface(text: &str) -> TorsoSurface {
+    let trimmed = text.trim();
+    if let Some(caption) = trimmed.strip_prefix("[image]") {
+        return TorsoSurface::ImageStub {
+            title: "Image output".to_string(),
+            caption: caption.trim().if_empty("Provider image placeholder"),
+            hint: "Swap this stub for real image payload rendering when the provider sends media metadata.".to_string(),
+        };
+    }
+    if let Some(caption) = trimmed.strip_prefix("[file]") {
+        return TorsoSurface::FileStub {
+            title: "File output".to_string(),
+            caption: caption.trim().if_empty("Provider file placeholder"),
+            hint: "Use this slot for documents, receipts, or other downloadable provider artifacts.".to_string(),
+        };
+    }
+    if trimmed.starts_with("![") {
+        return TorsoSurface::ImageStub {
+            title: "Image output".to_string(),
+            caption: "Markdown image placeholder".to_string(),
+            hint: "The torso can reserve image space before we wire a richer payload channel.".to_string(),
+        };
+    }
+    TorsoSurface::Text {
+        title: "Text output".to_string(),
+        body: trimmed.to_string(),
+    }
+}
+
+trait IfEmpty {
+    fn if_empty(self, fallback: &str) -> String;
+}
+
+impl IfEmpty for &str {
+    fn if_empty(self, fallback: &str) -> String {
+        if self.is_empty() {
+            fallback.to_string()
+        } else {
+            self.to_string()
+        }
+    }
+}
+
+/// Decode a base64 image payload. Tolerates a `data:…;base64,` URL prefix (so an
+/// inlined data URL from a provider reply decodes too) and surrounding whitespace.
+fn decode_base64(data: &str) -> Option<Vec<u8>> {
+    use base64::Engine;
+    let trimmed = data.trim();
+    let payload = trimmed
+        .rsplit_once("base64,")
+        .map(|(_, rest)| rest)
+        .unwrap_or(trimmed);
+    base64::engine::general_purpose::STANDARD.decode(payload).ok()
+}
+
+fn main() {
+    let conn = Connection::connect_to_env()
+        .expect("could not connect to a Wayland compositor (is WAYLAND_DISPLAY set?)");
+    let (globals, mut event_queue) = registry_queue_init(&conn).expect("registry init failed");
+    let qh = event_queue.handle();
+
+    let compositor = CompositorState::bind(&globals, &qh).expect("wl_compositor unavailable");
+    let layer_shell = LayerShell::bind(&globals, &qh)
+        .expect("wlr-layer-shell unavailable — compositor does not implement zwlr_layer_shell_v1");
+    let shm = Shm::bind(&globals, &qh).expect("wl_shm unavailable");
+    // Raw pointer deltas for dragging — independent of the surface frame, so moving
+    // the surface can't feed back into the motion we read. Optional: if absent we
+    // simply can't drag (rather than dragging unstably).
+    let relative_manager = globals
+        .bind::<ZwpRelativePointerManagerV1, _, _>(&qh, 1..=1, ())
+        .ok();
+    if relative_manager.is_none() {
+        eprintln!("[bb-desktop-body] wp_relative_pointer unavailable — dragging disabled");
+    }
+
+    let mut app = App {
+        buddy: std::env::var("BB_BUDDY").unwrap_or_else(|_| "hermes".to_string()),
+        registry_state: RegistryState::new(&globals),
+        seat_state: SeatState::new(&globals, &qh),
+        output_state: OutputState::new(&globals, &qh),
+        shm,
+        pool: None,
+        compositor,
+        conn: conn.clone(),
+        layer: None,
+        pointer: None,
+        relative_manager,
+        relative_pointer: None,
+        sprite: Sprite::new(),
+        loop_signal: None,
+        screen: None,
+        width: render::SURFACE_W,
+        height: render::Layout::initial().surface_h(),
+        margin_left: env_i32("BB_MARGIN_LEFT", 48) as f64,
+        margin_top: env_i32("BB_MARGIN_TOP", 48) as f64,
+        start: Instant::now(),
+        emotion: Emotion::Neutral,
+        speech: None,
+        torso_surface: TorsoSurface::Session,
+        torso_image: None,
+        provider_label: String::new(),
+        model_label: String::new(),
+        gateway_label: String::new(),
+        presence_status: "Connecting".to_string(),
+        session_note: "Speech bubble carries quick updates. Usage and richer provider output land in the torso.".to_string(),
+        awaiting_reply: false,
+        chat_open: false,
+        configured: false,
+        press: None,
+        drag: false,
+        exit: false,
+        presence_out: None,
+        tucked: None,
+        frame_target: None,
+        pinned_to_target: false,
+        pinned_offset: None,
+        pinned_bubble_w: env_i32("BB_PINNED_BUBBLE_W", 248) as f32,
+        keyboard: None,
+        input_text: String::new(),
+        input_focused: false,
+        facing: Facing::Right,
+        body_len: render::BODY_LEN_DEFAULT,
+        color: env_color("BB_COLOR"),
+    };
+    app.init_hermes_surface();
+
+    // Let outputs (and their xdg-output logical size) arrive before we create the
+    // surface. Two roundtrips: the first binds wl_output, the second delivers the
+    // logical-size / mode events we clamp against.
+    event_queue.roundtrip(&mut app).expect("initial roundtrip failed");
+    event_queue.roundtrip(&mut app).expect("second roundtrip failed");
+
+    let output = pick_output(&app);
+    // Remember the target output's size so a drag can be clamped on-screen. Prefer
+    // the xdg logical size; fall back to the current mode if logical size is absent.
+    app.screen = output
+        .clone()
+        .or_else(|| app.output_state.outputs().next())
+        .and_then(|o| app.output_state.info(&o))
+        .and_then(|info| {
+            info.logical_size
+                .or_else(|| info.modes.iter().find(|m| m.current).map(|m| m.dimensions))
+        })
+        .map(|(w, h)| (w as f64, h as f64));
+    eprintln!("[bb-desktop-body] screen bounds for clamping: {:?}", app.screen);
+    let surface = app.compositor.create_surface(&qh);
+    let layer = layer_shell.create_layer_surface(
+        &qh,
+        surface,
+        Layer::Overlay,
+        Some("bb-buddy-hermes"),
+        output.as_ref(),
+    );
+    layer.set_anchor(Anchor::TOP | Anchor::LEFT);
+    layer.set_size(app.width, app.height);
+    layer.set_margin(app.margin_top as i32, 0, 0, app.margin_left as i32);
+    // OnDemand: the surface takes keyboard focus when the user clicks it (e.g. the
+    // input box), and the compositor returns focus when they click elsewhere. Keys are
+    // still only consumed while `input_focused`, so this never hijacks global typing.
+    layer.set_keyboard_interactivity(KeyboardInteractivity::OnDemand);
+    layer.commit();
+
+    app.pool = Some(
+        SlotPool::new((app.width * app.height * 4) as usize, &app.shm).expect("slot pool failed"),
+    );
+    app.layer = Some(layer);
+
+    eprintln!(
+        "[bb-desktop-body] clay figure up: {}x{} @ margin(L={}, T={}){} — drag the head to move; click to chat; drag the feet to stretch",
+        app.width,
+        app.height,
+        app.margin_left as i32,
+        app.margin_top as i32,
+        output_label(&app),
+    );
+
+    // calloop multiplexes Wayland input with a 30fps animation timer.
+    let mut event_loop: EventLoop<App> = EventLoop::try_new().expect("event loop");
+    let handle = event_loop.handle();
+    app.loop_signal = Some(event_loop.get_signal());
+    WaylandSource::new(conn, event_queue)
+        .insert(handle.clone())
+        .expect("insert wayland source");
+    handle
+        .insert_source(Timer::immediate(), |_deadline, _meta, app: &mut App| {
+            app.tick();
+            TimeoutAction::ToDuration(Duration::from_millis(33))
+        })
+        .expect("insert timer");
+
+    // Presence: a soul (the dev gateway, or a real one) drives the body over a
+    // WebSocket. The client runs on its own thread and forwards inbound frames here.
+    // This commit only logs them; the next applies them to the body state.
+    let (presence_tx, presence_rx) = calloop::channel::channel::<String>();
+    handle
+        .insert_source(presence_rx, |event, _meta, app: &mut App| {
+            if let ChannelEvent::Msg(text) = event {
+                app.on_presence_message(&text);
+            }
+        })
+        .expect("insert presence source");
+    app.presence_out = Some(presence::spawn(app.buddy.clone(), presence_tx));
+
+    if let Err(err) = event_loop.run(Some(Duration::from_millis(33)), &mut app, |app| {
+        if app.exit {
+            if let Some(signal) = &app.loop_signal {
+                signal.stop();
+            }
+        }
+    }) {
+        // The compositor dropping the connection is a normal way to exit, not a crash.
+        eprintln!("[bb-desktop-body] event loop ended: {err}");
+    }
+}
+
+struct PressState {
+    target: PressTarget,
+    secondary: bool,
+    /// Accumulated physical pointer travel since press — distinguishes click from drag.
+    dist: f64,
+    /// Whether `grabbed` has been emitted for this press (fires once, when `dist`
+    /// first crosses the click slop — never on press, or every click is a phantom grab).
+    grabbed_sent: bool,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum PressTarget {
+    Head,
+    Input,
+    TorsoAction(TorsoAction),
+    /// The legs/feet zone — dragging it vertically stretches the body.
+    Feet,
+    Bump,
+    Outside,
+}
+
+/// The native OS window currently available for pinning, kept live by target cues.
+struct FrameTarget {
+    id: String,
+    /// Window title and app id for pinned-mode status text.
+    title: String,
+    app_id: String,
+    bounds: presence::TargetBounds,
+}
+
+#[derive(Clone, Copy)]
+struct FrameBounds {
+    x: f64,
+    y: f64,
+    w: f64,
+}
+
+struct App {
+    /// This body's identity — filters inbound cues and stamps outbound events.
+    buddy: String,
+    registry_state: RegistryState,
+    seat_state: SeatState,
+    output_state: OutputState,
+    shm: Shm,
+    pool: Option<SlotPool>,
+    compositor: CompositorState,
+    conn: Connection,
+    layer: Option<LayerSurface>,
+    pointer: Option<wl_pointer::WlPointer>,
+    relative_manager: Option<ZwpRelativePointerManagerV1>,
+    relative_pointer: Option<ZwpRelativePointerV1>,
+    sprite: Sprite,
+    loop_signal: Option<LoopSignal>,
+    screen: Option<(f64, f64)>,
+    width: u32,
+    height: u32,
+    margin_left: f64,
+    margin_top: f64,
+    start: Instant,
+    emotion: Emotion,
+    speech: Option<String>,
+    torso_surface: TorsoSurface,
+    /// Decoded image currently shown when `torso_surface` is `Image` — held here (not
+    /// in the enum) so a redraw blits it without re-decoding, and so the snapshot stays
+    /// owned. Set from an `output` cue's inline bytes via `decode_image_bytes`.
+    torso_image: Option<render::TorsoImage>,
+    provider_label: String,
+    model_label: String,
+    gateway_label: String,
+    presence_status: String,
+    session_note: String,
+    awaiting_reply: bool,
+    chat_open: bool,
+    configured: bool,
+    press: Option<PressState>,
+    drag: bool,
+    exit: bool,
+    /// Outbound to-soul events (clicked/grabbed/dropped). Best-effort: `None` until the
+    /// presence thread starts, and sends are dropped when no soul is connected.
+    presence_out: Option<std::sync::mpsc::Sender<String>>,
+    /// When `Some`, the buddy is tucked against this edge — shown as a minimized bump,
+    /// input shrunk to the bump, clicking it summons the buddy back out.
+    tucked: Option<presence::Edge>,
+    /// When `Some`, a platform driver has identified a native OS window that Hermes
+    /// can be pinned to. This is tracking state only; right-click toggles presentation.
+    frame_target: Option<FrameTarget>,
+    /// Right-click toggles this on once a target has been acquired. The body remains
+    /// presentation-only: it follows target cues, but it never reads or moves windows.
+    pinned_to_target: bool,
+    /// User-chosen surface offset from the tracked target origin while pinned.
+    pinned_offset: Option<(f64, f64)>,
+    /// Resizable pinned bubble width; env-tunable now, drag handle later.
+    pinned_bubble_w: f32,
+    /// Keyboard, acquired when the seat advertises the capability. Drives the on-body
+    /// text input that replaces the old "Say hello" button.
+    keyboard: Option<wl_keyboard::WlKeyboard>,
+    /// The text the user is typing to the buddy (only mutated while `input_focused`).
+    input_text: String,
+    /// Whether the input box has focus — gates keystrokes and shows the caret.
+    input_focused: bool,
+    /// Which side the bubble/input sit on — recomputed from screen position so the
+    /// UI always faces the screen centre, never the docked edge.
+    facing: Facing,
+    /// Stretchable torso length (the user drags the feet to resize the figure).
+    body_len: f32,
+    /// Clay colour from `BB_COLOR`.
+    color: [u8; 3],
+}
+
+/// Map a presence-protocol edge onto the renderer's bump edge.
+fn edge_to_bump(edge: presence::Edge) -> BumpEdge {
+    match edge {
+        presence::Edge::Top => BumpEdge::Top,
+        presence::Edge::Right => BumpEdge::Right,
+        presence::Edge::Bottom => BumpEdge::Bottom,
+        presence::Edge::Left => BumpEdge::Left,
+    }
+}
+
+fn pick_output(app: &App) -> Option<wl_output::WlOutput> {
+    let index = env_i32("BB_OUTPUT_INDEX", -1);
+    if index < 0 {
+        return None;
+    }
+    app.output_state.outputs().nth(index as usize)
+}
+
+fn output_label(app: &App) -> String {
+    let index = env_i32("BB_OUTPUT_INDEX", -1);
+    if index < 0 {
+        return " on the active output".to_string();
+    }
+    match app.output_state.outputs().nth(index as usize) {
+        Some(output) => match app.output_state.info(&output).and_then(|i| i.name) {
+            Some(name) => format!(" on output #{index} ({name})"),
+            None => format!(" on output #{index}"),
+        },
+        None => format!(" (output #{index} not found — using active output)"),
+    }
+}
+
+impl App {
+    fn init_hermes_surface(&mut self) {
+        self.provider_label = buddy_env(&self.buddy, "PROVIDER").unwrap_or_else(|| "echo".to_string());
+        self.model_label = buddy_env(&self.buddy, "MODEL").unwrap_or_else(|| "not configured".to_string());
+        self.gateway_label = std::env::var("BB_PRESENCE_URL")
+            .ok()
+            .map(|v| v.trim().to_string())
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| "ws://127.0.0.1:17387/border-buddies".to_string());
+        self.torso_surface = TorsoSurface::Session;
+        self.session_note =
+            "Speech bubble carries quick updates. Provider text, images, and files land here.".to_string();
+    }
+
+    fn tick(&mut self) {
+        self.draw();
+        let _ = self.conn.flush();
+    }
+
+    /// The current parameterized surface layout (facing + stretch) — single source
+    /// for drawing, hit-testing, and input regions so they can never disagree.
+    fn layout(&self) -> render::Layout {
+        render::Layout { facing: self.facing, body_len: self.body_len }
+    }
+
+    fn pinned_layout(&self) -> Option<render::PinnedLayout> {
+        if self.tucked.is_some() || !self.pinned_to_target || self.frame_target.is_none() {
+            return None;
+        }
+        Some(render::PinnedLayout::new(self.pinned_bubble_w))
+    }
+
+    fn adjusted_frame_bounds(&self) -> Option<FrameBounds> {
+        let target = self.frame_target.as_ref()?;
+        // COSMIC/Firefox currently reports geometry that visually starts below the top
+        // browser chrome. Keep knobs explicit so other apps/compositors can be tuned
+        // without another build.
+        let expand_top = env_i32("BB_FRAME_EXPAND_TOP", 34) as f64;
+        let expand_right = env_i32("BB_FRAME_EXPAND_RIGHT", 0) as f64;
+        let expand_left = env_i32("BB_FRAME_EXPAND_LEFT", 0) as f64;
+        let offset_x = env_i32("BB_FRAME_OFFSET_X", 0) as f64;
+        let offset_y = env_i32("BB_FRAME_OFFSET_Y", 0) as f64;
+        Some(FrameBounds {
+            x: target.bounds.x + offset_x - expand_left,
+            y: target.bounds.y + offset_y - expand_top,
+            w: (target.bounds.w + expand_left + expand_right).max(1.0),
+        })
+    }
+
+    /// Actual compositor-acked surface size. Drawing, hit-testing, and tucked input
+    /// regions use this so they hug the buffer that really exists.
+    fn surface_size(&self) -> (f64, f64) {
+        (self.width as f64, self.height as f64)
+    }
+
+    /// Requested full-body surface size. Edge placement uses this deterministic size
+    /// when tucking so transient compositor shrinkage cannot park the bump off-buffer.
+    fn requested_surface_size(&self) -> (f64, f64) {
+        if self.tucked.is_none() {
+            if self.pinned_layout().is_some() {
+                return (render::PINNED_SURFACE_W as f64, render::PINNED_SURFACE_H as f64);
+            }
+        }
+        (render::SURFACE_W as f64, self.layout().surface_h() as f64)
+    }
+
+    fn tucked_bump_rect(&self, edge: presence::Edge) -> render::Rect {
+        render::bump_rect(edge_to_bump(edge), self.width, self.height)
+    }
+
+    fn point_in_tucked_bump(&self, edge: presence::Edge, x: f64, y: f64) -> bool {
+        render::point_in_bump(edge_to_bump(edge), self.width, self.height, x, y)
+    }
+
+    fn draw(&mut self) {
+        if !self.configured {
+            return; // never attach a buffer before the first configure is acked
+        }
+        let layout = self.layout();
+        let torso_output = self.snapshot_torso_output();
+        // Direct field borrow, disjoint from self.pool/self.sprite below — lets the
+        // decoded image blit zero-copy without the snapshot borrowing all of self.
+        let torso_image = self.torso_image.as_ref();
+        let speech = self.speech.clone();
+        let input_text = self.input_text.clone();
+        let pinned = self.pinned_layout();
+        let (Some(pool), Some(layer)) = (self.pool.as_mut(), self.layer.as_ref()) else {
+            return;
+        };
+        let (w, h) = (self.width, self.height);
+        let stride = (w * 4) as i32;
+
+        let view = BodyView {
+            t: self.start.elapsed().as_secs_f32(),
+            emotion: self.emotion,
+            speech: speech.as_deref(),
+            torso_output: torso_output.as_render(torso_image),
+            chat_open: self.chat_open,
+            tucked: self.tucked.map(edge_to_bump),
+            input_text: &input_text,
+            input_focused: self.input_focused,
+            layout,
+            pinned,
+            frame: None,
+            color: self.color,
+        };
+
+        let buffer = match pool.create_buffer(w as i32, h as i32, stride, wl_shm::Format::Argb8888) {
+            Ok((buffer, canvas)) => {
+                self.sprite.paint(canvas, w, h, &view);
+                buffer
+            }
+            Err(err) => {
+                eprintln!("[bb-desktop-body] buffer alloc failed: {err}");
+                return;
+            }
+        };
+
+        let surface = layer.wl_surface();
+        buffer.attach_to(surface).expect("attach buffer");
+        surface.damage_buffer(0, 0, w as i32, h as i32);
+        surface.commit();
+    }
+
+    fn snapshot_torso_output(&self) -> TorsoSurfaceSnapshot {
+        // Owned snapshot — the decoded image is lent separately in draw() (see torso_image).
+        match &self.torso_surface {
+            TorsoSurface::Session => TorsoSurfaceSnapshot::Session {
+                buddy: self.buddy.clone(),
+                provider: self.provider_label.clone(),
+                model: self.model_label.clone(),
+                gateway: self.gateway_label.clone(),
+                status: self.presence_status.clone(),
+                note: self.session_note.clone(),
+            },
+            TorsoSurface::Text { title, body } => TorsoSurfaceSnapshot::Text {
+                title: title.clone(),
+                body: body.clone(),
+            },
+            TorsoSurface::Image { title, caption, hint } => {
+                TorsoSurfaceSnapshot::Image {
+                    title: title.clone(),
+                    caption: caption.clone(),
+                    hint: hint.clone(),
+                }
+            }
+            TorsoSurface::ImageStub { title, caption, hint } => {
+                TorsoSurfaceSnapshot::ImageStub {
+                    title: title.clone(),
+                    caption: caption.clone(),
+                    hint: hint.clone(),
+                }
+            }
+            TorsoSurface::FileStub { title, caption, hint } => {
+                TorsoSurfaceSnapshot::FileStub {
+                    title: title.clone(),
+                    caption: caption.clone(),
+                    hint: hint.clone(),
+                }
+            }
+        }
+    }
+
+    fn mark_presence_connected(&mut self) {
+        self.presence_status = format!("Linked to {}", self.provider_label);
+        if matches!(self.torso_surface, TorsoSurface::Session) && !self.awaiting_reply {
+            self.session_note =
+                "Speech bubble carries quick updates. Text, image, and file output can land here.".to_string();
+        }
+    }
+
+    fn show_reply_in_torso(&mut self, text: &str) {
+        self.torso_surface = classify_torso_surface(text);
+        self.awaiting_reply = false;
+        self.session_note = "Latest provider output loaded in the torso.".to_string();
+    }
+
+    /// Apply a typed `output` cue to the torso. `text`/`session` are handled here;
+    /// `image`/`file` carry inline base64 bytes — Slice 3 decodes and renders them, so
+    /// for now they land as an honest "received" stub rather than a fake preview.
+    fn apply_output(
+        &mut self,
+        surface: &str,
+        text: Option<String>,
+        caption: Option<String>,
+        media_type: Option<String>,
+        data_base64: Option<String>,
+    ) {
+        self.awaiting_reply = false;
+        match surface {
+            "text" => {
+                let body = text.unwrap_or_default();
+                self.torso_surface = TorsoSurface::Text {
+                    title: "Text output".to_string(),
+                    body: body.trim().to_string(),
+                };
+                self.session_note = "Latest provider output loaded in the torso.".to_string();
+            }
+            "session" => {
+                self.torso_surface = TorsoSurface::Session;
+                self.session_note =
+                    "Output cleared. Speech bubble carries quick updates.".to_string();
+            }
+            "image" => {
+                let decoded = data_base64
+                    .as_deref()
+                    .and_then(decode_base64)
+                    .and_then(|bytes| render::decode_image_bytes(&bytes));
+                match decoded {
+                    Some(pixmap) => {
+                        self.torso_image = Some(pixmap);
+                        self.torso_surface = TorsoSurface::Image {
+                            title: "Image output".to_string(),
+                            caption: caption.unwrap_or_else(|| "Generated image".to_string()),
+                            hint: String::new(),
+                        };
+                        self.session_note = "Image rendered in the torso.".to_string();
+                    }
+                    None => {
+                        // Honest failure: we received an image we couldn't decode — say so
+                        // rather than show a blank or fake frame.
+                        self.torso_image = None;
+                        self.torso_surface = TorsoSurface::ImageStub {
+                            title: "Image output".to_string(),
+                            caption: caption.unwrap_or_else(|| "Image received".to_string()),
+                            hint: "Could not decode the image bytes (unsupported format?)."
+                                .to_string(),
+                        };
+                    }
+                }
+            }
+            "file" => {
+                // Files aren't raster-rendered; present them honestly as a typed stub.
+                self.torso_surface = TorsoSurface::FileStub {
+                    title: "File output".to_string(),
+                    caption: caption.unwrap_or_else(|| "File received".to_string()),
+                    hint: media_type
+                        .map(|mt| format!("Provider file ({mt})."))
+                        .unwrap_or_else(|| "Provider file artifact.".to_string()),
+                };
+            }
+            _ => {}
+        }
+        self.update_input_region();
+    }
+
+    fn bubble_for_surface(&self, text: &str) -> String {
+        match classify_torso_surface(text) {
+            TorsoSurface::Image { .. } => "Image ready in torso.".to_string(),
+            TorsoSurface::ImageStub { .. } => {
+                "Here is your picture. Click to open. Tell me what next?".to_string()
+            }
+            TorsoSurface::FileStub { .. } => "File stub ready in torso.".to_string(),
+            TorsoSurface::Text { .. } => {
+                if text.len() > 56 || text.contains('\n') {
+                    "Reply ready in torso.".to_string()
+                } else {
+                    text.to_string()
+                }
+            }
+            TorsoSurface::Session => text.to_string(),
+        }
+    }
+
+    /// Reposition by rewriting anchor margins — a compositor texture move, never a
+    /// repaint, so ghosting cannot occur. Driven by raw `wp_relative_pointer` deltas
+    /// (physical pointer motion), so moving the surface never feeds back into the
+    /// motion we read — the runaway that surface-local coordinates caused.
+    fn reposition(&mut self) {
+        if let Some(layer) = self.layer.as_ref() {
+            // Margins may be negative — that tucks the (mostly-transparent) surface
+            // partly off an edge while keeping the buddy itself on-screen.
+            layer.set_margin(self.margin_top as i32, 0, 0, self.margin_left as i32);
+            layer.commit();
+        }
+        self.update_facing();
+    }
+
+    fn set_layer_size(&mut self, w: u32, h: u32) {
+        if self.width == w && self.height == h {
+            return;
+        }
+        if let Some(layer) = self.layer.as_ref() {
+            layer.set_size(w, h);
+            layer.commit();
+        }
+    }
+
+    fn sync_pinned_surface(&mut self) {
+        if self.tucked.is_some() {
+            return;
+        }
+        if !self.pinned_to_target {
+            self.set_layer_size(render::SURFACE_W, self.layout().surface_h());
+            self.update_input_region();
+            return;
+        };
+        let Some(target) = self.adjusted_frame_bounds() else { return };
+        let Some(pinned) = self.pinned_layout() else { return };
+        let (offset_x, offset_y) = self.pinned_offset.unwrap_or_else(|| {
+            let head = pinned.head_rect();
+            let head_cx = head.x as f64 + head.w as f64 / 2.0;
+            let head_cy = head.y as f64 + head.h as f64 / 2.0;
+            (target.w - 18.0 - head_cx, 18.0 - head_cy)
+        });
+        self.margin_left = target.x + offset_x;
+        self.margin_top = target.y + offset_y;
+        self.clamp_pinned_margins();
+        self.remember_pinned_offset();
+        self.set_layer_size(render::PINNED_SURFACE_W, render::PINNED_SURFACE_H);
+        self.reposition();
+        self.update_input_region();
+    }
+
+    fn clamp_pinned_margins(&mut self) {
+        let Some((sw, sh)) = self.screen else { return };
+        self.margin_left = self.margin_left.clamp(0.0, (sw - render::PINNED_SURFACE_W as f64).max(0.0));
+        self.margin_top = self.margin_top.clamp(0.0, (sh - render::PINNED_SURFACE_H as f64).max(0.0));
+    }
+
+    fn remember_pinned_offset(&mut self) {
+        let Some(target) = self.adjusted_frame_bounds() else { return };
+        self.pinned_offset = Some((self.margin_left - target.x, self.margin_top - target.y));
+    }
+
+    /// Keep the bubble + input on the side of the figure that faces the screen
+    /// centre, so the UI never clips against the edge the buddy is docked to.
+    fn update_facing(&mut self) {
+        let Some((sw, _)) = self.screen else { return };
+        let head_x = self.margin_left + render::FIG_CX as f64;
+        let new_facing = if head_x > sw / 2.0 { Facing::Left } else { Facing::Right };
+        if new_facing != self.facing {
+            self.facing = new_facing;
+            self.update_input_region();
+        }
+    }
+
+    /// Keep the buddy *head* fully on-screen — not just the surface edge — so it can
+    /// never slide off (the head sits centered inside a wider, mostly-transparent
+    /// surface). Margins are allowed to go negative to reach the left/top edges.
+    fn clamp_margins(&mut self) {
+        let head = render::head_rect();
+        let (sw, sh) = self.screen.unwrap_or((f64::MAX, f64::MAX));
+        let min_left = -(head.x as f64);
+        let max_left = (sw - (head.x + head.w) as f64).max(min_left);
+        let min_top = -(head.y as f64);
+        let max_top = (sh - (head.y + head.h) as f64).max(min_top);
+        self.margin_left = self.margin_left.clamp(min_left, max_left);
+        self.margin_top = self.margin_top.clamp(min_top, max_top);
+    }
+
+    /// Input region = only the parts that should catch the pointer; everywhere else
+    /// is transparent AND click-through. Recomputed whenever the menu/bubble toggles.
+    fn update_input_region(&mut self) {
+        let Some(layer) = self.layer.as_ref() else { return };
+        let Ok(region) = Region::new(&self.compositor) else { return };
+
+        // Tucked: only the bump catches the pointer — everything else is click-through,
+        // so the screen space the buddy stepped aside from is truly freed.
+        let rects = if let Some(edge) = self.tucked {
+            vec![self.tucked_bump_rect(edge).as_i32()]
+        } else if let Some(pinned) = self.pinned_layout() {
+            let mut rects = vec![pinned.head_rect().as_i32()];
+            if self.speech.is_some() {
+                rects.push(pinned.bubble_rect().as_i32());
+            }
+            if self.chat_open {
+                rects.push(pinned.input_region_rect().as_i32());
+            }
+            rects
+        } else {
+            let layout = self.layout();
+            // Head = move/dock handle; feet = stretch handle. The torso stays
+            // mostly click-through — only the small torso action points catch input.
+            let mut rects = vec![render::head_rect().as_i32(), layout.feet_rect().as_i32()];
+            if self.speech.is_some() {
+                rects.push(layout.bubble_rect().as_i32());
+            }
+            if self.chat_open {
+                rects.push(layout.input_region_rect().as_i32());
+            }
+            rects.push(layout.torso_action_rect(TorsoAction::Expand).as_i32());
+            rects.push(layout.torso_action_rect(TorsoAction::Scroll).as_i32());
+            rects
+        };
+        for (x, y, w, h) in rects {
+            region.add(x, y, w, h);
+        }
+        layer.wl_surface().set_input_region(Some(region.wl_region()));
+        layer.commit();
+    }
+
+    // --- presence: the soul driving the body ---
+
+    /// Apply an inbound presence frame. Cues for other buddies, and anything
+    /// malformed or not a body cue, are ignored (the parser already dropped them).
+    fn on_presence_message(&mut self, text: &str) {
+        let Some(msg) = presence::parse_to_body(text) else { return };
+        if msg.buddy != self.buddy {
+            return;
+        }
+        self.mark_presence_connected();
+        if debug_log_enabled() {
+            eprintln!("[bb-presence] applying cue for {}: {:?}", msg.buddy, msg.cue);
+        }
+        match msg.cue {
+            presence::Cue::Express { emotion } => {
+                if let Some(e) = Emotion::from_wire(&emotion) {
+                    self.set_emotion(e);
+                }
+            }
+            presence::Cue::Say { text } => self.say(text),
+            presence::Cue::MoveTo { position } => self.apply_position(position),
+            presence::Cue::Hydrate { position, emotion, speech } => {
+                if let Some(p) = position {
+                    self.apply_position(p);
+                }
+                if let Some(e) = emotion.as_deref().and_then(Emotion::from_wire) {
+                    self.set_emotion(e);
+                }
+                if let Some(s) = speech {
+                    self.say(s);
+                }
+            }
+            presence::Cue::Output { surface, text, caption, media_type, data_base64 } => {
+                self.apply_output(&surface, text, caption, media_type, data_base64);
+            }
+            presence::Cue::ActionResult { decision, summary, .. } => {
+                // Present the soul's authorization outcome — the body renders it, it never
+                // decides it (law 7). A non-`allow` outcome draws an alert expression so the
+                // user notices the gate held or wants confirmation.
+                if decision != "allow" {
+                    self.set_emotion(Emotion::Alert);
+                }
+                if let Some(text) = summary {
+                    self.say(text);
+                }
+            }
+            presence::Cue::TargetAcquired { target_id, title, app_id, bounds } => {
+                if self.tucked.is_some() {
+                    return;
+                }
+                eprintln!("[bb-presence] tracked target {target_id} ({app_id} — {title:?})");
+                if !self.pinned_to_target {
+                    self.speech = Some(format!("Right-click Hermes to pin to {app_id}."));
+                    self.pinned_offset = None;
+                }
+                self.frame_target = Some(FrameTarget { id: target_id, title, app_id, bounds });
+                self.sync_pinned_surface();
+            }
+            presence::Cue::TargetMoved { target_id, bounds } => {
+                // Only the tracked window updates the pinned overlay; a stray move for
+                // another target id is ignored rather than snapping us onto it.
+                if let Some(frame) = self.frame_target.as_mut() {
+                    if frame.id == target_id {
+                        frame.bounds = bounds;
+                        self.sync_pinned_surface();
+                    }
+                }
+            }
+            presence::Cue::TargetLost { target_id, reason } => {
+                // Release only if it's our tracked target.
+                if self.frame_target.as_ref().is_some_and(|f| f.id == target_id) {
+                    eprintln!("[bb-presence] target lost {target_id}: {reason:?}");
+                    self.frame_target = None;
+                    self.pinned_to_target = false;
+                    self.pinned_offset = None;
+                    self.speech = Some("Released the window.".to_string());
+                    self.sync_pinned_surface();
+                }
+            }
+        }
+    }
+
+    /// Place the body at an abstract presence position. Anchored/Free share the margin
+    /// + clamp + reposition path with dragging, so move_to and drag can never drift
+    /// apart; Tucked enters the tucked state so a persisted tuck round-trips through
+    /// `hydrate` and comes back as a bump.
+    fn apply_position(&mut self, position: presence::Position) {
+        let (left, top) = match position {
+            presence::Position::Tucked { edge, ox, oy } => {
+                let along = match edge {
+                    presence::Edge::Left | presence::Edge::Right => oy,
+                    presence::Edge::Top | presence::Edge::Bottom => ox,
+                };
+                self.enter_tuck(edge, along);
+                return;
+            }
+            presence::Position::Anchored { edge, ox, oy } => presence::anchored_to_margins(
+                edge,
+                ox,
+                oy,
+                self.surface_size(),
+                self.screen,
+            ),
+            presence::Position::Free { x, y } => (x, y),
+        };
+        // A non-tucked position pops the buddy back to the full figure.
+        let was_tucked = self.tucked.take().is_some();
+        let was_pinned = self.pinned_to_target;
+        self.pinned_to_target = false;
+        self.pinned_offset = None;
+        self.margin_left = left;
+        self.margin_top = top;
+        self.clamp_margins();
+        if was_pinned {
+            self.set_layer_size(render::SURFACE_W, self.layout().surface_h());
+        }
+        if was_tucked || was_pinned {
+            self.update_input_region();
+        }
+        self.reposition();
+    }
+
+    // --- presentation API (called by presence cues above and local interaction) ---
+
+    fn set_emotion(&mut self, emotion: Emotion) {
+        self.emotion = emotion;
+    }
+
+    fn say(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        if self.awaiting_reply {
+            self.show_reply_in_torso(&text);
+        }
+        self.speech = Some(self.bubble_for_surface(&text));
+        self.update_input_region();
+    }
+
+    /// Open/close the chat input. Opening focuses it immediately (click head →
+    /// type). No local mood buttons here: expression belongs to the soul, which
+    /// drives it through `express` cues — the user talks, the buddy feels.
+    fn toggle_chat(&mut self) {
+        self.chat_open = !self.chat_open;
+        if self.chat_open {
+            self.input_focused = true;
+        } else {
+            self.speech = None;
+            // Closing the chat drops any half-typed input and the caret.
+            self.input_focused = false;
+            self.input_text.clear();
+        }
+        self.update_input_region();
+    }
+
+    fn toggle_pin(&mut self) {
+        if self.pinned_to_target {
+            self.pinned_to_target = false;
+            self.pinned_offset = None;
+            self.chat_open = false;
+            self.input_focused = false;
+            self.speech = Some("Unpinned.".to_string());
+            self.set_layer_size(render::SURFACE_W, self.layout().surface_h());
+            self.clamp_margins();
+            self.reposition();
+            self.update_input_region();
+            return;
+        }
+
+        let Some(target) = self.frame_target.as_ref() else {
+            self.speech = Some("No active target to pin yet.".to_string());
+            self.update_input_region();
+            return;
+        };
+        self.pinned_to_target = true;
+        self.pinned_offset = None;
+        self.chat_open = false;
+        self.input_focused = false;
+        let name = if target.title.trim().is_empty() { target.app_id.as_str() } else { target.title.as_str() };
+        self.speech = Some(format!("Pinned to {name}."));
+        self.sync_pinned_surface();
+    }
+
+    /// Handle a keystroke while the input box is focused: submit on Enter, edit on
+    /// Backspace, defocus on Escape, otherwise append printable text.
+    fn on_key(&mut self, event: KeyEvent) {
+        let ks = event.keysym;
+        if ks == Keysym::Return || ks == Keysym::KP_Enter {
+            self.submit_input();
+        } else if ks == Keysym::BackSpace {
+            self.input_text.pop();
+        } else if ks == Keysym::Escape {
+            self.input_focused = false;
+        } else if let Some(text) = event.utf8 {
+            for ch in text.chars() {
+                if !ch.is_control() {
+                    self.input_text.push(ch);
+                }
+            }
+        }
+    }
+
+    /// Send what the user typed to the soul as a `said` event and echo it locally so
+    /// they see it land. The reply arrives as a `say` cue from the soul.
+    fn submit_input(&mut self) {
+        let text = self.input_text.trim().to_string();
+        if text.is_empty() {
+            return;
+        }
+        self.send_to_soul(presence::said_json(&self.buddy, &text));
+        self.set_emotion(Emotion::Thinking);
+        self.awaiting_reply = true;
+        self.presence_status = format!("{} is thinking", self.buddy);
+        self.torso_surface = TorsoSurface::Text {
+            title: "Reply pending".to_string(),
+            body: format!("Waiting for {} to answer your latest prompt.", self.buddy),
+        };
+        self.speech = Some("Message sent.".to_string());
+        self.update_input_region();
+        self.input_text.clear();
+    }
+
+    fn on_press(&mut self, x: f64, y: f64, button: u32) {
+        let secondary = button == BTN_RIGHT;
+        let primary = button == BTN_LEFT;
+        // While tucked, the only live target is the bump; a click on it summons the
+        // buddy back out. The bump is not draggable in v1.
+        if let Some(edge) = self.tucked {
+            let target = if self.point_in_tucked_bump(edge, x, y) {
+                PressTarget::Bump
+            } else {
+                PressTarget::Outside
+            };
+            self.press = Some(PressState { target, secondary, dist: 0.0, grabbed_sent: false });
+            return;
+        }
+
+        let layout = self.layout();
+        let target = if let Some(pinned) = self.pinned_layout() {
+            if pinned.contains_head(x, y) {
+                PressTarget::Head
+            } else if self.chat_open && pinned.input_region_rect().contains(x, y) {
+                PressTarget::Input
+            } else {
+                PressTarget::Outside
+            }
+        } else if render::point_in_head(x, y) {
+            PressTarget::Head
+        } else if self.chat_open && layout.input_region_rect().contains(x, y) {
+            PressTarget::Input
+        } else if let Some(action) = render::torso_action_at(&layout, x, y) {
+            PressTarget::TorsoAction(action)
+        } else if layout.feet_rect().contains(x, y) {
+            PressTarget::Feet
+        } else {
+            PressTarget::Outside
+        };
+
+        self.press = Some(PressState { target, secondary, dist: 0.0, grabbed_sent: false });
+        if primary && target == PressTarget::Head && !self.pinned_to_target {
+            self.drag = true;
+        }
+    }
+
+    /// Physical pointer delta from `wp_relative_pointer`. Apply it straight to the
+    /// margins while dragging — no surface-frame feedback, no runaway.
+    fn on_drag_delta(&mut self, dx: f64, dy: f64) {
+        let Some(press) = self.press.as_mut() else { return };
+        press.dist += dx.abs() + dy.abs();
+        if self.pinned_to_target && press.target == PressTarget::Head {
+            if press.dist > CLICK_SLOP {
+                self.margin_left += dx;
+                self.margin_top += dy;
+                self.clamp_pinned_margins();
+                self.remember_pinned_offset();
+                self.reposition();
+                self.update_input_region();
+            }
+            return;
+        }
+        // A grab is a real drag, not a click: announce it the first time travel
+        // crosses the slop. Doing this here (not in on_press) keeps every click from
+        // emitting a phantom grabbed+dropped pair.
+        let grab_now = self.drag && !press.grabbed_sent && press.dist > CLICK_SLOP;
+        if grab_now {
+            press.grabbed_sent = true;
+        }
+        let stretching = press.target == PressTarget::Feet;
+        if self.drag {
+            self.margin_left += dx;
+            self.margin_top += dy;
+            self.clamp_margins();
+            self.reposition();
+        } else if stretching {
+            // Dragging the feet stretches/squashes the clay body. Local presentation
+            // preference only — nothing is reported to the soul.
+            self.set_body_len(self.body_len + dy as f32);
+        }
+        if grab_now {
+            self.emit_grabbed();
+        }
+    }
+
+    /// Apply a new torso stretch: clamp, resize the surface to fit, and keep the
+    /// input region in step. The compositor acks the new size on the next configure.
+    fn set_body_len(&mut self, len: f32) {
+        let len = len.clamp(render::BODY_LEN_MIN, render::BODY_LEN_MAX);
+        if (len - self.body_len).abs() < 0.5 {
+            return;
+        }
+        self.body_len = len;
+        if let Some(layer) = self.layer.as_ref() {
+            layer.set_size(render::SURFACE_W, self.layout().surface_h());
+            layer.commit();
+        }
+        self.update_input_region();
+    }
+
+    fn on_release(&mut self) {
+        let Some(press) = self.press.take() else { return };
+        self.drag = false;
+
+        // A click on the tucked bump summons the buddy back out.
+        if press.target == PressTarget::Bump {
+            if press.dist <= CLICK_SLOP {
+                self.summon();
+            }
+            return;
+        }
+
+        if press.secondary {
+            if press.dist <= CLICK_SLOP && matches!(press.target, PressTarget::Head | PressTarget::Outside) {
+                self.toggle_pin();
+            }
+            return;
+        }
+
+        if self.pinned_to_target && press.target == PressTarget::Head && press.dist > CLICK_SLOP {
+            return;
+        }
+
+        if press.dist > CLICK_SLOP {
+            // A head drag ended. If it came to rest near an edge, tuck it there;
+            // otherwise report where it landed so the placement can be persisted.
+            // (Feet drags are local resizes — nothing to tuck or report.)
+            if press.target == PressTarget::Head {
+                if let Some(edge) = self.nearest_edge_within_threshold() {
+                    self.tuck_to(edge);
+                } else {
+                    self.emit_dropped();
+                }
+            }
+            return;
+        }
+        match press.target {
+            PressTarget::Head => {
+                self.emit_clicked();
+                self.toggle_chat();
+            }
+            PressTarget::Input => self.input_focused = true,
+            PressTarget::TorsoAction(action) => {
+                self.input_focused = false;
+                self.on_torso_action(action);
+            }
+            PressTarget::Feet | PressTarget::Bump | PressTarget::Outside => {
+                self.input_focused = false;
+            }
+        }
+    }
+
+    fn on_torso_action(&mut self, action: TorsoAction) {
+        self.speech = Some(match action {
+            TorsoAction::Expand => "Fullscreen image open will land here.".to_string(),
+            TorsoAction::Scroll => "Torso scroll controls will land here.".to_string(),
+        });
+        self.update_input_region();
+    }
+
+    // --- tuck / summon -------------------------------------------------------
+
+    /// If the head currently sits within `TUCK_THRESHOLD` of a screen edge, which edge
+    /// (the nearest). Needs known screen bounds; without them, never tucks.
+    fn nearest_edge_within_threshold(&self) -> Option<presence::Edge> {
+        let (sw, sh) = self.screen?;
+        let head = render::head_rect();
+        let left = self.margin_left + head.x as f64;
+        let top = self.margin_top + head.y as f64;
+        let right = sw - (self.margin_left + (head.x + head.w) as f64);
+        let bottom = sh - (self.margin_top + (head.y + head.h) as f64);
+
+        let candidates = [
+            (presence::Edge::Left, left),
+            (presence::Edge::Right, right),
+            (presence::Edge::Top, top),
+            (presence::Edge::Bottom, bottom),
+        ];
+        candidates
+            .into_iter()
+            .filter(|(_, d)| *d < TUCK_THRESHOLD)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(edge, _)| edge)
+    }
+
+    /// The along-edge coordinate (screen px) of the head's centre — what we report and
+    /// persist so the bump returns to the same spot along the edge.
+    fn tuck_along(&self, edge: presence::Edge) -> f64 {
+        match edge {
+            presence::Edge::Left | presence::Edge::Right => self.margin_top + render::HEAD_CY as f64,
+            presence::Edge::Top | presence::Edge::Bottom => self.margin_left + render::FIG_CX as f64,
+        }
+    }
+
+    /// Tuck against `edge` from a user drag: enter the tucked state, then tell the soul
+    /// (dropped = persist tucked placement; dismissed = lifecycle "now away").
+    fn tuck_to(&mut self, edge: presence::Edge) {
+        let along = self.tuck_along(edge);
+        self.enter_tuck(edge, along);
+        self.send_to_soul(presence::dropped_tucked_json(&self.buddy, edge, along));
+        self.send_to_soul(presence::dismissed_json(&self.buddy));
+    }
+
+    /// Enter (or restore, from a hydrate) the tucked state: snap the surface flush to
+    /// the edge, place the bump at `along`, shrink the input region to the bump.
+    fn enter_tuck(&mut self, edge: presence::Edge, along: f64) {
+        self.chat_open = false;
+        self.input_focused = false;
+        self.speech = None;
+        self.tucked = Some(edge);
+        let (sw, sh) = self.screen.unwrap_or((f64::MAX, f64::MAX));
+        let (surface_w, surface_h) = self.requested_surface_size();
+        if let Some(layer) = self.layer.as_ref() {
+            layer.set_size(render::SURFACE_W, self.layout().surface_h());
+            layer.commit();
+        }
+
+        // Flush axis → snap the surface to the edge; along axis → from `along`.
+        match edge {
+            presence::Edge::Left => {
+                self.margin_left = 0.0;
+                self.margin_top = along - render::HEAD_CY as f64;
+            }
+            presence::Edge::Right => {
+                self.margin_left = sw - surface_w;
+                self.margin_top = along - render::HEAD_CY as f64;
+            }
+            presence::Edge::Top => {
+                self.margin_top = 0.0;
+                self.margin_left = along - render::FIG_CX as f64;
+            }
+            presence::Edge::Bottom => {
+                self.margin_top = sh - surface_h;
+                self.margin_left = along - render::FIG_CX as f64;
+            }
+        }
+        self.clamp_tucked(edge);
+        self.update_input_region();
+        self.reposition();
+    }
+
+    /// Summon the buddy back out of a tuck (user clicked the bump): pop the full figure
+    /// inward off the edge, restore full input, and tell the soul.
+    fn summon(&mut self) {
+        let Some(edge) = self.tucked.take() else { return };
+        let head = render::head_rect();
+        let inset = TUCK_THRESHOLD; // land clear of the tuck zone so it doesn't re-tuck
+        let (sw, sh) = self.screen.unwrap_or((f64::MAX, f64::MAX));
+        match edge {
+            presence::Edge::Left => self.margin_left = -(head.x as f64) + inset,
+            presence::Edge::Right => {
+                self.margin_left = sw - (head.x + head.w) as f64 - inset;
+            }
+            presence::Edge::Top => self.margin_top = -(head.y as f64) + inset,
+            presence::Edge::Bottom => {
+                self.margin_top = sh - (head.y + head.h) as f64 - inset;
+            }
+        }
+        self.clamp_margins();
+        self.update_input_region();
+        self.reposition();
+        self.send_to_soul(presence::summoned_json(&self.buddy));
+    }
+
+    /// Keep the *bump* on-screen along its free axis (the flush axis is pinned to the
+    /// edge). The untucked `clamp_margins` keeps the head on-screen instead.
+    fn clamp_tucked(&mut self, edge: presence::Edge) {
+        let (sw, sh) = match self.screen {
+            Some(s) => s,
+            None => return,
+        };
+        let bump = self.tucked_bump_rect(edge);
+        match edge {
+            presence::Edge::Left | presence::Edge::Right => {
+                let min_top = -(bump.y as f64);
+                let max_top = (sh - (bump.y + bump.h) as f64).max(min_top);
+                self.margin_top = self.margin_top.clamp(min_top, max_top);
+            }
+            presence::Edge::Top | presence::Edge::Bottom => {
+                let min_left = -(bump.x as f64);
+                let max_left = (sw - (bump.x + bump.w) as f64).max(min_left);
+                self.margin_left = self.margin_left.clamp(min_left, max_left);
+            }
+        }
+    }
+
+    // --- presence: report this body's own interaction to the soul ---
+
+    /// Best-effort push of a to-soul event. Dropped silently if the presence thread
+    /// isn't up or no soul is connected — the body never depends on being observed.
+    fn send_to_soul(&self, json: String) {
+        if let Some(tx) = self.presence_out.as_ref() {
+            let _ = tx.send(json);
+        }
+    }
+
+    fn emit_clicked(&self) {
+        self.send_to_soul(presence::clicked_json(&self.buddy, self.margin_left, self.margin_top));
+    }
+
+    fn emit_grabbed(&self) {
+        self.send_to_soul(presence::grabbed_json(&self.buddy, self.margin_left, self.margin_top));
+    }
+
+    fn emit_dropped(&self) {
+        self.send_to_soul(presence::dropped_json(&self.buddy, self.margin_left, self.margin_top));
+    }
+}
+
+impl CompositorHandler for App {
+    fn scale_factor_changed(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _s: &wl_surface::WlSurface, _n: i32) {}
+    fn transform_changed(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _s: &wl_surface::WlSurface, _t: wl_output::Transform) {}
+    fn frame(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _s: &wl_surface::WlSurface, _time: u32) {}
+    /// The compositor's authoritative word on which output the surface actually
+    /// occupies. The startup guess (`outputs().next()`) can name the wrong monitor on
+    /// a multi-output desktop — e.g. clamping to the laptop panel while the buddy
+    /// renders on an external screen, which leaves a dead invisible border. Trust
+    /// `enter` over the guess, and re-derive the clamp bounds from this output. Also
+    /// keeps clamping correct when the buddy is later dragged across monitors.
+    fn surface_enter(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _s: &wl_surface::WlSurface, o: &wl_output::WlOutput) {
+        let Some(info) = self.output_state.info(o) else { return };
+        let size = info
+            .logical_size
+            .or_else(|| info.modes.iter().find(|m| m.current).map(|m| m.dimensions))
+            .map(|(w, h)| (w as f64, h as f64));
+        let Some(new_screen) = size else { return };
+        if self.screen == Some(new_screen) {
+            return;
+        }
+        eprintln!(
+            "[bb-desktop-body] surface entered output {:?}; clamp bounds {:?} -> {:?}",
+            info.name, self.screen, new_screen,
+        );
+        self.screen = Some(new_screen);
+        // Re-clamp against the real screen and push the corrected margins, so a buddy
+        // that started life clamped to the wrong output snaps onto this one.
+        if let Some(edge) = self.tucked {
+            self.clamp_tucked(edge);
+        } else {
+            self.clamp_margins();
+        }
+        self.reposition();
+    }
+    fn surface_leave(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _s: &wl_surface::WlSurface, _o: &wl_output::WlOutput) {}
+}
+
+impl LayerShellHandler for App {
+    fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _layer: &LayerSurface) {
+        self.exit = true;
+        if let Some(signal) = &self.loop_signal {
+            signal.stop();
+        }
+    }
+
+    fn configure(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _layer: &LayerSurface,
+        configure: LayerSurfaceConfigure,
+        _serial: u32,
+    ) {
+        let (nw, nh) = configure.new_size;
+        let size_changed = (nw != 0 && nw != self.width) || (nh != 0 && nh != self.height);
+        if nw != 0 && nh != 0 && size_changed && debug_log_enabled() {
+            eprintln!("[bb-desktop-body] surface resized by compositor to {nw}x{nh}");
+        }
+        if nw != 0 {
+            self.width = nw;
+        }
+        if nh != 0 {
+            self.height = nh;
+        }
+        let first = !self.configured;
+        self.configured = true;
+        if let Some(edge) = self.tucked {
+            self.clamp_tucked(edge);
+            self.update_input_region();
+            self.reposition();
+        } else if first || size_changed {
+            self.update_input_region();
+        }
+        self.draw();
+    }
+}
+
+impl SeatHandler for App {
+    fn seat_state(&mut self) -> &mut SeatState {
+        &mut self.seat_state
+    }
+    fn new_seat(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _s: wl_seat::WlSeat) {}
+    fn new_capability(&mut self, _c: &Connection, qh: &QueueHandle<Self>, seat: wl_seat::WlSeat, capability: Capability) {
+        if capability == Capability::Pointer && self.pointer.is_none() {
+            match self.seat_state.get_pointer(qh, &seat) {
+                Ok(pointer) => {
+                    if let Some(manager) = &self.relative_manager {
+                        self.relative_pointer =
+                            Some(manager.get_relative_pointer(&pointer, qh, ()));
+                    }
+                    self.pointer = Some(pointer);
+                }
+                Err(err) => eprintln!("[bb-desktop-body] could not get pointer: {err}"),
+            }
+        }
+        if capability == Capability::Keyboard && self.keyboard.is_none() {
+            match self.seat_state.get_keyboard(qh, &seat, None) {
+                Ok(keyboard) => self.keyboard = Some(keyboard),
+                Err(err) => eprintln!("[bb-desktop-body] could not get keyboard: {err}"),
+            }
+        }
+    }
+    fn remove_capability(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _s: wl_seat::WlSeat, capability: Capability) {
+        if capability == Capability::Pointer {
+            if let Some(pointer) = self.pointer.take() {
+                pointer.release();
+            }
+        }
+        if capability == Capability::Keyboard {
+            if let Some(keyboard) = self.keyboard.take() {
+                keyboard.release();
+            }
+        }
+    }
+    fn remove_seat(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _s: wl_seat::WlSeat) {}
+}
+
+impl KeyboardHandler for App {
+    fn enter(
+        &mut self,
+        _c: &Connection,
+        _q: &QueueHandle<Self>,
+        _kb: &wl_keyboard::WlKeyboard,
+        _surface: &wl_surface::WlSurface,
+        _serial: u32,
+        _raw: &[u32],
+        _keysyms: &[Keysym],
+    ) {
+    }
+    fn leave(
+        &mut self,
+        _c: &Connection,
+        _q: &QueueHandle<Self>,
+        _kb: &wl_keyboard::WlKeyboard,
+        _surface: &wl_surface::WlSurface,
+        _serial: u32,
+    ) {
+        // Lost keyboard focus (user clicked another window): drop the caret.
+        self.input_focused = false;
+    }
+    fn press_key(
+        &mut self,
+        _c: &Connection,
+        _q: &QueueHandle<Self>,
+        _kb: &wl_keyboard::WlKeyboard,
+        _serial: u32,
+        event: KeyEvent,
+    ) {
+        if self.input_focused {
+            self.on_key(event);
+        }
+    }
+    fn release_key(
+        &mut self,
+        _c: &Connection,
+        _q: &QueueHandle<Self>,
+        _kb: &wl_keyboard::WlKeyboard,
+        _serial: u32,
+        _event: KeyEvent,
+    ) {
+    }
+    fn update_modifiers(
+        &mut self,
+        _c: &Connection,
+        _q: &QueueHandle<Self>,
+        _kb: &wl_keyboard::WlKeyboard,
+        _serial: u32,
+        _modifiers: Modifiers,
+        _layout: u32,
+    ) {
+    }
+}
+
+impl PointerHandler for App {
+    fn pointer_frame(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _pointer: &wl_pointer::WlPointer,
+        events: &[PointerEvent],
+    ) {
+        let Some(surface) = self.layer.as_ref().map(|l| l.wl_surface().clone()) else {
+            return;
+        };
+        for event in events {
+            if event.surface != surface {
+                continue;
+            }
+            let (px, py) = event.position;
+            match event.kind {
+                PointerEventKind::Press { button, .. } => self.on_press(px, py, button),
+                PointerEventKind::Release { .. } => self.on_release(),
+                // Dragging is driven by wp_relative_pointer deltas, not these
+                // surface-local positions (which move with the surface frame).
+                _ => {}
+            }
+        }
+    }
+}
+
+impl ShmHandler for App {
+    fn shm_state(&mut self) -> &mut Shm {
+        &mut self.shm
+    }
+}
+
+impl OutputHandler for App {
+    fn output_state(&mut self) -> &mut OutputState {
+        &mut self.output_state
+    }
+    fn new_output(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _o: wl_output::WlOutput) {}
+    fn update_output(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _o: wl_output::WlOutput) {}
+    fn output_destroyed(&mut self, _c: &Connection, _q: &QueueHandle<Self>, _o: wl_output::WlOutput) {}
+}
+
+impl ProvidesRegistryState for App {
+    fn registry(&mut self) -> &mut RegistryState {
+        &mut self.registry_state
+    }
+    registry_handlers![OutputState, SeatState];
+}
+
+impl Dispatch<ZwpRelativePointerManagerV1, ()> for App {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwpRelativePointerManagerV1,
+        _event: <ZwpRelativePointerManagerV1 as Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<ZwpRelativePointerV1, ()> for App {
+    fn event(
+        state: &mut Self,
+        _proxy: &ZwpRelativePointerV1,
+        event: <ZwpRelativePointerV1 as Proxy>::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        if let RelativePointerEvent::RelativeMotion { dx, dy, .. } = event {
+            state.on_drag_delta(dx, dy);
+        }
+    }
+}
+
+delegate_compositor!(App);
+delegate_output!(App);
+delegate_shm!(App);
+delegate_seat!(App);
+delegate_keyboard!(App);
+delegate_pointer!(App);
+delegate_layer!(App);
+delegate_registry!(App);

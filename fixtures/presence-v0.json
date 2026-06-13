@@ -1,0 +1,248 @@
+{
+  "move_to": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "move_to",
+    "buddy": "hermes",
+    "ts": 1000,
+    "position": {
+      "mode": "anchored",
+      "edge": "right",
+      "offset": {
+        "x": 24,
+        "y": 48
+      }
+    },
+    "transitionMs": 180
+  },
+  "express": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "express",
+    "buddy": "hermes",
+    "ts": 1001,
+    "emotion": "happy",
+    "intensity": 0.8
+  },
+  "say": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "say",
+    "buddy": "hermes",
+    "ts": 1002,
+    "text": "Hi — I'm your setup host."
+  },
+  "attention": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "attention",
+    "buddy": "hermes",
+    "ts": 1003,
+    "focus": "user"
+  },
+  "hydrate": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "hydrate",
+    "buddy": "hermes",
+    "ts": 1004,
+    "position": {
+      "mode": "anchored",
+      "edge": "right",
+      "offset": {
+        "x": 24,
+        "y": 48
+      }
+    },
+    "emotion": "neutral",
+    "speech": "ready",
+    "platform": {
+      "canTrackGeometry": true,
+      "canInjectInput": false,
+      "canClickThrough": true
+    }
+  },
+  "attached": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "attached",
+    "buddy": "hermes",
+    "ts": 1005,
+    "at": {
+      "mode": "anchored",
+      "edge": "right",
+      "offset": {
+        "x": 24,
+        "y": 48
+      }
+    },
+    "capabilities": [
+      "drag",
+      "menu",
+      "say"
+    ]
+  },
+  "clicked": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "clicked",
+    "buddy": "hermes",
+    "ts": 1006,
+    "button": "primary",
+    "at": {
+      "mode": "free",
+      "space": "screen",
+      "x": 800,
+      "y": 120
+    }
+  },
+  "grabbed": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "grabbed",
+    "buddy": "hermes",
+    "ts": 1007,
+    "at": {
+      "mode": "free",
+      "space": "screen",
+      "x": 800,
+      "y": 120
+    }
+  },
+  "dragged": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "dragged",
+    "buddy": "hermes",
+    "ts": 1008,
+    "at": {
+      "mode": "free",
+      "space": "screen",
+      "x": 800,
+      "y": 120
+    }
+  },
+  "dropped": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "dropped",
+    "buddy": "hermes",
+    "ts": 1009,
+    "at": {
+      "mode": "tucked",
+      "edge": "left",
+      "offset": {
+        "x": 0,
+        "y": 400
+      }
+    },
+    "onTarget": "dock"
+  },
+  "summoned": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "summoned",
+    "buddy": "hermes",
+    "ts": 1010
+  },
+  "dismissed": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "dismissed",
+    "buddy": "hermes",
+    "ts": 1011
+  },
+  "said": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "said",
+    "buddy": "hermes",
+    "ts": 1012,
+    "text": "what's on my calendar today?"
+  },
+  "output": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "output",
+    "buddy": "hermes",
+    "ts": 1013,
+    "surface": "image",
+    "mediaType": "image/png",
+    "caption": "a red bicycle",
+    "dataBase64": "iVBORw0KGgo="
+  },
+  "target_acquired": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "target_acquired",
+    "buddy": "hermes",
+    "ts": 1014,
+    "targetId": "win-42",
+    "title": "Firefox",
+    "appId": "org.mozilla.firefox",
+    "bounds": {
+      "x": 320,
+      "y": 180,
+      "w": 1280,
+      "h": 720,
+      "scaleFactor": 2
+    }
+  },
+  "target_moved": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "target_moved",
+    "buddy": "hermes",
+    "ts": 1015,
+    "targetId": "win-42",
+    "bounds": {
+      "x": 320,
+      "y": 180,
+      "w": 1280,
+      "h": 720,
+      "scaleFactor": 2
+    }
+  },
+  "target_lost": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "target_lost",
+    "buddy": "hermes",
+    "ts": 1016,
+    "targetId": "win-42",
+    "reason": "closed"
+  },
+  "target_drag_requested": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "target_drag_requested",
+    "buddy": "hermes",
+    "ts": 1017,
+    "targetId": "win-42",
+    "delta": {
+      "x": 12,
+      "y": -4
+    }
+  },
+  "action_request": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "action_request",
+    "buddy": "hermes",
+    "ts": 1018,
+    "effector": "receipt_review",
+    "requestId": "req-1"
+  },
+  "action_result": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "action_result",
+    "buddy": "hermes",
+    "ts": 1019,
+    "effector": "receipt_review",
+    "decision": "allow",
+    "receiptId": "action:hermes:receipt_review:t0",
+    "requestId": "req-1",
+    "summary": "Opening the receipt ledger."
+  }
+}

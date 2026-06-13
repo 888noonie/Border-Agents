@@ -24,7 +24,7 @@ import {
   normalizeBuddySettings,
 } from "../src/buddyProfiles";
 import { bbLog } from "../src/bbDiagnostics";
-import type { GatewayConnectionState } from "../src/gatewayProtocol";
+import type { GatewayConnectionState, GatewayMedia } from "../src/gatewayProtocol";
 import {
   DEFAULT_GATEWAY_SETTINGS,
   GATEWAY_SETTINGS_STORAGE_KEY,
@@ -73,6 +73,7 @@ import {
   type UserMode,
   type UserModeState,
 } from "../src/userModes";
+import { type UserPosture } from "../src/core/userPosture";
 import "./BorderDock.css";
 
 export interface Hitbox {
@@ -329,6 +330,8 @@ type DockBuddy = {
   color: string;
   accentColor?: string;
   message?: string;
+  // Rich media attached to the latest reply (an image/file), rendered in the panel.
+  media?: GatewayMedia | null;
   visible: "primary" | "faint";
 };
 
@@ -576,6 +579,7 @@ export function BrowserBuddyDock() {
     initialUserModeState.modes[initialUserModeState.activeMode].gateway,
   );
   const [buddyMessages, setBuddyMessages] = useState<Record<string, string>>({});
+  const [buddyMedia, setBuddyMedia] = useState<Record<string, GatewayMedia | null>>({});
   const [governanceSnapshots, setGovernanceSnapshots] = useState<Record<string, BuddyGovernanceSnapshot | null>>({});
   const [ledgerSummary, setLedgerSummary] = useState<ReceiptLedgerSummary>(() =>
     summarizeReceiptLedger(readReceiptLedger()),
@@ -659,10 +663,14 @@ export function BrowserBuddyDock() {
     settings: gatewaySettings,
     source: gatewaySource,
     enabled: gatewayEnabled,
-    onBubble: (buddyId, text) => {
+    onBubble: (buddyId, text, media) => {
       setBuddyMessages((current) => ({
         ...current,
         [buddyId]: text,
+      }));
+      setBuddyMedia((current) => ({
+        ...current,
+        [buddyId]: media ?? null,
       }));
       setActiveAgentId(buddyId);
     },
@@ -1820,6 +1828,18 @@ export function BrowserBuddyDock() {
     }
   }
 
+  function postureToUserMode(posture: UserPosture): UserMode {
+    if (posture === "private") return "adjust";
+    if (posture === "play") return "play";
+    return "work";
+  }
+
+  function userModeToPosture(mode: UserMode): UserPosture {
+    if (mode === "adjust") return "private";
+    if (mode === "play") return "play";
+    return "work";
+  }
+
   function switchUserMode(nextMode: UserMode) {
     markActivity();
 
@@ -1994,6 +2014,7 @@ export function BrowserBuddyDock() {
                       buddyMessages[buddy.id] ??
                       governanceSurfaceCopy.buddyMessages?.[buddy.id as keyof NonNullable<typeof governanceSurfaceCopy.buddyMessages>] ??
                       buddy.message,
+                    media: buddyMedia[buddy.id] ?? null,
                   }}
                   active={buddy.id === activeAgentId}
                   collapsed={dockCollapsed}
@@ -2066,12 +2087,34 @@ export function BrowserBuddyDock() {
                   placement={placements[buddy.id] ?? defaultPlacements[buddy.id]}
                   renderMode={effectiveRenderMode}
                   settings={buddySettings[buddy.id] ?? defaultBuddySettings[buddy.id]}
+                  posture={userModeToPosture(activeUserMode)}
                   onSettingsChange={(settings) =>
                     setBuddySettings((current) => ({
                       ...current,
                       [buddy.id]: normalizeBuddySettings(BUDDY_PROFILES[buddy.id], settings),
                     }))
                   }
+                  onPostureChange={(posture: UserPosture) => switchUserMode(postureToUserMode(posture))}
+                  onPlacementChange={({ enabledBuddyIds, buddyEdges }) => {
+                    setPlacements((current) =>
+                      buddies.reduce<AgentPlacements>((next, b) => {
+                        const existing = current[b.id] ?? defaultPlacements[b.id];
+                        const edge = (buddyEdges[b.id] ?? existing.edge) as Edge;
+                        next[b.id] = { ...existing, edge };
+                        return next;
+                      }, { ...current }),
+                    );
+                    setBuddySettings((current) =>
+                      buddies.reduce<BuddySettingsMap>((next, b) => {
+                        const existing = current[b.id] ?? defaultBuddySettings[b.id];
+                        next[b.id] = normalizeBuddySettings(BUDDY_PROFILES[b.id], {
+                          ...existing,
+                          enabled: enabledBuddyIds.includes(b.id),
+                        });
+                        return next;
+                      }, { ...current }),
+                    );
+                  }}
                 />
               );
             })
@@ -2419,7 +2462,10 @@ function BuddyHotspot({
   onManualTuck,
   renderMode,
   settings,
+  posture,
   onSettingsChange,
+  onPostureChange,
+  onPlacementChange,
   headForceKey,
 }: {
   active: boolean;
@@ -2450,7 +2496,10 @@ function BuddyHotspot({
   onManualTuck: () => void;
   renderMode: DockRenderMode;
   settings: BuddySettings;
+  posture?: UserPosture;
   onSettingsChange: (settings: BuddySettings) => void;
+  onPostureChange?: (posture: UserPosture) => void;
+  onPlacementChange?: (placement: { enabledBuddyIds: readonly string[]; buddyEdges: Readonly<Record<string, string>> }) => void;
   headForceKey?: number;
 }) {
 
@@ -2615,6 +2664,7 @@ function BuddyHotspot({
           interactive={surfaceInteractive}
           preferCenterFit={perBuddyWindow}
           message={buddy.message ?? ""}
+          messageMedia={buddy.media ?? null}
           onGatewayConnect={onGatewayConnect}
           onGatewayDisconnect={onGatewayDisconnect}
           onGatewaySettingsChange={onGatewaySettingsChange}
@@ -2624,7 +2674,10 @@ function BuddyHotspot({
           onRequestDock={onManualTuck}
           onSendChat={onSendChat}
           onSettingsChange={onSettingsChange}
+          onPostureChange={onPostureChange}
+          onPlacementChange={onPlacementChange}
           settings={settings}
+          posture={posture}
         />
 
       ) : null}

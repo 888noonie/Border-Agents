@@ -20,6 +20,7 @@ Thumbs.db
 *.local
 *.pem
 *.key
+.claude/settings.local.json
 
 # Generated diagnostic / improvement reports (living artifacts, not committed source)
 Repo_Improvement_Report.md

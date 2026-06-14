@@ -495,6 +495,20 @@ impl Emotion {
         })
     }
 
+    /// The face a governance `action_result` decision should wear. The face is the fastest,
+    /// most pre-rational channel a user has, so each decision must read DISTINCT at a glance —
+    /// and HONESTLY: this is the trust membrane projecting its real state, never affect that
+    /// outruns the outcome. `allow` smiles, `needs_confirmation` asks (the questioning Curious
+    /// mouth), `blocked` (and any unknown — fail loud) holds the firm open-mouth Alert stop.
+    /// The body only renders the decision it was handed; it never makes it (AGENTS.md law 7).
+    pub fn for_decision(decision: &str) -> Emotion {
+        match decision {
+            "allow" => Emotion::Happy,
+            "needs_confirmation" => Emotion::Curious,
+            _ => Emotion::Alert,
+        }
+    }
+
     fn face(self) -> Face {
         match self {
             Emotion::Neutral => Face { eye_open: 1.0, pupil_dy: 0.0, mouth: Mouth::Smile(0.18) },
@@ -2221,6 +2235,25 @@ mod tests {
     fn feet_sit_below_the_torso() {
         let l = Layout::initial();
         assert!(l.feet_rect().y >= TORSO_TOP + l.body_len - 8.0);
+    }
+
+    #[test]
+    fn governance_decisions_wear_distinct_honest_faces() {
+        // Each decision must read DISTINCT at a glance — the whole point of the face channel.
+        assert_eq!(Emotion::for_decision("allow"), Emotion::Happy);
+        assert_eq!(Emotion::for_decision("needs_confirmation"), Emotion::Curious);
+        assert_eq!(Emotion::for_decision("blocked"), Emotion::Alert);
+        // And they are genuinely three different faces, not aliases.
+        let (allow, ask, block) = (
+            Emotion::for_decision("allow"),
+            Emotion::for_decision("needs_confirmation"),
+            Emotion::for_decision("blocked"),
+        );
+        assert_ne!(allow, ask);
+        assert_ne!(ask, block);
+        assert_ne!(allow, block);
+        // Fail loud: an unknown decision must NOT smile — it holds the alert stop.
+        assert_eq!(Emotion::for_decision("garbage"), Emotion::Alert);
     }
 
     #[test]

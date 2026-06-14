@@ -1075,14 +1075,13 @@ impl App {
                 self.apply_output(&surface, text, caption, media_type, data_base64);
             }
             presence::Cue::ActionResult { effector, decision, summary, .. } => {
-                // Present the soul's authorization outcome — the body renders it, it never
-                // decides it (law 7). A non-`allow` outcome draws an alert expression so the
-                // user notices the gate held or wants confirmation. `needs_confirmation` flips
-                // THIS effector's on-body button (Review or Edit) into Confirm until resolved.
+                // Present the soul's authorization outcome — the body renders it, it never decides
+                // it (law 7). The face is the fastest read: each decision wears a DISTINCT, honest
+                // expression (allow→happy, needs_confirmation→curious, blocked→alert) so a glance
+                // conveys it before any prose. `needs_confirmation` also flips THIS effector's
+                // on-body button (Review or Edit) into Confirm until resolved.
                 self.pending_effector = (decision == "needs_confirmation").then_some(effector);
-                if decision != "allow" {
-                    self.set_emotion(Emotion::Alert);
-                }
+                self.set_emotion(Emotion::for_decision(&decision));
                 if let Some(text) = summary {
                     self.say(text);
                 }

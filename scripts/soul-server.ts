@@ -260,7 +260,20 @@ wss.on("connection", (socket, request) => {
         // else is free text the soul would forward to a provider (not wired in this server).
         const command = parseActionCommand(message.text);
         if (!command) {
-          log("said (free text — no provider wired in soul-server)", { buddy, text: message.text });
+          // Free text. This is the GOVERNANCE soul — it gates actions, it does not forward chat
+          // to a provider (that is the dev gateway / a provider-backed soul's job). Silently
+          // dropping it left the body hung on a "Reply pending — waiting for <buddy>…" promise it
+          // could never keep. Answer honestly instead, so the body clears that false pending: a
+          // pending state must never outrun what the soul can actually deliver.
+          socket.send(
+            JSON.stringify(
+              presence.say(
+                buddy,
+                "I'm the governance soul — I gate actions, I don't relay chat. Try /review or /confirm. (Free conversation needs a provider-backed soul.)",
+              ),
+            ),
+          );
+          log("said (free text — governance soul declined honestly)", { buddy, text: message.text });
           return;
         }
         if (command.kind === "confirm") {

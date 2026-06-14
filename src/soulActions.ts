@@ -34,7 +34,12 @@ import {
   type ExecutorRegistry,
 } from "./effectorExecutors";
 import { buildBuddyGovernanceSnapshot, selectPurpose, type SessionChatLine } from "./liveGovernance";
-import { presence, type PresenceActionIntent, type PresenceActionResult } from "./presenceProtocol";
+import {
+  presence,
+  type PresenceActionIntent,
+  type PresenceActionResult,
+  type PresenceEmotion,
+} from "./presenceProtocol";
 import { appendActionReceiptToLedger, appendExecutionReceiptToLedger } from "./receiptLedger";
 
 const LOCAL_PROVIDERS = new Set<RouteProvider>(["lm_studio", "ollama"]);
@@ -107,6 +112,25 @@ export function presenceIntentToActionIntent(
     ...(wire.payloadDigest ? { payloadDigest: wire.payloadDigest } : {}),
     summary: wire.summary && wire.summary.length > 0 ? wire.summary : `${wire.operation} ${value}`,
   };
+}
+
+/**
+ * The honest governance face for a gate decision — the soul's authoritative mood for an
+ * action outcome (AGENTS.md law 7: mood belongs to the soul, expressed as an `express` cue).
+ * Twin of the native body's `Emotion::for_decision` in desktop-body/src/render.rs: `allow`
+ * smiles, `needs_confirmation` asks (the questioning curious mouth), and `blocked` — or ANY
+ * unknown decision — fails loud as `alert`. Affect must never outrun the outcome: a face that
+ * smiled while the gate overrode something would spend instant-trust dishonestly.
+ */
+export function decisionEmotion(decision: string): PresenceEmotion {
+  switch (decision) {
+    case "allow":
+      return "happy";
+    case "needs_confirmation":
+      return "curious";
+    default:
+      return "alert";
+  }
 }
 
 function summarize(receipt: ActionReceipt, label: string, execution?: ExecutionReceipt): string {

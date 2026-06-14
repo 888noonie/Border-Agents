@@ -26,7 +26,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 
-import { handleActionRequest, parseActionCommand, presenceIntentToActionIntent } from "../src/soulActions";
+import {
+  handleActionRequest,
+  parseActionCommand,
+  presenceIntentToActionIntent,
+  decisionEmotion,
+} from "../src/soulActions";
 import { createLiveRepoEditExecutor } from "./liveEffectorExecutors";
 import {
   PRESENCE_PROTOCOL,
@@ -137,6 +142,11 @@ function authorizeAndReply(
   requestId?: string,
   intent?: ActionIntent,
 ) {
+  // The soul projects its own state the instant it begins weighing — the deliberation face.
+  // Synchronous here (microseconds), but this is the seam a future provider-backed soul that
+  // genuinely thinks for seconds lights up automatically: the body shows `thinking`, then the
+  // honest outcome face below. Mood belongs to the soul (law 7), so it announces both.
+  socket.send(JSON.stringify(presence.express(buddy, "thinking")));
   const { receipt, result, execution } = handleActionRequest({
     buddy,
     effectorId,
@@ -160,6 +170,10 @@ function authorizeAndReply(
     pending.delete(buddy);
     pendingIntent.delete(buddy);
   }
+  // The honest outcome face, derived from the real receipt — sent BEFORE the result so the
+  // soul is the authoritative source of mood. The native body's `Emotion::for_decision` is the
+  // designed twin/fallback; they agree, so there is no flicker, never a smile that outruns a block.
+  socket.send(JSON.stringify(presence.express(buddy, decisionEmotion(receipt.decision))));
   socket.send(JSON.stringify(result));
   log("authorized", {
     buddy,

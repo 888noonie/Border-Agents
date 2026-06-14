@@ -23,6 +23,7 @@ import {
   type ActionIntent,
   type ActionReceipt,
   type ActionRoute,
+  type ActionTarget,
   type ExecutionReceipt,
   type SafeContextFrame,
   type UserPosture,
@@ -33,7 +34,7 @@ import {
   type ExecutorRegistry,
 } from "./effectorExecutors";
 import { buildBuddyGovernanceSnapshot, selectPurpose, type SessionChatLine } from "./liveGovernance";
-import { presence, type PresenceActionResult } from "./presenceProtocol";
+import { presence, type PresenceActionIntent, type PresenceActionResult } from "./presenceProtocol";
 import { appendActionReceiptToLedger, appendExecutionReceiptToLedger } from "./receiptLedger";
 
 const LOCAL_PROVIDERS = new Set<RouteProvider>(["lm_studio", "ollama"]);
@@ -76,6 +77,36 @@ export function parseActionCommand(text: string): ActionCommand | null {
     return target ? { kind: "review", effectorId, target } : { kind: "review", effectorId };
   }
   return null;
+}
+
+/**
+ * Lift a wire `PresenceActionIntent` (the typed cue a body fills on an `action_request`) into
+ * the core `ActionIntent` the gate authorizes. This is the soul half of the wire membrane: only
+ * a typed intent with a CONCRETE target may authorize an `act` effector, so an intent whose
+ * target is `none` (or absent, or value-less) yields `undefined` — the request degrades to
+ * grant-only and any act effector fails closed. The body fills these fields; the soul (here)
+ * validates and lifts them — never the body (AGENTS.md law 7). `summary` is synthesized from the
+ * operation + target when the body omitted it, so every authorized effect still pins a label.
+ */
+export function presenceIntentToActionIntent(
+  effectorId: EffectorId,
+  wire: PresenceActionIntent | undefined,
+): ActionIntent | undefined {
+  if (!wire) return undefined;
+  const kind = wire.target?.kind;
+  const value = wire.target?.value;
+  // No concrete target → nothing to authorize an effect against. Grant-only request.
+  if (!kind || kind === "none" || typeof value !== "string" || value.length === 0) {
+    return undefined;
+  }
+  const target: ActionTarget = { kind, path: value };
+  return {
+    effectorId,
+    operation: wire.operation,
+    target,
+    ...(wire.payloadDigest ? { payloadDigest: wire.payloadDigest } : {}),
+    summary: wire.summary && wire.summary.length > 0 ? wire.summary : `${wire.operation} ${value}`,
+  };
 }
 
 function summarize(receipt: ActionReceipt, label: string, execution?: ExecutionReceipt): string {

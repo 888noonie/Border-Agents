@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { handleActionRequest, parseActionCommand } from "../soulActions";
+import { handleActionRequest, parseActionCommand, presenceIntentToActionIntent } from "../soulActions";
 import { readReceiptLedger } from "../receiptLedger";
 import type { BuddySettings } from "../buddyProfiles";
 import type { SessionChatLine } from "../liveGovernance";
@@ -322,5 +322,49 @@ describe("parseActionCommand", () => {
     expect(parseActionCommand("/reviewer")).toBeNull(); // must be /review or "/review "
     expect(parseActionCommand("/confirming")).toBeNull();
     expect(parseActionCommand("")).toBeNull();
+  });
+});
+
+describe("presenceIntentToActionIntent", () => {
+  test("lifts a concrete repo_path intent into a core ActionIntent", () => {
+    const intent = presenceIntentToActionIntent("repo_edit", {
+      operation: "write_patch",
+      target: { kind: "repo_path", value: ".border-agents/proofs/notes.md" },
+      summary: "write notes.md",
+    });
+    expect(intent).toEqual({
+      effectorId: "repo_edit",
+      operation: "write_patch",
+      target: { kind: "repo_path", path: ".border-agents/proofs/notes.md" },
+      summary: "write notes.md",
+    });
+  });
+
+  test("synthesizes a summary when the body omits one", () => {
+    const intent = presenceIntentToActionIntent("repo_edit", {
+      operation: "write_patch",
+      target: { kind: "repo_path", value: "x.md" },
+    });
+    expect(intent?.summary).toBe("write_patch x.md");
+  });
+
+  test("carries an optional payloadDigest through verbatim", () => {
+    const intent = presenceIntentToActionIntent("repo_edit", {
+      operation: "apply_patch",
+      target: { kind: "repo_path", value: "x.md" },
+      payloadDigest: "sha256:abc",
+    });
+    expect(intent?.payloadDigest).toBe("sha256:abc");
+  });
+
+  test("a none / value-less / absent target degrades to undefined (grant-only, fails closed)", () => {
+    expect(presenceIntentToActionIntent("repo_edit", undefined)).toBeUndefined();
+    expect(
+      presenceIntentToActionIntent("repo_edit", { operation: "noop", target: { kind: "none" } }),
+    ).toBeUndefined();
+    expect(
+      presenceIntentToActionIntent("repo_edit", { operation: "write_patch", target: { kind: "repo_path" } }),
+    ).toBeUndefined();
+    expect(presenceIntentToActionIntent("repo_edit", { operation: "write_patch" })).toBeUndefined();
   });
 });

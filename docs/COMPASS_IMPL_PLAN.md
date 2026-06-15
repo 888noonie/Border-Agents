@@ -95,7 +95,7 @@ Additive, non-breaking — existing bodies ignore unknown fields.
 
 Gate at this checkpoint: `npx tsc --noEmit` clean; full `npx vitest run` → **213 passed**.
 
-### 1c · Soul pushes new fields — NEXT
+### 1c · Soul pushes new fields ✅ LANDED (commit 425ae19)
 
 **File**: `scripts/soul-server.ts`
 
@@ -110,7 +110,9 @@ On `surface_active`, build `route` from the active route (omit `health` until Sl
 //   route: { label: providerLabel, locality } })
 ```
 
-### 1d · Rust body — PassportCard render
+Gate at this checkpoint: `npx tsc --noEmit` clean; full `npx vitest run` → **214 passed**.
+
+### 1d · Rust body — PassportCard render ✅ LANDED (commit 7b48312)
 
 **Scope guard (Grok):** `PassportCard` supersedes `SessionCard` **at idle only**. The `Text` /
 `Image` / `ImageStub` / `FileStub` output paths stay exactly as they are — `output_preview` is a
@@ -147,21 +149,20 @@ pub struct PassportCard<'a> {
 - Provider name: truncated at ~80px with ellipsis if needed
 - Font sizes: row 0 = 11px bold, row 1 = 10px, output = 10px regular
 
-**Add `TorsoOutput::Passport(PassportCard<'a>)` variant** and dispatch in `draw_torso_output()`.
+**Added `TorsoOutput::Passport(PassportCard<'a>)` variant** and dispatch in `draw_torso_output()`.
 
-**Update `BodyView`** (or wherever `TorsoOutput` is assembled from presence state) to emit `Passport` when `surface_active` has been received with at least `posture`.
+**Updated `BodyView`** assembly to emit `Passport` for the idle/status surface state while keeping full output cards untouched.
 
-### 1e · Presence state bridge
+### 1e · Presence state bridge ✅ LANDED (commit 7b48312)
 
 **File**: `desktop-body/src/presence.rs`
 
-The `Cue::SurfaceActive` handler should populate the new `route` (label/locality) on whatever body
-state struct holds it, and trigger a `Passport` torso re-render. `presence.rs` **hand-parses** the
+The `Cue::SurfaceActive` handler populates the new `route` (label/locality) on body state and
+triggers a `Passport` torso re-render. `presence.rs` **hand-parses** the
 JSON `Value` — additive wire fields are silently ignored, never fatal (no `#[serde(default)]`
-needed). Extend the `Cue::SurfaceActive` / `Cue::ActionResult` variants + their `parse_to_body`
-match arms; the risk is the field is *never read*, not that the frame drops.
+needed). `Cue::SurfaceActive` / `Cue::ActionResult` variants and parse arms now read the landed fields.
 
-### 1f · Fixture + cross-language parity gate (new — Step 4 discipline)
+### 1f · Fixture + cross-language parity gate ✅ LANDED (commit 7b48312)
 
 The new fields must round-trip the golden fixtures, or the Rust body and TS soul silently diverge:
 
@@ -173,6 +174,13 @@ cd desktop-body && cargo test  # parses_surface_active_fixture etc. must stay gr
 Plus a `render.rs` layout regression test (pattern exists beside `Emotion::for_decision`) asserting
 `PassportCard` rows fit within `TORSO_W = 142`. COSMIC visual smoke is human-only — don't block the
 commit on it.
+
+Gate at this checkpoint: `npm run gen:fixtures` clean; `cd desktop-body && cargo test` → **41 passed**.
+
+### Slice 1 follow-ups (non-blocking)
+
+- **Persona label truncation**: row 0 shares width between the persona label and posture tag, so long labels such as `Border Wizard` truncate to `Border W...`. Fix later in `draw_passport_card()` row-0 geometry by moving the posture tag to a corner lane or normalizing persona labels before truncation.
+- **Empty idle speech bubble**: the blank pill can still render when `speech` is empty. The passport idle peek now carries the status text that justified the bubble, so a later pass should suppress empty idle speech bubbles.
 
 ---
 
@@ -296,9 +304,9 @@ effectors?: { id: string; granted: boolean }[];
 | Slice | Deliverable | Tests gate | Status |
 |-------|------------|-----------|--------|
 | 1a–b | `alertLevel` on action_result + `route` on surface_active; tests pin the contract | `tsc` clean · vitest 213 ✅ | **DONE** |
-| 1c | Soul pushes `decisionAlertLevel` + `route` | round-trip via soul-server | next |
-| 1d–e | Rust passport torso (idle only; keep output paths) | `render.rs` layout regression test | charter-1 |
-| 1f | `gen:fixtures` + `cargo test` parity | golden fixture parity | charter-1 |
+| 1c | Soul pushes `decisionAlertLevel` + `route` | `tsc` clean · vitest 214 ✅ | **DONE** |
+| 1d–e | Rust passport torso (idle only; keep output paths) | `render.rs` layout regression test ✅ | **DONE** |
+| 1f | `gen:fixtures` + `cargo test` parity | cargo 41 ✅ | **DONE** |
 | 2a | Arrow cycle + soul-pushed availability dim | surface_request round-trip | charter |
 | 2b | Hold-to-bloom dial (separate input subsystem) | own harness | charter |
 | 3 | `route.health` ring (needs soul derivation spec) | health-derivation unit test | charter |

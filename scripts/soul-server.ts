@@ -212,6 +212,13 @@ function localChatRoute(): ActionRoute {
   return { provider: "lm_studio", locality: "local", downgraded: false };
 }
 
+/** On-device providers run `local`; everything else is `cloud`. Mirrors the local lane in
+ * buddyManifest routes (`lm_studio`, `ollama`). `health` is omitted until Slice 3. */
+const LOCAL_PROVIDERS: ReadonlySet<string> = new Set(["lm_studio", "ollama"]);
+function routeLocality(provider: string): "local" | "cloud" {
+  return LOCAL_PROVIDERS.has(provider) ? "local" : "cloud";
+}
+
 function surfaceIntent(surfaceId: SurfaceId): ActionIntent | undefined {
   const surface = getSurface(surfaceId);
   if (!surface?.effectorId) return undefined;
@@ -233,13 +240,18 @@ function activateSurface(socket: WebSocket, buddy: string, surfaceId: SurfaceId,
   if (surface.id !== "private_local_chat") {
     localChatHistory.delete(buddy);
   }
+  const provider = surface.provider;
+  const route = provider
+    ? { label: providerLabel(provider) ?? provider, locality: routeLocality(provider) }
+    : undefined;
   socket.send(
     JSON.stringify(
       presence.surfaceActive(buddy, {
         surface: surface.id,
         posture: surface.posture,
         label: surface.label,
-        providerLabel: providerLabel(surface.provider),
+        providerLabel: providerLabel(provider),
+        ...(route ? { route } : {}),
       }),
     ),
   );

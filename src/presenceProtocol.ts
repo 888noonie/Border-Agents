@@ -64,6 +64,24 @@ export const PRESENCE_EMOTIONS: readonly PresenceEmotion[] = [
 ];
 
 /**
+ * Glanceable governance alert tier — the chrome (passport tint, later the route ring)
+ * the body paints alongside the face. It rides on `action_result`, NOT `express`, so the
+ * face (`decision` → `Emotion::for_decision`) and the chrome (`alertLevel`) derive from one
+ * event and one truth: the body never infers policy status from a facial-expression string
+ * (law 7), and there is no express/action_result ordering race. `quiet` is the resting tier;
+ * unknown decisions fail loud at `critical`, never a reassuring `quiet`.
+ */
+export type PresenceAlertLevel = "quiet" | "ready" | "confirm" | "blocked" | "critical";
+
+export const PRESENCE_ALERT_LEVELS: readonly PresenceAlertLevel[] = [
+  "quiet",
+  "ready",
+  "confirm",
+  "blocked",
+  "critical",
+];
+
+/**
  * Body-agnostic position. `anchored` floats the *whole* buddy near a screen edge
  * with a pixel offset (maps to layer-shell anchor+margin); `tucked` parks it flush
  * against an edge in a minimized form (the body shows only a tucked bump/peek, not
@@ -256,8 +274,26 @@ export type PresenceActionResult = PresenceEnvelope<
     requestId?: string;
     summary?: string;
     outcome?: PresenceActionOutcome;
+    /**
+     * Chrome twin of `decision` — the soul derives it (src/soulActions.ts
+     * `decisionAlertLevel`) so the body tints the passport/ring from this one cue
+     * instead of re-deriving policy state locally. Optional/additive (v0).
+     */
+    alertLevel?: PresenceAlertLevel;
   }
 >;
+
+/**
+ * The route the active surface is riding — provider label, where it runs (`locality`), and
+ * its `health`. Carried as one nested object (not a flat `locality`) so the Slice 1 passport
+ * row and the Slice 3 outer route ring read the same shape and no field has to migrate later.
+ * `health` is optional: the soul omits it until route health derivation lands (Slice 3).
+ */
+export type SurfaceRoute = {
+  label: string;
+  locality: "local" | "cloud";
+  health?: "ready" | "degraded" | "unavailable";
+};
 
 export type PresenceSurfaceActive = PresenceEnvelope<
   "surface_active",
@@ -266,6 +302,7 @@ export type PresenceSurfaceActive = PresenceEnvelope<
     posture: UserPosture;
     label?: string;
     providerLabel?: string;
+    route?: SurfaceRoute;
   }
 >;
 
@@ -493,6 +530,25 @@ function isEmotion(value: unknown): value is PresenceEmotion {
   return (PRESENCE_EMOTIONS as readonly unknown[]).includes(value);
 }
 
+function isAlertLevel(value: unknown): value is PresenceAlertLevel {
+  return (PRESENCE_ALERT_LEVELS as readonly unknown[]).includes(value);
+}
+
+function isSurfaceRoute(value: unknown): value is SurfaceRoute {
+  if (!isObject(value)) return false;
+  if (!isNonEmptyString(value.label)) return false;
+  if (value.locality !== "local" && value.locality !== "cloud") return false;
+  if (
+    value.health !== undefined &&
+    value.health !== "ready" &&
+    value.health !== "degraded" &&
+    value.health !== "unavailable"
+  ) {
+    return false;
+  }
+  return true;
+}
+
 function isPosition(value: unknown): value is PresencePosition {
   if (!isObject(value)) {
     return false;
@@ -634,14 +690,16 @@ function isValidForKind(kind: PresenceKind, raw: Record<string, unknown>): boole
         isNonEmptyString(raw.receiptId) &&
         (raw.requestId === undefined || typeof raw.requestId === "string") &&
         (raw.summary === undefined || typeof raw.summary === "string") &&
-        (raw.outcome === undefined || isActionOutcome(raw.outcome))
+        (raw.outcome === undefined || isActionOutcome(raw.outcome)) &&
+        (raw.alertLevel === undefined || isAlertLevel(raw.alertLevel))
       );
     case "surface_active":
       return (
         isNonEmptyString(raw.surface) &&
         isUserPosture(raw.posture) &&
         (raw.label === undefined || typeof raw.label === "string") &&
-        (raw.providerLabel === undefined || typeof raw.providerLabel === "string")
+        (raw.providerLabel === undefined || typeof raw.providerLabel === "string") &&
+        (raw.route === undefined || isSurfaceRoute(raw.route))
       );
     case "target_acquired":
       return (
@@ -822,6 +880,7 @@ export const presence = {
       requestId?: string;
       summary?: string;
       outcome?: PresenceActionOutcome;
+      alertLevel?: PresenceAlertLevel;
     },
     opts: EnvelopeOptions = {},
   ): PresenceActionResult {
@@ -829,7 +888,13 @@ export const presence = {
   },
   surfaceActive(
     buddy: string,
-    payload: { surface: string; posture: UserPosture; label?: string; providerLabel?: string },
+    payload: {
+      surface: string;
+      posture: UserPosture;
+      label?: string;
+      providerLabel?: string;
+      route?: SurfaceRoute;
+    },
     opts: EnvelopeOptions = {},
   ): PresenceSurfaceActive {
     return envelope("surface_active", buddy, { ...payload }, opts) as PresenceSurfaceActive;

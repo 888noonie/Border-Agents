@@ -4,6 +4,7 @@ import {
   parseActionCommand,
   presenceIntentToActionIntent,
   decisionEmotion,
+  decisionAlertLevel,
 } from "../soulActions";
 import { readReceiptLedger } from "../receiptLedger";
 import type { BuddySettings } from "../buddyProfiles";
@@ -56,6 +57,35 @@ describe("handleActionRequest", () => {
     expect(result.decision).toBe("blocked");
     expect(result.receiptId).toBe(receipt.receipt_id);
     expect(readReceiptLedger(storage)).toHaveLength(1);
+  });
+
+  test("the action_result cue carries alertLevel as the chrome twin of its decision", () => {
+    const storage = memoryStorage();
+    // blocked path — unknown effector → decision "blocked" → alertLevel "blocked"
+    const blocked = handleActionRequest({
+      buddy: "veritas",
+      effectorId: "definitely_not_an_effector",
+      settings: BASE_SETTINGS,
+      posture: "work",
+      history: ACTION_HISTORY,
+      storage,
+      now: "2026-06-13T12:00:00Z",
+    });
+    expect(blocked.result.decision).toBe("blocked");
+    expect(blocked.result.alertLevel).toBe("blocked");
+
+    // allow path — low-risk receipt_review under play → decision "allow" → alertLevel "ready"
+    const allowed = handleActionRequest({
+      buddy: "veritas",
+      effectorId: "receipt_review",
+      settings: BASE_SETTINGS,
+      posture: "play",
+      history: [{ role: "user", text: "What changed today?" }],
+      storage,
+      now: "2026-06-13T12:00:01Z",
+    });
+    expect(allowed.result.decision).toBe("allow");
+    expect(allowed.result.alertLevel).toBe("ready");
   });
 
   test("low-risk receipt_review under play posture is allowed and recorded", () => {
@@ -437,5 +467,29 @@ describe("decisionEmotion", () => {
     expect(decisionEmotion("allow")).toBe("happy"); //              → Emotion::Happy
     expect(decisionEmotion("needs_confirmation")).toBe("curious"); // → Emotion::Curious
     expect(decisionEmotion("blocked")).toBe("alert"); //            → Emotion::Alert
+  });
+});
+
+describe("decisionAlertLevel", () => {
+  test("each gate decision maps to its passport/ring alert tier", () => {
+    expect(decisionAlertLevel("allow")).toBe("ready");
+    expect(decisionAlertLevel("needs_confirmation")).toBe("confirm");
+    expect(decisionAlertLevel("blocked")).toBe("blocked");
+  });
+
+  test("any unknown decision fails loud at the top tier (critical), never quiet", () => {
+    expect(decisionAlertLevel("garbage")).toBe("critical");
+    expect(decisionAlertLevel("")).toBe("critical");
+  });
+
+  test("face and chrome derive from one decision (Law 7 — body never infers policy)", () => {
+    // The emotion twin colours the face; the alert twin colours the passport/ring. They are
+    // sent together on action_result so the body reads chrome from a cue, not from the face.
+    expect([decisionEmotion("allow"), decisionAlertLevel("allow")]).toEqual(["happy", "ready"]);
+    expect([decisionEmotion("needs_confirmation"), decisionAlertLevel("needs_confirmation")]).toEqual([
+      "curious",
+      "confirm",
+    ]);
+    expect([decisionEmotion("blocked"), decisionAlertLevel("blocked")]).toEqual(["alert", "blocked"]);
   });
 });

@@ -78,7 +78,7 @@ describe("presence protocol round-trips", () => {
     ),
     presence.output("hermes", { surface: "session" }, { ts: 18 }),
     presence.surfaceRequest("hermes", "private_local_chat", { ts: 19 }),
-    presence.surfaceActive("hermes", { surface: "private_local_chat", posture: "private", label: "Private local chat", providerLabel: "LM Studio" }, { ts: 20 }),
+    presence.surfaceActive("hermes", { surface: "private_local_chat", posture: "private", label: "Private local chat", providerLabel: "LM Studio", route: { label: "LM Studio", locality: "local" } }, { ts: 20 }),
   ];
 
   test.each(cases)("survives JSON serialization: $kind", (message) => {
@@ -225,7 +225,13 @@ describe("action gate cues", () => {
       overTheWire(
         presence.surfaceActive(
           "aether",
-          { surface: "private_local_chat", posture: "private", label: "Private local chat", providerLabel: "LM Studio" },
+          {
+            surface: "private_local_chat",
+            posture: "private",
+            label: "Private local chat",
+            providerLabel: "LM Studio",
+            route: { label: "LM Studio", locality: "local" },
+          },
           { ts: 2 },
         ),
       ),
@@ -234,7 +240,86 @@ describe("action gate cues", () => {
       surface: "private_local_chat",
       posture: "private",
       providerLabel: "LM Studio",
+      route: { label: "LM Studio", locality: "local" },
     });
+  });
+
+  test("action_result carries the alertLevel chrome twin of decision and round-trips", () => {
+    const result = presence.actionResult(
+      "veritas",
+      {
+        effector: "receipt_review",
+        decision: "blocked",
+        receiptId: "action:veritas:receipt_review:t",
+        alertLevel: "blocked",
+      },
+      { ts: 1 },
+    );
+    expect(overTheWire(result)).toMatchObject({
+      kind: "action_result",
+      decision: "blocked",
+      alertLevel: "blocked",
+    });
+  });
+
+  test("rejects an action_result with an unknown alertLevel literal", () => {
+    expect(
+      parsePresenceMessage({
+        protocol: PRESENCE_PROTOCOL,
+        v: 0,
+        kind: "action_result",
+        buddy: "veritas",
+        ts: 1,
+        effector: "receipt_review",
+        decision: "allow",
+        receiptId: "r1",
+        alertLevel: "loud",
+      }),
+    ).toBeNull();
+  });
+
+  test("surface_active carries a route object (with optional health) and round-trips", () => {
+    const active = presence.surfaceActive(
+      "aether",
+      {
+        surface: "claude_code",
+        posture: "work",
+        providerLabel: "Codex",
+        route: { label: "Codex", locality: "cloud", health: "degraded" },
+      },
+      { ts: 1 },
+    );
+    expect(overTheWire(active)).toMatchObject({
+      kind: "surface_active",
+      route: { label: "Codex", locality: "cloud", health: "degraded" },
+    });
+  });
+
+  test("rejects a surface_active route with an unknown locality or health", () => {
+    expect(
+      parsePresenceMessage({
+        protocol: PRESENCE_PROTOCOL,
+        v: 0,
+        kind: "surface_active",
+        buddy: "aether",
+        ts: 1,
+        surface: "claude_code",
+        posture: "work",
+        route: { label: "Codex", locality: "edge" },
+      }),
+    ).toBeNull();
+    expect(
+      parsePresenceMessage({
+        protocol: PRESENCE_PROTOCOL,
+        v: 0,
+        kind: "surface_active",
+        buddy: "aether",
+        ts: 1,
+        surface: "claude_code",
+        posture: "work",
+        route: { label: "Codex", locality: "cloud", health: "flaky" },
+      }),
+    ).toBeNull();
   });
 
   test("rejects a malformed intent (target with an unknown kind)", () => {

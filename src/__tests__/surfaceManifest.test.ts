@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { EFFECTOR_SPECS } from "../buddyManifest";
-import { getSurface, isSurfaceId, SURFACE_ORDER, SURFACES, surfaceById } from "../surfaceManifest";
+import {
+  getSurface,
+  isSurfaceId,
+  surfaceAvailability,
+  SURFACE_ORDER,
+  SURFACES,
+  surfaceById,
+} from "../surfaceManifest";
 
 describe("surface manifest", () => {
   it("orders real and placeholder surfaces from declarative data", () => {
@@ -29,5 +36,27 @@ describe("surface manifest", () => {
       expect(EFFECTOR_SPECS[effectorId!]).toBeDefined();
       expect(EFFECTOR_SPECS[effectorId!].wired, `${id} should block as unwired`).toBe(false);
     }
+  });
+});
+
+describe("surface availability taxonomy", () => {
+  it("classifies presentational surfaces as available (no effector needed)", () => {
+    expect(surfaceAvailability("session")).toBe("available");
+    expect(surfaceAvailability("customize")).toBe("available");
+  });
+
+  it("classifies a wired-effector surface as gated (reachable, needs soul authorization)", () => {
+    expect(EFFECTOR_SPECS.local_chat.wired).toBe(true);
+    expect(surfaceAvailability("private_local_chat")).toBe("gated");
+  });
+
+  it("classifies known-but-unwired placeholder surfaces as unwired", () => {
+    for (const id of ["claude_code", "live_hermes", "agent_zero"] as const) {
+      expect(surfaceAvailability(id)).toBe("unwired");
+    }
+  });
+
+  it("degrades an unknown surface id to available rather than throwing", () => {
+    expect(surfaceAvailability("not-a-surface")).toBe("available");
   });
 });

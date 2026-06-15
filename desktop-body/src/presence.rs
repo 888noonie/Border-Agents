@@ -446,6 +446,10 @@ pub enum Cue {
         posture: String,
         label: Option<String>,
         provider_label: Option<String>,
+        /// The route the active surface rides — provider label, `local|cloud` locality, and
+        /// optional `ready|degraded|unavailable` health. Mirrors the TS `SurfaceRoute`; one
+        /// nested object so the passport row and a future route ring read the same shape.
+        route: Option<SurfaceRoute>,
     },
     /// Border-target tracking (the "Morph Frame" seam): a platform driver tells the body
     /// where a native OS window is so it can wrap its hollow torso around it. Split three
@@ -455,6 +459,16 @@ pub enum Cue {
     TargetAcquired { target_id: String, title: String, app_id: String, bounds: TargetBounds },
     TargetMoved { target_id: String, bounds: TargetBounds },
     TargetLost { target_id: String, reason: TargetLostReason },
+}
+
+/// The route an active surface is riding. Mirrors the TS `SurfaceRoute`: `locality` is the
+/// closed set `local | cloud`; `health` is optional (`ready | degraded | unavailable`) and
+/// stays `None` until the soul derives it (Slice 3).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SurfaceRoute {
+    pub label: String,
+    pub locality: String,
+    pub health: Option<String>,
 }
 
 /// The provider route that carried an executed effect. Mirrors the TS `PresenceActionOutcome`
@@ -560,6 +574,30 @@ fn parse_action_outcome(v: &Value) -> Option<ActionOutcome> {
     Some(ActionOutcome { executed, execution_receipt_id, route })
 }
 
+/// Parse a `route` object (the value, not the parent). `label` must be non-empty and `locality`
+/// one of `local|cloud`; if `health` is present it must be one of `ready|degraded|unavailable`.
+/// Returns `None` on a malformed route so the caller's `?` drops the whole cue (closed sets, not
+/// free strings), matching the TS `isSurfaceRoute` guard. An *absent* route is handled by the
+/// caller (it never calls this), so `None` here unambiguously means "present but invalid".
+fn parse_surface_route(r: &Value) -> Option<SurfaceRoute> {
+    let label = nonempty(r.get("label"))?;
+    let locality = r.get("locality")?.as_str()?.to_string();
+    if !matches!(locality.as_str(), "local" | "cloud") {
+        return None;
+    }
+    let health = match r.get("health") {
+        None => None,
+        Some(h) => {
+            let h = h.as_str()?.to_string();
+            if !matches!(h.as_str(), "ready" | "degraded" | "unavailable") {
+                return None;
+            }
+            Some(h)
+        }
+    };
+    Some(SurfaceRoute { label, locality, health })
+}
+
 /// A required, non-empty string field (mirrors the TS `isNonEmptyString` guard).
 fn nonempty(value: Option<&Value>) -> Option<String> {
     let s = value?.as_str()?;
@@ -649,11 +687,17 @@ pub fn parse_to_body(text: &str) -> Option<ToBody> {
             if !matches!(posture.as_str(), "work" | "play" | "private") {
                 return None;
             }
+            // Absent route → None (valid); present-but-malformed → `?` drops the cue.
+            let route = match v.get("route") {
+                None => None,
+                Some(r) => Some(parse_surface_route(r)?),
+            };
             Cue::SurfaceActive {
                 surface,
                 posture,
                 label: v.get("label").and_then(|s| s.as_str()).map(String::from),
                 provider_label: v.get("providerLabel").and_then(|s| s.as_str()).map(String::from),
+                route,
             }
         }
         "target_acquired" => Cue::TargetAcquired {
@@ -834,8 +878,36 @@ mod tests {
                 posture: "private".into(),
                 label: Some("Private local chat".into()),
                 provider_label: Some("LM Studio".into()),
+                // The nested route crosses the wire and parses identically (Slice 1); `health`
+                // stays None until the soul derives it (Slice 3).
+                route: Some(SurfaceRoute {
+                    label: "LM Studio".into(),
+                    locality: "local".into(),
+                    health: None,
+                }),
             }
         );
+    }
+
+    #[test]
+    fn surface_active_route_validates_closed_sets() {
+        let base = r#"{"protocol":"presence","v":0,"kind":"surface_active","buddy":"h","ts":1,"surface":"claude_code","posture":"work""#;
+        // A present-but-malformed route (bad locality) drops the whole cue.
+        assert!(parse_to_body(&format!(r#"{base},"route":{{"label":"Codex","locality":"orbit"}}}}"#)).is_none());
+        // A bad health value also drops it.
+        assert!(parse_to_body(&format!(r#"{base},"route":{{"label":"Codex","locality":"cloud","health":"flaky"}}}}"#)).is_none());
+        // A well-formed route (with optional health) parses.
+        let ok = parse_to_body(&format!(r#"{base},"route":{{"label":"Codex","locality":"cloud","health":"degraded"}}}}"#)).unwrap();
+        match ok.cue {
+            Cue::SurfaceActive { route, .. } => {
+                let route = route.expect("well-formed route parses");
+                assert_eq!(route.locality, "cloud");
+                assert_eq!(route.health.as_deref(), Some("degraded"));
+            }
+            other => panic!("expected SurfaceActive, got {other:?}"),
+        }
+        // An absent route is valid (additive field): the cue still parses.
+        assert!(parse_to_body(&format!(r#"{base}}}"#)).is_some());
     }
 
     #[test]

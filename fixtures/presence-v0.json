@@ -244,6 +244,7 @@
     "receiptId": "action:hermes:receipt_review:t0",
     "requestId": "req-1",
     "summary": "Opening the receipt ledger.",
+    "alertLevel": "ready",
     "outcome": {
       "executed": true,
       "executionReceiptId": "exec:hermes:receipt_review:t0",
@@ -271,6 +272,10 @@
     "surface": "private_local_chat",
     "posture": "private",
     "label": "Private local chat",
-    "providerLabel": "LM Studio"
+    "providerLabel": "LM Studio",
+    "route": {
+      "label": "LM Studio",
+      "locality": "local"
+    }
   }
 }

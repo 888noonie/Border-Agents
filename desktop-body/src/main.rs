@@ -197,6 +197,9 @@ enum TorsoSurface {
 }
 
 enum TorsoSurfaceSnapshot {
+    /// Retained as a rollback fallback — the idle state now snapshots `Passport` instead (see
+    /// `snapshot_torso_output`). Kept constructible-on-demand so reverting is a one-line change.
+    #[allow(dead_code)]
     Session {
         name: String,
         provider: String,
@@ -204,6 +207,14 @@ enum TorsoSurfaceSnapshot {
         gateway: String,
         status: String,
         note: String,
+    },
+    /// The idle/status passport ledger that supersedes `Session` (fits the 142px torso).
+    Passport {
+        persona_label: String,
+        posture: String,
+        provider: Option<String>,
+        locality: Option<String>,
+        output_preview: Option<String>,
     },
     Text {
         title: String,
@@ -242,6 +253,15 @@ impl TorsoSurfaceSnapshot {
                     gateway,
                     status,
                     note,
+                })
+            }
+            TorsoSurfaceSnapshot::Passport { persona_label, posture, provider, locality, output_preview } => {
+                render::TorsoOutput::Passport(render::PassportCard {
+                    persona_label,
+                    posture,
+                    provider: provider.as_deref(),
+                    locality: locality.as_deref(),
+                    output_preview: output_preview.as_deref(),
                 })
             }
             TorsoSurfaceSnapshot::Text { title, body } => {
@@ -387,6 +407,7 @@ fn main() {
         active_surface: "session".to_string(),
         active_posture: "work".to_string(),
         active_provider: None,
+        active_locality: None,
         facing: Facing::Right,
         body_len: render::BODY_LEN_DEFAULT,
         color: env_color("BB_COLOR"),
@@ -601,6 +622,9 @@ struct App {
     active_surface: String,
     active_posture: String,
     active_provider: Option<String>,
+    /// `local | cloud` from the last `surface_active.route.locality`, drives the passport
+    /// locality dot. `None` until a surface with a route is activated.
+    active_locality: Option<String>,
     /// Which side the bubble/input sit on — recomputed from screen position so the
     /// UI always faces the screen centre, never the docked edge.
     facing: Facing,
@@ -787,13 +811,16 @@ impl App {
     fn snapshot_torso_output(&self) -> TorsoSurfaceSnapshot {
         // Owned snapshot — the decoded image is lent separately in draw() (see torso_image).
         match &self.torso_surface {
-            TorsoSurface::Session => TorsoSurfaceSnapshot::Session {
-                name: self.name_label.clone(),
-                provider: self.provider_label.clone(),
-                model: self.model_label.clone(),
-                gateway: self.gateway_label.clone(),
-                status: self.presence_status.clone(),
-                note: self.session_note.clone(),
+            // Idle/status now wears the passport ledger (Session snapshot retained for rollback).
+            TorsoSurface::Session => TorsoSurfaceSnapshot::Passport {
+                persona_label: self.name_label.clone(),
+                posture: self.active_posture.clone(),
+                provider: self
+                    .active_provider
+                    .clone()
+                    .or_else(|| (!self.provider_label.is_empty()).then(|| self.provider_label.clone())),
+                locality: self.active_locality.clone(),
+                output_preview: Some(self.session_note.clone()),
             },
             TorsoSurface::Text { title, body } => TorsoSurfaceSnapshot::Text {
                 title: title.clone(),
@@ -1110,10 +1137,16 @@ impl App {
                 }
                 self.update_input_region();
             }
-            presence::Cue::SurfaceActive { surface, posture, label, provider_label } => {
+            presence::Cue::SurfaceActive { surface, posture, label, provider_label, route } => {
                 self.active_surface = surface;
                 self.active_posture = posture;
-                self.active_provider = provider_label.clone();
+                // Prefer the route's provider label + locality when present; the passport row
+                // reads these. Fall back to the flat providerLabel for the provider name.
+                self.active_locality = route.as_ref().map(|r| r.locality.clone());
+                self.active_provider = route
+                    .as_ref()
+                    .map(|r| r.label.clone())
+                    .or_else(|| provider_label.clone());
                 if let Some(provider) = provider_label {
                     self.provider_label = provider;
                 }

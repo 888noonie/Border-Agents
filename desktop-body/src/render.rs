@@ -666,8 +666,26 @@ pub struct ImageCard<'a> {
     pub image: Option<&'a TorsoImage>,
 }
 
+/// The idle/status ledger that supersedes [`SessionCard`] — a fixed-row "passport" sized to
+/// fit the 142px torso instead of the freeform six-field card that overflowed it. Boring on
+/// purpose: persona + posture, a route chip, a divider, and a one-line output peek. No halo,
+/// ring, or glass — those are later slices. `SessionCard` is retained as a rollback fallback.
+pub struct PassportCard<'a> {
+    /// Surface label from `surface_active.label` (e.g. "Private local chat").
+    pub persona_label: &'a str,
+    /// "work" | "play" | "private" — drives the posture tag colour.
+    pub posture: &'a str,
+    /// Provider label from `surface_active.route.label` / `providerLabel`, if any.
+    pub provider: Option<&'a str>,
+    /// "local" | "cloud" from `surface_active.route.locality`, if any — drives the locality dot.
+    pub locality: Option<&'a str>,
+    /// First line of the last output, shown as an idle peek (never replaces the full Text/Image cards).
+    pub output_preview: Option<&'a str>,
+}
+
 pub enum TorsoOutput<'a> {
     Session(SessionCard<'a>),
+    Passport(PassportCard<'a>),
     Text(TextCard<'a>),
     Image(ImageCard<'a>),
     ImageStub(MediaStubCard<'a>),
@@ -1553,6 +1571,7 @@ fn draw_torso_output(
 
     match output {
         TorsoOutput::Session(card) => draw_session_card(pixmap, font, content, card),
+        TorsoOutput::Passport(card) => draw_passport_card(pixmap, font, content, card),
         TorsoOutput::Text(card) => draw_text_card(pixmap, font, content, card),
         TorsoOutput::Image(card) => draw_image_card(pixmap, content, card),
         TorsoOutput::ImageStub(card) => draw_media_stub(pixmap, font, content, card, true),
@@ -1651,6 +1670,126 @@ fn draw_session_card(pixmap: &mut Pixmap, font: &Font, rect: Rect, card: &Sessio
             [88, 74, 64],
         );
     }
+}
+
+/// Boring, fixed-row passport ledger sized for the 142px torso. Rows: persona + posture tag,
+/// route chip (provider · locality dot), divider, one-line output peek. No halo/ring/glass —
+/// the only job here is that the torso stops overflowing.
+fn draw_passport_card(pixmap: &mut Pixmap, font: &Font, rect: Rect, card: &PassportCard) {
+    let pad = 8.0;
+    let x = rect.x + pad;
+    let text_w = (rect.w - pad * 2.0).max(0.0);
+    let bottom = rect.y + rect.h - pad;
+
+    // Row 0 — posture tag (right), persona label (left, truncated up to the tag).
+    let tag_label = posture_tag_label(card.posture);
+    let tag_text_w = measure(font, tag_label, 8.0);
+    let tag = Rect {
+        x: rect.x + rect.w - pad - (tag_text_w + 10.0),
+        y: rect.y + pad,
+        w: tag_text_w + 10.0,
+        h: 14.0,
+    };
+    let (tag_bg, tag_fg) = posture_tag_colors(card.posture);
+    draw_round_rect(pixmap, tag, tag_bg);
+    draw_line(pixmap, font, tag_label, tag.x + (tag.w - tag_text_w) / 2.0, tag.y + 10.0, 8.0, tag_fg);
+
+    let row0_baseline = rect.y + pad + 11.0;
+    let persona_w = (tag.x - 4.0 - x).max(0.0);
+    let persona = fit_line(font, card.persona_label, 11.0, persona_w);
+    draw_line(pixmap, font, &persona, x, row0_baseline, 11.0, [38, 34, 32]);
+
+    // Row 1 — route chip: provider name, then a locality dot (green=local, blue=cloud).
+    let row1_baseline = row0_baseline + 14.0;
+    if let Some(provider) = card.provider {
+        let prov = fit_line(font, provider, 10.0, (text_w - 12.0).max(0.0));
+        draw_line(pixmap, font, &prov, x, row1_baseline, 10.0, [63, 56, 52]);
+        if let Some(loc) = card.locality {
+            let dot_x = x + measure(font, &prov, 10.0) + 7.0;
+            let dot_y = row1_baseline - 3.0;
+            if let Some(path) = ellipse_path(dot_x, dot_y, 3.0, 3.0) {
+                pixmap.fill_path(
+                    &path,
+                    &solid(locality_dot_color(loc)),
+                    FillRule::Winding,
+                    Transform::identity(),
+                    None,
+                );
+            }
+        }
+    }
+
+    // Divider.
+    let div_y = row1_baseline + 6.0;
+    fill_round_rect(
+        pixmap,
+        Rect { x, y: div_y, w: text_w, h: 1.0 },
+        0.5,
+        &solid(Color::from_rgba8(0, 0, 0, 38)),
+    );
+
+    // Output area — one-line idle peek; never replaces the full Text/Image output cards.
+    let body_top = div_y + 6.0;
+    let avail_h = (bottom - body_top).max(0.0);
+    if avail_h < PANEL_TEXT_PX {
+        return;
+    }
+    let max_lines = (avail_h / PANEL_LINE_H).floor().max(1.0) as usize;
+    let body = card
+        .output_preview
+        .unwrap_or("Idle — text, image, and file output land here.");
+    let lines = wrap(font, body, PANEL_TEXT_PX, text_w, max_lines);
+    let mut baseline = body_top + PANEL_TEXT_PX;
+    for line in &lines {
+        draw_line(pixmap, font, line, x, baseline, PANEL_TEXT_PX, [88, 74, 64]);
+        baseline += PANEL_LINE_H;
+    }
+}
+
+fn posture_tag_label(posture: &str) -> &'static str {
+    match posture {
+        "private" => "PRIV",
+        "play" => "PLAY",
+        _ => "WORK",
+    }
+}
+
+/// Posture tag colours: private = indigo, play = amber, work (default) = steel.
+fn posture_tag_colors(posture: &str) -> (Color, [u8; 3]) {
+    match posture {
+        "private" => (Color::from_rgba8(63, 60, 140, 230), [232, 232, 255]),
+        "play" => (Color::from_rgba8(204, 142, 36, 230), [40, 28, 8]),
+        _ => (Color::from_rgba8(70, 92, 110, 230), [232, 244, 252]),
+    }
+}
+
+fn locality_dot_color(locality: &str) -> Color {
+    match locality {
+        "local" => Color::from_rgba8(58, 170, 96, 255), // green = on-device
+        _ => Color::from_rgba8(58, 122, 200, 255),      // blue = cloud
+    }
+}
+
+/// Truncate `text` to fit `max_w` at `px`, appending "…" when clipped. The single-line
+/// truncation the session card lacked — which is exactly why six fields overflowed 142px.
+fn fit_line(font: &Font, text: &str, px: f32, max_w: f32) -> String {
+    if measure(font, text, px) <= max_w {
+        return text.to_string();
+    }
+    let ell = "…";
+    let ell_w = measure(font, ell, px);
+    let mut out = String::new();
+    let mut w = 0.0;
+    for ch in text.chars() {
+        let cw = font.metrics(ch, px).advance_width;
+        if w + cw + ell_w > max_w {
+            break;
+        }
+        out.push(ch);
+        w += cw;
+    }
+    out.push_str(ell);
+    out
 }
 
 fn draw_text_card(pixmap: &mut Pixmap, font: &Font, rect: Rect, card: &TextCard) {
@@ -2422,6 +2561,59 @@ mod tests {
             assert!(rect.x + rect.w <= panel.x + panel.w);
             assert!(rect.y + rect.h <= panel.y + panel.h);
         }
+    }
+
+    #[test]
+    fn fit_line_truncates_overflowing_text_with_an_ellipsis() {
+        let font = load_font().expect("system font available for fit_line test");
+        // Short text passes through untouched.
+        assert_eq!(fit_line(&font, "LM Studio", 10.0, 200.0), "LM Studio");
+        // Overflowing text is clipped to fit and marked with an ellipsis.
+        let long = "Some Very Long Provider Gateway Label That Cannot Possibly Fit";
+        let fitted = fit_line(&font, long, 10.0, 70.0);
+        assert!(fitted.ends_with('…'), "truncated text must signal the clip");
+        assert!(measure(&font, &fitted, 10.0) <= 70.0, "truncated text must fit the budget");
+    }
+
+    #[test]
+    fn passport_rows_stay_within_the_142px_torso() {
+        // The whole point of the passport: overflowing persona/provider/preview must NOT spill
+        // past the torso column the way the old six-field SessionCard did.
+        let font = load_font().expect("system font available for passport layout test");
+        let layout = Layout { facing: Facing::Right, body_len: BODY_LEN_MIN };
+        let panel = layout.output_panel_rect();
+        // The drawing column itself is no wider than the 142px torso.
+        assert!(panel.w <= TORSO_W, "output panel ({}) must fit TORSO_W ({TORSO_W})", panel.w);
+        let content = inset_rect(panel, 5.0, 5.0);
+
+        let mut pixmap = Pixmap::new(SURFACE_W, layout.surface_h()).unwrap();
+        let card = PassportCard {
+            persona_label: "Private Local Chat With An Absurdly Long Persona Name",
+            posture: "private",
+            provider: Some("Some Very Long Provider Gateway Label That Should Truncate"),
+            locality: Some("local"),
+            output_preview: Some(
+                "A long idle preview line that should wrap and clip inside the panel, never spilling past the torso edge.",
+            ),
+        };
+        draw_passport_card(&mut pixmap, &font, content, &card);
+
+        // No drawn pixel may sit beyond the content's right edge (+1px AA tolerance).
+        let right_limit = (content.x + content.w).ceil() as i32 + 1;
+        let w = pixmap.width() as i32;
+        let data = pixmap.data();
+        let mut drew_something = false;
+        for y in 0..pixmap.height() as i32 {
+            for x in 0..w {
+                let idx = ((y * w + x) * 4) as usize;
+                let touched = data[idx] != 0 || data[idx + 1] != 0 || data[idx + 2] != 0 || data[idx + 3] != 0;
+                if touched {
+                    drew_something = true;
+                    assert!(x <= right_limit, "passport pixel at x={x} exceeds torso column right edge {right_limit}");
+                }
+            }
+        }
+        assert!(drew_something, "passport should have drawn its rows");
     }
 
     #[test]

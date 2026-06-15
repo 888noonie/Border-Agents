@@ -62,7 +62,7 @@ Unanimous "Approve Slice 1, charter Slices 2–5." The reconciled contract:
 5. **Passport replaces `SessionCard` at idle only** — `Text`/`Image`/stub output paths are untouched (Grok).
 6. **`presence.rs` hand-parses JSON** (not serde) — additive fields are ignored, never fatal; no `#[serde(default)]` needed (Grok correcting Gemini).
 7. **Slice 2 splits** into 2a (arrow cycle + dim) and 2b (hold-to-bloom); body never reads `surfaceManifest.ts` — availability arrives soul-pushed (Grok · Composer).
-8. **Phase C fields are frozen:** COMPASS additive fields must not break golden fixtures or the Forge Playwright specs.
+8. **Phase C fields are frozen:** COMPASS additive fields must not break golden fixtures or the Forge Playwright specs. The browser proof has since landed: the Forge `/review repo_edit <path>` membrane now proves hard block, traversal block, no-action-backing block, and the action-backed permit twin.
 
 ---
 
@@ -299,7 +299,9 @@ effectors?: { id: string; granted: boolean }[];
 
 ## Build Order Summary
 
-**Roundtable verdict: execute Slice 1 only. Slices 2–5 are charter (design intent), not committed scope, until Slice 1 is fully green and the Phase C browser proof is landed or deprioritized. Phase C protocol fields are frozen — COMPASS additive fields must not break golden fixtures or Playwright specs.**
+**Roundtable verdict: Slice 1 is complete, and the Phase C browser proof has landed. Slices 2–5 remain charter (design intent), not committed scope, until the next fork is explicitly chosen. Phase C protocol fields are frozen — COMPASS additive fields must not break golden fixtures or Playwright specs.**
+
+**Phase C browser proof (landed):** `e2e/governance-act-effector.spec.ts` proves the live Forge execution membrane for `repo_edit`: protected target blocked, traversal blocked, safe target without action-backing blocked, and the same safe target with action-backing flowing `needs_confirmation → Confirm → allow` with an execution receipt. Gate: full Playwright suite **12 passed**.
 
 | Slice | Deliverable | Tests gate | Status |
 |-------|------------|-----------|--------|
@@ -307,6 +309,7 @@ effectors?: { id: string; granted: boolean }[];
 | 1c | Soul pushes `decisionAlertLevel` + `route` | `tsc` clean · vitest 214 ✅ | **DONE** |
 | 1d–e | Rust passport torso (idle only; keep output paths) | `render.rs` layout regression test ✅ | **DONE** |
 | 1f | `gen:fixtures` + `cargo test` parity | cargo 41 ✅ | **DONE** |
+| Phase C | Forge `/review repo_edit <path>` browser proof | Playwright 12 ✅ | **DONE** |
 | 2a | Arrow cycle + soul-pushed availability dim | surface_request round-trip | charter |
 | 2b | Hold-to-bloom dial (separate input subsystem) | own harness | charter |
 | 3 | `route.health` ring (needs soul derivation spec) | health-derivation unit test | charter |

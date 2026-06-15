@@ -416,6 +416,10 @@ pub enum Cue {
         position: Option<Position>,
         emotion: Option<String>,
         speech: Option<String>,
+        /// Ordered, soul-pushed surface list (canonical SURFACE_ORDER) with per-surface
+        /// availability. The body cycles and dims from this instead of any local manifest
+        /// (AGENTS.md: bodies stay manifest-free). Empty when the soul omitted it.
+        surfaces: Vec<SurfaceDescriptor>,
     },
     /// Rich result content for the output surface (torso). `surface` is one of
     /// text/image/file/session; image/file carry inline base64 bytes the body decodes
@@ -459,6 +463,15 @@ pub enum Cue {
     TargetAcquired { target_id: String, title: String, app_id: String, bounds: TargetBounds },
     TargetMoved { target_id: String, bounds: TargetBounds },
     TargetLost { target_id: String, reason: TargetLostReason },
+}
+
+/// One entry in the `hydrate` surface list. Mirrors the TS `PresenceSurfaceDescriptor`:
+/// `availability` is the closed set `available | unwired | gated` — `unwired` renders dimmed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SurfaceDescriptor {
+    pub id: String,
+    pub label: String,
+    pub availability: String,
 }
 
 /// The route an active surface is riding. Mirrors the TS `SurfaceRoute`: `locality` is the
@@ -598,6 +611,24 @@ fn parse_surface_route(r: &Value) -> Option<SurfaceRoute> {
     Some(SurfaceRoute { label, locality, health })
 }
 
+/// Parse the `hydrate` surface list. Mirrors the TS `isSurfaceDescriptorArray` guard: each
+/// entry needs a non-empty `id`, a string `label`, and an `availability` in the closed set
+/// `available | unwired | gated`. A present-but-malformed list drops the whole cue (`?`).
+fn parse_surfaces(value: &Value) -> Option<Vec<SurfaceDescriptor>> {
+    let arr = value.as_array()?;
+    let mut out = Vec::with_capacity(arr.len());
+    for item in arr {
+        let id = nonempty(item.get("id"))?;
+        let label = item.get("label")?.as_str()?.to_string();
+        let availability = item.get("availability")?.as_str()?.to_string();
+        if !matches!(availability.as_str(), "available" | "unwired" | "gated") {
+            return None;
+        }
+        out.push(SurfaceDescriptor { id, label, availability });
+    }
+    Some(out)
+}
+
 /// A required, non-empty string field (mirrors the TS `isNonEmptyString` guard).
 fn nonempty(value: Option<&Value>) -> Option<String> {
     let s = value?.as_str()?;
@@ -678,6 +709,11 @@ pub fn parse_to_body(text: &str) -> Option<ToBody> {
             position: v.get("position").and_then(parse_position),
             emotion: v.get("emotion").and_then(|e| e.as_str()).map(String::from),
             speech: v.get("speech").and_then(|s| s.as_str()).map(String::from),
+            // Absent → empty (valid); present-but-malformed → `?` drops the cue.
+            surfaces: match v.get("surfaces") {
+                None => Vec::new(),
+                Some(s) => parse_surfaces(s)?,
+            },
         },
         "output" => parse_output(&v)?,
         "action_result" => parse_action_result(&v)?,
@@ -773,10 +809,44 @@ mod tests {
 
         let hydrate = parse_to_body(&fixture("hydrate")).unwrap();
         match hydrate.cue {
-            Cue::Hydrate { position, emotion, speech } => {
+            Cue::Hydrate { position, emotion, speech, surfaces } => {
                 assert!(position.is_some());
                 assert_eq!(emotion.as_deref(), Some("neutral"));
                 assert_eq!(speech.as_deref(), Some("ready"));
+                // The fixture carries one descriptor per availability state.
+                let states: Vec<&str> = surfaces.iter().map(|s| s.availability.as_str()).collect();
+                assert_eq!(states, vec!["available", "gated", "unwired"]);
+            }
+            other => panic!("expected hydrate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hydrate_without_surfaces_parses_empty() {
+        // The soul may omit `surfaces`; an absent list is valid and yields an empty Vec.
+        let raw = r#"{"protocol":"presence","v":0,"kind":"hydrate","buddy":"h","ts":1,"emotion":"neutral"}"#;
+        match parse_to_body(raw).unwrap().cue {
+            Cue::Hydrate { surfaces, .. } => assert!(surfaces.is_empty()),
+            other => panic!("expected hydrate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hydrate_surfaces_validate_closed_availability_set() {
+        let base = r#"{"protocol":"presence","v":0,"kind":"hydrate","buddy":"h","ts":1,"surfaces":"#;
+        // A bad availability drops the whole cue, mirroring the TS strict guard.
+        let bad = format!("{base}[{{\"id\":\"x\",\"label\":\"X\",\"availability\":\"bogus\"}}]}}");
+        assert!(parse_to_body(&bad).is_none());
+        // An empty id drops it too (nonempty guard).
+        let empty_id = format!("{base}[{{\"id\":\"\",\"label\":\"X\",\"availability\":\"gated\"}}]}}");
+        assert!(parse_to_body(&empty_id).is_none());
+        // A well-formed entry parses through.
+        let ok = format!("{base}[{{\"id\":\"session\",\"label\":\"Session\",\"availability\":\"available\"}}]}}");
+        match parse_to_body(&ok).unwrap().cue {
+            Cue::Hydrate { surfaces, .. } => {
+                assert_eq!(surfaces.len(), 1);
+                assert_eq!(surfaces[0].id, "session");
+                assert_eq!(surfaces[0].availability, "available");
             }
             other => panic!("expected hydrate, got {other:?}"),
         }

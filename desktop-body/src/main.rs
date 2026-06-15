@@ -68,12 +68,34 @@ const CLICK_SLOP: f64 = 5.0;
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 const INPUT_PASTE_MAX_CHARS: usize = 8_000;
+/// Pre-hydrate fallback seed only. The authoritative ordered surface list (with per-surface
+/// availability) arrives soul-pushed on `hydrate` and supersedes this — see `ordered_surfaces`.
+/// Kept so the perimeter still cycles on a fresh body before the first hydrate lands.
 const SURFACE_ORDER: &[&str] = &["session", "private_local_chat", "claude_code", "live_hermes", "agent_zero"];
 const SURFACE_QUICK: &[&str] = &["session", "private_local_chat", "claude_code", "agent_zero"];
 
 /// Drop the buddy with its head within this many pixels of a screen edge and it tucks
 /// against that edge.
 const TUCK_THRESHOLD: f64 = 40.0;
+
+/// Index of the next *cyclable* surface in `order` from `start`, walking by `delta` and
+/// skipping `unwired` entries so the arrows never dead-end on a surface that can't activate.
+/// `None` when `order` is empty or every surface is unwired. Pure so it is unit-testable
+/// without a live `App`.
+fn next_cyclable_index(order: &[presence::SurfaceDescriptor], start: usize, delta: isize) -> Option<usize> {
+    let len = order.len() as isize;
+    if len == 0 {
+        return None;
+    }
+    let start = start as isize;
+    for step in 1..=len {
+        let idx = (start + delta * step).rem_euclid(len) as usize;
+        if order[idx].availability != "unwired" {
+            return Some(idx);
+        }
+    }
+    None
+}
 
 fn env_i32(key: &str, fallback: i32) -> i32 {
     std::env::var(key).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(fallback)
@@ -405,6 +427,7 @@ fn main() {
         input_focused: false,
         pending_effector: None,
         active_surface: "session".to_string(),
+        surfaces: Vec::new(),
         active_posture: "work".to_string(),
         active_provider: None,
         active_locality: None,
@@ -620,6 +643,11 @@ struct App {
     /// button. Cleared on any allow/blocked result. `None` = nothing awaiting confirmation.
     pending_effector: Option<String>,
     active_surface: String,
+    /// Ordered surface list with per-surface availability, soul-pushed on `hydrate`. The body
+    /// cycles and dims from this (Slice 2a) so it never imports the TS surface manifest. Empty
+    /// until the first `hydrate` carrying surfaces; until then the body falls back to the
+    /// `SURFACE_ORDER` seed below treated as all-available.
+    surfaces: Vec<presence::SurfaceDescriptor>,
     active_posture: String,
     active_provider: Option<String>,
     /// `local | cloud` from the last `surface_active.route.locality`, drives the passport
@@ -765,6 +793,11 @@ impl App {
         let input_text = self.input_text.clone();
         let input_placeholder = format!("Ask {}...", self.name_label);
         let posture_badge = (self.active_posture == "private").then_some("PRIVATE LOCAL");
+        // Fade each quick button whose surface the soul reported `unwired` (Slice 2a).
+        let mut dim_quick = [false; 4];
+        for (slot, id) in SURFACE_QUICK.iter().take(4).enumerate() {
+            dim_quick[slot] = self.surface_availability(id) == "unwired";
+        }
         let pinned = self.pinned_layout();
         let (Some(pool), Some(layer)) = (self.pool.as_mut(), self.layer.as_ref()) else {
             return;
@@ -785,6 +818,7 @@ impl App {
             review_pending: self.pending_effector.as_deref() == Some("receipt_review"),
             edit_pending: self.pending_effector.as_deref() == Some("repo_edit"),
             posture_badge,
+            dim_quick,
             layout,
             pinned,
             frame: None,
@@ -1110,7 +1144,7 @@ impl App {
             }
             presence::Cue::Say { text } => self.say(text),
             presence::Cue::MoveTo { position } => self.apply_position(position),
-            presence::Cue::Hydrate { position, emotion, speech } => {
+            presence::Cue::Hydrate { position, emotion, speech, surfaces } => {
                 if let Some(p) = position {
                     self.apply_position(p);
                 }
@@ -1119,6 +1153,10 @@ impl App {
                 }
                 if let Some(s) = speech {
                     self.say(s);
+                }
+                // Adopt the soul-pushed surface list; an omitted list leaves the seed in place.
+                if !surfaces.is_empty() {
+                    self.surfaces = surfaces;
                 }
             }
             presence::Cue::Output { surface, text, caption, media_type, data_base64 } => {
@@ -1532,21 +1570,68 @@ impl App {
         }
     }
 
+    /// The ordered surface list the body navigates. Soul-pushed via `hydrate`; before the
+    /// first hydrate it falls back to the `SURFACE_ORDER` seed treated as all-available, so
+    /// the perimeter still works on a fresh body that hasn't been hydrated yet.
+    fn ordered_surfaces(&self) -> Vec<presence::SurfaceDescriptor> {
+        if self.surfaces.is_empty() {
+            SURFACE_ORDER
+                .iter()
+                .map(|id| presence::SurfaceDescriptor {
+                    id: (*id).to_string(),
+                    label: (*id).to_string(),
+                    availability: "available".to_string(),
+                })
+                .collect()
+        } else {
+            self.surfaces.clone()
+        }
+    }
+
+    fn surface_availability(&self, id: &str) -> &str {
+        self.surfaces
+            .iter()
+            .find(|s| s.id == id)
+            .map(|s| s.availability.as_str())
+            .unwrap_or("available")
+    }
+
     fn surface_index(&self) -> usize {
-        SURFACE_ORDER.iter().position(|id| *id == self.active_surface.as_str()).unwrap_or(0)
+        self.ordered_surfaces()
+            .iter()
+            .position(|s| s.id == self.active_surface)
+            .unwrap_or(0)
     }
 
     fn request_surface(&mut self, surface: &str) {
+        // An `unwired` surface names an effector not yet wired: explain rather than ask the
+        // soul to switch (it would no-op anyway). The body only reports availability the soul
+        // pushed; it never decides wiring itself (AGENTS.md law 7).
+        if self.surface_availability(surface) == "unwired" {
+            let label = self
+                .surfaces
+                .iter()
+                .find(|s| s.id == surface)
+                .map(|s| s.label.clone())
+                .unwrap_or_else(|| surface.to_string());
+            self.speech = Some(format!("{label}: not wired yet"));
+            self.update_input_region();
+            return;
+        }
         self.send_to_soul(presence::surface_request_json(&self.buddy, surface));
         self.speech = Some(format!("Requesting surface: {surface}"));
         self.update_input_region();
     }
 
     fn cycle_surface(&mut self, delta: isize) {
-        let len = SURFACE_ORDER.len() as isize;
-        let idx = self.surface_index() as isize;
-        let next = (idx + delta).rem_euclid(len) as usize;
-        self.request_surface(SURFACE_ORDER[next]);
+        // Walk the soul-pushed order, skipping `unwired` surfaces so the arrows never dead-end
+        // on a surface that can't activate — those stay reachable only via a quick button,
+        // which shows the "not wired yet" cue.
+        let order = self.ordered_surfaces();
+        if let Some(idx) = next_cyclable_index(&order, self.surface_index(), delta) {
+            let id = order[idx].id.clone();
+            self.request_surface(&id);
+        }
     }
 
     fn on_perimeter_control(&mut self, id: PerimeterId) {
@@ -2057,6 +2142,36 @@ mod tests {
         assert!(open.iter().any(|(id, _)| *id == PerimeterId::Review));
         assert!(open.iter().any(|(id, _)| *id == PerimeterId::Edit));
         assert_eq!(open.len(), layout.perimeter_controls().len());
+    }
+
+    fn surf(id: &str, availability: &str) -> presence::SurfaceDescriptor {
+        presence::SurfaceDescriptor {
+            id: id.to_string(),
+            label: id.to_string(),
+            availability: availability.to_string(),
+        }
+    }
+
+    #[test]
+    fn cycle_skips_unwired_surfaces() {
+        let order = vec![
+            surf("session", "available"),
+            surf("claude_code", "unwired"),
+            surf("agent_zero", "gated"),
+        ];
+        // Forward from session (0) skips the unwired claude_code and lands on agent_zero (2).
+        assert_eq!(next_cyclable_index(&order, 0, 1), Some(2));
+        // Backward from session (0) wraps to agent_zero (2), still skipping the unwired one.
+        assert_eq!(next_cyclable_index(&order, 0, -1), Some(2));
+        // From agent_zero (2) forward wraps past the unwired entry back to session (0).
+        assert_eq!(next_cyclable_index(&order, 2, 1), Some(0));
+    }
+
+    #[test]
+    fn cycle_yields_none_when_all_unwired_or_empty() {
+        assert_eq!(next_cyclable_index(&[], 0, 1), None);
+        let all_unwired = vec![surf("a", "unwired"), surf("b", "unwired")];
+        assert_eq!(next_cyclable_index(&all_unwired, 0, 1), None);
     }
 
     #[test]

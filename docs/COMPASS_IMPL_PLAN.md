@@ -195,17 +195,21 @@ Gate at this checkpoint: `npm run gen:fixtures` clean; `cd desktop-body && cargo
 
 **Split into two PRs (Grok/Composer): 2a is low-risk; 2b is a new input subsystem.**
 
-### 2a · Arrow cycle + availability dim
-- `ArrowN/E/S/W` perimeter controls cycle `SURFACE_ORDER` (tap = next surface) — uses the existing input path.
-- **Dim by availability**, not by missing `effectorId`: a surface renders dim when its `surfaceAvailability()` is `unwired`. `available` (session/customize) and `gated` render normally. Tap a dim surface → tooltip "not wired yet".
-- The native body **must not** import `surfaceManifest.ts`. Availability arrives soul-pushed on `surface_active` (e.g. `availability: "available" | "unwired" | "gated"`) — protocol addition for 2a, keeps the wire manifest-free. Decide first whether the ordered surface list also ships on `hydrate` (cleanest) vs a static Rust mirror (temp spike only).
+### 2a · Arrow cycle + availability dim ✅ LANDED (2026-06-15)
+- `hydrate.surfaces[]` now carries the ordered surface descriptors from the soul:
+  `{ id, label, availability: "available" | "unwired" | "gated" }`.
+- `surfaceHydrationList()` in `src/surfaceManifest.ts` is the TS source of truth: canonical `SURFACE_ORDER`, surface labels, and `surfaceAvailability()` classification.
+- `scripts/soul-server.ts` includes that list in the attach-time hydrate snapshot; the native body stays manifest-free.
+- Rust parses the hydrate surface list with closed-set availability validation, stores it on body state, and cycles the stored order instead of the static `SURFACE_ORDER` mirror. The static Rust order is now only a pre-hydrate fallback seed.
+- `ArrowN/E/S/W` skip `unwired` surfaces while cycling so they never dead-end on an unavailable surface.
+- Quick buttons render dim when their surface is `unwired`. Tapping a dim quick button does not emit `surface_request`; it shows a "not wired yet" speech cue.
 
 ### 2b · Hold-to-bloom dial (separate PR)
 - Hold gesture (250ms in place — new press-timing + arc hit-testing, distinct from the `CLICK_SLOP` drag→`grabbed` path): bloom a radial dial of all 6 surface labels at clock positions, full text, active at 12 o'clock, prev/next at 10 and 2.
 - Tap arc segment → `surface_request { surface }`. Needs its own test harness beyond the round-trip.
 
 ### Protocol additions for Slice 2
-2a adds soul-pushed `availability` on `surface_active`. `surface_request` already exists.
+2a adds soul-pushed ordered `surfaces[]` on `hydrate`. `surface_request` already exists.
 
 ---
 
@@ -310,7 +314,7 @@ effectors?: { id: string; granted: boolean }[];
 | 1d–e | Rust passport torso (idle only; keep output paths) | `render.rs` layout regression test ✅ | **DONE** |
 | 1f | `gen:fixtures` + `cargo test` parity | cargo 41 ✅ | **DONE** |
 | Phase C | Forge `/review repo_edit <path>` browser proof | Playwright 12 ✅ | **DONE** |
-| 2a | Arrow cycle + soul-pushed availability dim | surface_request round-trip | charter |
+| 2a | Arrow cycle + soul-pushed hydrate `surfaces[]` availability dim | `tsc` clean · vitest 217 ✅ · cargo 46 ✅ | **DONE** |
 | 2b | Hold-to-bloom dial (separate input subsystem) | own harness | charter |
 | 3 | `route.health` ring (needs soul derivation spec) | health-derivation unit test | charter |
 | 4 | Receipt rail — *extend* existing Review/Confirm, thin cues only | receipt accumulation test | charter |
@@ -653,12 +657,10 @@ Credit table lists Grok 4.3 · Anchor for “clay → premium glass evolution.�
 
 #### 8. Slice 2 prerequisite the plan omits
 
-`main.rs` already cycles surfaces via `SURFACE_ORDER` (line ~1503). That order is **duplicated from TS** today. Before Slice 2, document whether:
-
-- Soul pushes ordered surface list on `hydrate` (protocol addition, cleanest), or
-- Rust embeds a static mirror (violates single-source-of-truth, acceptable only as temp spike)
-
-Hold-to-bloom is irrelevant until this is decided.
+`main.rs` used to cycle surfaces via a Rust `SURFACE_ORDER` mirror. Slice 2a resolves this by
+having the soul push the ordered surface list on `hydrate`; the Rust constant now exists only as a
+pre-hydrate fallback seed. Hold-to-bloom can build on the stored hydrate list instead of adding a
+second manifest.
 
 ---
 

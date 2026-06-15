@@ -253,5 +253,24 @@
         "downgraded": false
       }
     }
+  },
+  "surface_request": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "surface_request",
+    "buddy": "hermes",
+    "ts": 1020,
+    "surface": "private_local_chat"
+  },
+  "surface_active": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "surface_active",
+    "buddy": "hermes",
+    "ts": 1021,
+    "surface": "private_local_chat",
+    "posture": "private",
+    "label": "Private local chat",
+    "providerLabel": "LM Studio"
   }
 }

@@ -77,6 +77,8 @@ describe("presence protocol round-trips", () => {
       { ts: 17 },
     ),
     presence.output("hermes", { surface: "session" }, { ts: 18 }),
+    presence.surfaceRequest("hermes", "private_local_chat", { ts: 19 }),
+    presence.surfaceActive("hermes", { surface: "private_local_chat", posture: "private", label: "Private local chat", providerLabel: "LM Studio" }, { ts: 20 }),
   ];
 
   test.each(cases)("survives JSON serialization: $kind", (message) => {
@@ -212,6 +214,29 @@ describe("action gate cues", () => {
     });
   });
 
+  test("surface_request is to-soul and surface_active is to-body", () => {
+    expect(presenceDirection("surface_request")).toBe("to-soul");
+    expect(presenceDirection("surface_active")).toBe("to-body");
+    expect(overTheWire(presence.surfaceRequest("aether", "private_local_chat", { ts: 1 }))).toMatchObject({
+      kind: "surface_request",
+      surface: "private_local_chat",
+    });
+    expect(
+      overTheWire(
+        presence.surfaceActive(
+          "aether",
+          { surface: "private_local_chat", posture: "private", label: "Private local chat", providerLabel: "LM Studio" },
+          { ts: 2 },
+        ),
+      ),
+    ).toMatchObject({
+      kind: "surface_active",
+      surface: "private_local_chat",
+      posture: "private",
+      providerLabel: "LM Studio",
+    });
+  });
+
   test("rejects a malformed intent (target with an unknown kind)", () => {
     expect(
       parsePresenceMessage({
@@ -238,6 +263,23 @@ describe("action gate cues", () => {
         decision: "allow",
         receiptId: "r1",
         outcome: { executed: "yes" },
+      }),
+    ).toBeNull();
+  });
+
+  test("rejects malformed surface cues", () => {
+    expect(
+      parsePresenceMessage({ protocol: PRESENCE_PROTOCOL, v: 0, kind: "surface_request", buddy: "aether", ts: 1, surface: "" }),
+    ).toBeNull();
+    expect(
+      parsePresenceMessage({
+        protocol: PRESENCE_PROTOCOL,
+        v: 0,
+        kind: "surface_active",
+        buddy: "aether",
+        ts: 1,
+        surface: "private_local_chat",
+        posture: "party",
       }),
     ).toBeNull();
   });

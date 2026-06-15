@@ -74,6 +74,8 @@ pub const INPUT_MAX_LINES: usize = 3;
 /// Gap between the figure and its UI column.
 const UI_GAP: f32 = 16.0;
 const PANEL_LABEL_PX: f32 = 10.0;
+const PERIMETER_SIZE: f32 = 20.0;
+const PERIMETER_GAP: f32 = 6.0;
 
 /// Default clay colour — Morph terracotta. Override per-buddy with `BB_COLOR`.
 pub const CLAY_DEFAULT: [u8; 3] = [201, 109, 60];
@@ -84,6 +86,22 @@ pub const CLAY_DEFAULT: [u8; 3] = [201, 109, 60];
 pub enum Facing {
     Left,
     Right,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PerimeterId {
+    ArrowN,
+    ArrowE,
+    ArrowS,
+    ArrowW,
+    Quick0,
+    Quick1,
+    Quick2,
+    Quick3,
+    Add,
+    Paste,
+    Review,
+    Edit,
 }
 
 /// Parameterized surface layout: everything whose position depends on the
@@ -171,6 +189,39 @@ impl Layout {
         }
     }
 
+    pub fn perimeter_controls(&self) -> Vec<(PerimeterId, Rect)> {
+        let torso = self.torso_rect();
+        let size = PERIMETER_SIZE;
+        let gap = PERIMETER_GAP;
+        let center_x = torso.x + torso.w / 2.0 - size / 2.0;
+        let center_y = torso.y + torso.h / 2.0 - size / 2.0;
+        let top = torso.y - size - gap;
+        let bottom = torso.y + torso.h + gap;
+        let left = torso.x - size - gap;
+        let right = torso.x + torso.w + gap;
+        vec![
+            (PerimeterId::ArrowN, Rect { x: center_x, y: top, w: size, h: size }),
+            (PerimeterId::ArrowE, Rect { x: right, y: center_y, w: size, h: size }),
+            (PerimeterId::ArrowS, Rect { x: center_x, y: bottom, w: size, h: size }),
+            (PerimeterId::ArrowW, Rect { x: left, y: center_y, w: size, h: size }),
+            (PerimeterId::Quick0, Rect { x: left, y: top, w: size, h: size }),
+            (PerimeterId::Quick1, Rect { x: right, y: top, w: size, h: size }),
+            (PerimeterId::Quick2, Rect { x: left, y: bottom, w: size, h: size }),
+            (PerimeterId::Quick3, Rect { x: right, y: bottom, w: size, h: size }),
+            (PerimeterId::Add, Rect { x: right + size + 5.0, y: bottom, w: size, h: size }),
+            (PerimeterId::Paste, Rect { x: left, y: torso.y + 10.0, w: size, h: size }),
+            (PerimeterId::Review, Rect { x: left, y: torso.y + 36.0, w: size, h: size }),
+            (PerimeterId::Edit, Rect { x: left, y: torso.y + 62.0, w: size, h: size }),
+        ]
+    }
+
+    pub fn perimeter_rect(&self, id: PerimeterId) -> Rect {
+        self.perimeter_controls()
+            .into_iter()
+            .find_map(|(candidate, rect)| (candidate == id).then_some(rect))
+            .unwrap_or_else(|| self.torso_rect())
+    }
+
     pub fn torso_action_rect(&self, action: TorsoAction) -> Rect {
         let panel = self.output_panel_rect();
         let size = 18.0_f32.min(panel.w.max(0.0)).min((panel.h / 2.0).max(0.0));
@@ -188,10 +239,7 @@ impl Layout {
     /// gate; once the gate returns needs_confirmation the body flips it to a Confirm
     /// button. The body only requests and renders — the soul authorizes (law 7).
     pub fn review_button_rect(&self) -> Rect {
-        let w = 80.0;
-        let h = 20.0;
-        let col_x = self.ui_x(BUBBLE_W);
-        Rect { x: col_x + BUBBLE_W - w, y: INPUT_Y - h - 5.0, w, h }
+        self.perimeter_rect(PerimeterId::Review)
     }
 
     /// The on-body Edit / Confirm control — emits a typed `repo_edit` ActionIntent (an act
@@ -199,13 +247,11 @@ impl Layout {
     /// never crowd the narrow column; like Review it flips to Confirm while the soul holds the
     /// action at needs_confirmation. The body builds + emits the intent; the soul authorizes (law 7).
     pub fn edit_button_rect(&self) -> Rect {
-        let review = self.review_button_rect();
-        Rect { x: review.x, y: review.y - review.h - 5.0, w: review.w, h: review.h }
+        self.perimeter_rect(PerimeterId::Edit)
     }
 
     pub fn paste_button_rect(&self) -> Rect {
-        let review = self.review_button_rect();
-        Rect { x: review.x - 58.0, y: review.y, w: 52.0, h: review.h }
+        self.perimeter_rect(PerimeterId::Paste)
     }
 
 }
@@ -657,6 +703,7 @@ pub struct BodyView<'a> {
     /// The Edit control is a Confirm button when the soul's last action_result for `repo_edit`
     /// asked for confirmation. Kept distinct from `review_pending` so each act's confirm is its own.
     pub edit_pending: bool,
+    pub posture_badge: Option<&'a str>,
     pub layout: Layout,
     pub pinned: Option<PinnedLayout>,
     pub frame: Option<FrameLayout>,
@@ -741,9 +788,15 @@ impl Sprite {
         draw_figure(&mut pixmap, &view.layout, view.color, bob, &pose);
         if let Some(font) = &self.font {
             draw_torso_output(&mut pixmap, font, &view.layout, &view.torso_output);
+            if let Some(label) = view.posture_badge {
+                draw_posture_badge(&mut pixmap, font, &view.layout, label);
+            }
         }
         draw_eyes(&mut pixmap, bob, eye_open, face.pupil_dy);
         draw_mouth(&mut pixmap, bob, &face.mouth);
+        if let Some(font) = &self.font {
+            draw_perimeter_controls(&mut pixmap, font, &view.layout);
+        }
 
         if let Some(text) = view.speech {
             if let Some(font) = &self.font {
@@ -1150,9 +1203,14 @@ fn draw_pinned_input(
 /// reads "Confirm", tinted active. The body only renders this state; it never authorizes (law 7).
 fn draw_governance_button(pixmap: &mut Pixmap, font: &Font, rect: Rect, pending: bool, idle_label: &str) {
     let (bg, fg, label) = if pending {
-        (Color::from_rgba8(56, 188, 214, 240), [8, 30, 38], "Confirm")
+        (Color::from_rgba8(56, 188, 214, 240), [8, 30, 38], "C")
     } else {
-        (Color::from_rgba8(247, 251, 255, 238), [24, 40, 64], idle_label)
+        let short = match idle_label {
+            "Review" => "R",
+            "Edit" => "E",
+            _ => "?",
+        };
+        (Color::from_rgba8(247, 251, 255, 238), [24, 40, 64], short)
     };
     draw_round_rect(pixmap, rect, bg);
     if let Some(path) = round_rect_path(rect, 9.0) {
@@ -1160,27 +1218,89 @@ fn draw_governance_button(pixmap: &mut Pixmap, font: &Font, rect: Rect, pending:
         stroke.width = 1.0;
         pixmap.stroke_path(&path, &solid(Color::from_rgba8(0, 0, 0, 110)), &stroke, Transform::identity(), None);
     }
-    let tw = measure(font, label, TEXT_PX);
+    let tw = measure(font, label, PANEL_TEXT_PX);
     let x = rect.x + (rect.w - tw) / 2.0;
-    let y = rect.y + 14.0;
-    draw_line(pixmap, font, label, x, y, TEXT_PX, fg);
+    let y = rect.y + 13.0;
+    draw_line(pixmap, font, label, x, y, PANEL_TEXT_PX, fg);
 }
 
 fn draw_paste_button(pixmap: &mut Pixmap, font: &Font, layout: &Layout) {
     let rect = layout.paste_button_rect();
     let bg = Color::from_rgba8(247, 251, 255, 238);
     let fg = [24, 40, 64];
-    let label = "Paste";
+    let label = "P";
     draw_round_rect(pixmap, rect, bg);
     if let Some(path) = round_rect_path(rect, 9.0) {
         let mut stroke = Stroke::default();
         stroke.width = 1.0;
         pixmap.stroke_path(&path, &solid(Color::from_rgba8(0, 0, 0, 110)), &stroke, Transform::identity(), None);
     }
-    let tw = measure(font, label, TEXT_PX);
+    let tw = measure(font, label, PANEL_TEXT_PX);
     let x = rect.x + (rect.w - tw) / 2.0;
-    let y = rect.y + 14.0;
-    draw_line(pixmap, font, label, x, y, TEXT_PX, fg);
+    let y = rect.y + 13.0;
+    draw_line(pixmap, font, label, x, y, PANEL_TEXT_PX, fg);
+}
+
+fn perimeter_label(id: PerimeterId) -> &'static str {
+    match id {
+        PerimeterId::ArrowN => "N",
+        PerimeterId::ArrowE => "E",
+        PerimeterId::ArrowS => "S",
+        PerimeterId::ArrowW => "W",
+        PerimeterId::Quick0 => "1",
+        PerimeterId::Quick1 => "2",
+        PerimeterId::Quick2 => "3",
+        PerimeterId::Quick3 => "4",
+        PerimeterId::Add => "+",
+        PerimeterId::Paste | PerimeterId::Review | PerimeterId::Edit => "",
+    }
+}
+
+fn draw_perimeter_controls(pixmap: &mut Pixmap, font: &Font, layout: &Layout) {
+    for (id, rect) in layout.perimeter_controls() {
+        if matches!(id, PerimeterId::Paste | PerimeterId::Review | PerimeterId::Edit) {
+            continue;
+        }
+        let label = perimeter_label(id);
+        let bg = if matches!(id, PerimeterId::Add) {
+            Color::from_rgba8(56, 188, 214, 238)
+        } else {
+            Color::from_rgba8(248, 250, 252, 232)
+        };
+        draw_round_rect(pixmap, rect, bg);
+        if let Some(path) = round_rect_path(rect, 7.0) {
+            let mut stroke = Stroke::default();
+            stroke.width = 1.0;
+            pixmap.stroke_path(&path, &solid(Color::from_rgba8(0, 0, 0, 100)), &stroke, Transform::identity(), None);
+        }
+        let tw = measure(font, label, PANEL_TEXT_PX);
+        draw_line(
+            pixmap,
+            font,
+            label,
+            rect.x + (rect.w - tw) / 2.0,
+            rect.y + 13.0,
+            PANEL_TEXT_PX,
+            [18, 28, 46],
+        );
+    }
+}
+
+fn draw_posture_badge(pixmap: &mut Pixmap, font: &Font, layout: &Layout, label: &str) {
+    let torso = layout.torso_rect();
+    let badge = Rect { x: torso.x + 9.0, y: torso.y + 8.0, w: torso.w - 18.0, h: 16.0 };
+    draw_round_rect(pixmap, badge, Color::from_rgba8(12, 31, 38, 220));
+    let px = 8.0;
+    let text_w = measure(font, label, px);
+    draw_line(
+        pixmap,
+        font,
+        label,
+        badge.x + (badge.w - text_w) / 2.0,
+        badge.y + 11.0,
+        px,
+        [210, 250, 245],
+    );
 }
 
 fn draw_frame_hands_and_feet(pixmap: &mut Pixmap, frame: FrameLayout, color: [u8; 3]) {
@@ -2257,26 +2377,23 @@ mod tests {
     }
 
     #[test]
-    fn input_buttons_sit_above_the_input_and_share_its_column() {
+    fn perimeter_controls_surround_the_torso_and_own_chat_buttons() {
         for facing in [Facing::Left, Facing::Right] {
             let l = Layout { facing, body_len: BODY_LEN_MIN };
             let review = l.review_button_rect();
             let paste = l.paste_button_rect();
             let edit = l.edit_button_rect();
-            let input = l.input_region_rect();
-            // Above the input, not overlapping it.
-            assert!(review.y + review.h <= input.y, "review button overlaps input ({facing:?})");
-            assert!(paste.y + paste.h <= input.y, "paste button overlaps input ({facing:?})");
-            // Within the bubble/input column (right-aligned to it).
-            for btn in [review, paste, edit] {
-                assert!(btn.x >= input.x - 0.5);
-                assert!(btn.x + btn.w <= input.x + input.w + 0.5);
-                assert!(btn.y >= 0.0);
+            let torso = l.torso_rect();
+            let controls = l.perimeter_controls();
+            assert_eq!(controls.len(), 12);
+            for id in [PerimeterId::ArrowN, PerimeterId::ArrowE, PerimeterId::ArrowS, PerimeterId::ArrowW, PerimeterId::Add] {
+                assert!(controls.iter().any(|(candidate, _)| *candidate == id), "missing {id:?}");
             }
-            assert!(paste.x + paste.w <= review.x, "paste button overlaps review ({facing:?})");
-            // Edit sits one row ABOVE Review (act control above the read-only one), same column.
-            assert!(edit.y + edit.h <= review.y, "edit button overlaps review row ({facing:?})");
-            assert_eq!(edit.x, review.x, "edit shares the review column ({facing:?})");
+            for btn in [review, paste, edit] {
+                assert!(btn.x + btn.w <= torso.x, "chat button should sit on the left border ({facing:?})");
+                assert!(btn.y >= torso.y - PERIMETER_SIZE - PERIMETER_GAP);
+            }
+            assert!(paste.y < review.y && review.y < edit.y, "chat buttons should stack on the border ({facing:?})");
         }
     }
 
@@ -2388,6 +2505,7 @@ mod tests {
             input_focused: false,
             review_pending: false,
             edit_pending: false,
+            posture_badge: None,
             layout: Layout::initial(),
             pinned: None,
             frame: Some(frame),

@@ -68,6 +68,12 @@ export const PRESENCE_FIXTURES = {
     },
     { ts: 1019 },
   ),
+  surface_request: presence.surfaceRequest(BUDDY, "private_local_chat", { ts: 1020 }),
+  surface_active: presence.surfaceActive(
+    BUDDY,
+    { surface: "private_local_chat", posture: "private", label: "Private local chat", providerLabel: "LM Studio" },
+    { ts: 1021 },
+  ),
 } as const;
 
 /** Canonical serialization (drops `undefined`, stable 2-space indent, trailing nl). */

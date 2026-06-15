@@ -29,6 +29,7 @@
 
 import { isOutputSurfaceKind, type OutputSurfaceKind } from "./buddyCapabilities";
 import type { ActionDecision } from "./core";
+import { isUserPosture, type UserPosture } from "./core/userPosture";
 
 export const PRESENCE_PROTOCOL = "presence" as const;
 export const PRESENCE_PROTOCOL_VERSION = 0 as const;
@@ -258,6 +259,16 @@ export type PresenceActionResult = PresenceEnvelope<
   }
 >;
 
+export type PresenceSurfaceActive = PresenceEnvelope<
+  "surface_active",
+  {
+    surface: string;
+    posture: UserPosture;
+    label?: string;
+    providerLabel?: string;
+  }
+>;
+
 export type PresenceToBodyMessage =
   | PresenceMoveTo
   | PresenceExpress
@@ -266,6 +277,7 @@ export type PresenceToBodyMessage =
   | PresenceHydrate
   | PresenceOutput
   | PresenceActionResult
+  | PresenceSurfaceActive
   | PresenceTargetAcquired
   | PresenceTargetMoved
   | PresenceTargetLost;
@@ -361,6 +373,8 @@ export type PresenceActionRequest = PresenceEnvelope<
   }
 >;
 
+export type PresenceSurfaceRequest = PresenceEnvelope<"surface_request", { surface: string }>;
+
 export type PresenceToSoulMessage =
   | PresenceAttached
   | PresenceClicked
@@ -371,6 +385,7 @@ export type PresenceToSoulMessage =
   | PresenceDismissed
   | PresenceSaid
   | PresenceActionRequest
+  | PresenceSurfaceRequest
   | PresenceTargetDragRequested;
 
 export type PresenceMessage = PresenceToBodyMessage | PresenceToSoulMessage;
@@ -385,6 +400,7 @@ export const PRESENCE_TO_BODY_KINDS: readonly PresenceToBodyMessage["kind"][] = 
   "hydrate",
   "output",
   "action_result",
+  "surface_active",
   "target_acquired",
   "target_moved",
   "target_lost",
@@ -400,6 +416,7 @@ export const PRESENCE_TO_SOUL_KINDS: readonly PresenceToSoulMessage["kind"][] = 
   "dismissed",
   "said",
   "action_request",
+  "surface_request",
   "target_drag_requested",
 ];
 
@@ -619,6 +636,13 @@ function isValidForKind(kind: PresenceKind, raw: Record<string, unknown>): boole
         (raw.summary === undefined || typeof raw.summary === "string") &&
         (raw.outcome === undefined || isActionOutcome(raw.outcome))
       );
+    case "surface_active":
+      return (
+        isNonEmptyString(raw.surface) &&
+        isUserPosture(raw.posture) &&
+        (raw.label === undefined || typeof raw.label === "string") &&
+        (raw.providerLabel === undefined || typeof raw.providerLabel === "string")
+      );
     case "target_acquired":
       return (
         isNonEmptyString(raw.targetId) &&
@@ -659,6 +683,8 @@ function isValidForKind(kind: PresenceKind, raw: Record<string, unknown>): boole
         (raw.intent === undefined || isActionIntent(raw.intent)) &&
         (raw.routeHint === undefined || isRouteHint(raw.routeHint))
       );
+    case "surface_request":
+      return isNonEmptyString(raw.surface);
     case "target_drag_requested":
       return (
         isNonEmptyString(raw.targetId) &&
@@ -801,6 +827,13 @@ export const presence = {
   ): PresenceActionResult {
     return envelope("action_result", buddy, { ...payload }, opts) as PresenceActionResult;
   },
+  surfaceActive(
+    buddy: string,
+    payload: { surface: string; posture: UserPosture; label?: string; providerLabel?: string },
+    opts: EnvelopeOptions = {},
+  ): PresenceSurfaceActive {
+    return envelope("surface_active", buddy, { ...payload }, opts) as PresenceSurfaceActive;
+  },
   targetAcquired(
     buddy: string,
     target: { targetId: string; title: string; appId: string; bounds: TargetBounds },
@@ -877,6 +910,9 @@ export const presence = {
       { effector, context, confirmed, requestId, intent, routeHint },
       { ts },
     ) as PresenceActionRequest;
+  },
+  surfaceRequest(buddy: string, surface: string, opts: EnvelopeOptions = {}): PresenceSurfaceRequest {
+    return envelope("surface_request", buddy, { surface }, opts) as PresenceSurfaceRequest;
   },
   targetDragRequested(
     buddy: string,

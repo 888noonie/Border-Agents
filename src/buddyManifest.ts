@@ -135,6 +135,7 @@ export type EffectorId =
   | "open_claude"
   | "open_grok"
   | "open_lmstudio"
+  | "local_chat"
   | "open_github"
   | "open_gmail"
   | "open_calendar"
@@ -189,6 +190,7 @@ export const EFFECTOR_SPECS: Record<EffectorId, EffectorSpec> = {
   open_claude: reach("open_claude", "Open Claude", "Launch the user's existing Claude; never auto-send without confirmation."),
   open_grok: reach("open_grok", "Open Grok", "Launch the user's existing Grok; never auto-send without confirmation."),
   open_lmstudio: reach("open_lmstudio", "Open LM Studio", "Launch the local LM Studio app; stays on-device."),
+  local_chat: { ...reach("local_chat", "Local chat", "Hands your message to a local model and brings the reply back — stays on-device, never leaves the machine.", true), wired: true },
   open_github: reach("open_github", "Open GitHub", "Open a GitHub view; read-only until repo write is separately granted.", true),
   open_gmail: reach("open_gmail", "Open Gmail", "Open Gmail; drafting only, never send without explicit confirmation.", true),
   open_calendar: reach("open_calendar", "Open Calendar", "Open the calendar; propose events, never create without confirmation.", true),
@@ -292,7 +294,7 @@ export const BUDDY_MANIFEST: Record<string, BuddyManifestEntry> = {
     role: "Summarise & Explain",
     capability: "writing",
     routes: { primary: ["gpt"], fallback: ["claude"], local: ["lm_studio", "ollama"] },
-    effectors: ["summarize_long", "voice_out"],
+    effectors: ["summarize_long", "voice_out", "local_chat"],
     reachFirst: false, // transforms text the user already has
   },
 };
@@ -300,13 +302,15 @@ export const BUDDY_MANIFEST: Record<string, BuddyManifestEntry> = {
 // Two gated-live lanes. An effector may ship `wired: true` ONLY through one of them;
 // `validateBuddyManifest` throws on any wired effector outside both.
 //
-//   Reach lane — read-only hand-offs (open/inspect the real tool). Always safe to be live.
+//   Reach lane — open/inspect the real tool, or a governed reach to a local,
+//                on-device provider. Data stays on the machine; the buddy never acts
+//                in place of the tool.
 //   Act lane   — effectors that perform an effect in place of the tool. A `reach` rail is
 //                not enough here, so this lane is STRICTER: each entry must declare a typed
 //                intent schema and an execution-outcome receipt (and the gate/soul suites
 //                prove the no-execute-on-block invariant). This is the only way an `act`
 //                effector goes live — never by flipping a spec in place.
-export const GATED_WIRED_REACH_EFFECTORS: ReadonlySet<EffectorId> = new Set<EffectorId>(["receipt_review"]);
+export const GATED_WIRED_REACH_EFFECTORS: ReadonlySet<EffectorId> = new Set<EffectorId>(["receipt_review", "local_chat"]);
 
 export interface GatedActEffector {
   id: EffectorId;

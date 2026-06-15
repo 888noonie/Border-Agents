@@ -153,6 +153,48 @@ describe("handleActionRequest", () => {
     expect(ledger).toHaveLength(1);
     expect(ledger[0].buddyId).toBe("veritas");
   });
+
+  test("aether can attach local_chat under private posture without an ungranted block", () => {
+    const storage = memoryStorage();
+    const { receipt } = handleActionRequest({
+      buddy: "aether",
+      effectorId: "local_chat",
+      settings: BASE_SETTINGS,
+      posture: "private",
+      history: [{ role: "user", text: "hello local model" }],
+      intent: {
+        effectorId: "local_chat",
+        operation: "open_session",
+        target: { kind: "url", path: "LM Studio" },
+        summary: "open private local chat",
+      },
+      route: { provider: "lm_studio", locality: "local", downgraded: false },
+      storage,
+      now: "2026-06-13T12:00:00Z",
+    });
+
+    expect(receipt.decision).toBe("needs_confirmation");
+    expect(receipt.rules.some((r) => r.policy_rule === "action.blocked.ungranted")).toBe(false);
+    expect(receipt.rules.some((r) => r.policy_rule === "action.confirm.risk_floor")).toBe(true);
+  });
+
+  test("aether placeholder surfaces can block as known-but-unwired effectors", () => {
+    const storage = memoryStorage();
+    const { receipt } = handleActionRequest({
+      buddy: "aether",
+      effectorId: "summarize_long",
+      settings: BASE_SETTINGS,
+      posture: "work",
+      history: [{ role: "user", text: "open the placeholder" }],
+      storage,
+      now: "2026-06-13T12:00:00Z",
+    });
+
+    expect(receipt.decision).toBe("blocked");
+    expect(receipt.rules.some((r) => r.policy_rule === "action.blocked.unwired")).toBe(true);
+    expect(receipt.rules.some((r) => r.policy_rule === "action.blocked.unknown_effector")).toBe(false);
+    expect(receipt.rules.some((r) => r.policy_rule === "action.blocked.ungranted")).toBe(false);
+  });
 });
 
 // The first true `act` effector through the full seam: body request → resolve → gate

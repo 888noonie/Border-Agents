@@ -324,6 +324,12 @@ pub fn action_request_intent_json(
     to_soul("action_request", buddy, fields)
 }
 
+/// The user asked to enter/switch to a governed surface. The body only names the desired
+/// surface; the soul decides whether it is known, granted, wired, and confirmed.
+pub fn surface_request_json(buddy: &str, surface: &str) -> String {
+    to_soul("surface_request", buddy, json!({ "surface": surface }))
+}
+
 /// The user dragged the visible frame head while the buddy was framing a native window.
 /// This is only a request: moving the OS window is an effector owned by the soul/driver,
 /// never by the body.
@@ -434,6 +440,12 @@ pub enum Cue {
         /// World-facing execution outcome (present only on `allow` paths). `executed` is the
         /// load-bearing bit; `route` is the provider provenance ("providers rotate").
         outcome: Option<ActionOutcome>,
+    },
+    SurfaceActive {
+        surface: String,
+        posture: String,
+        label: Option<String>,
+        provider_label: Option<String>,
     },
     /// Border-target tracking (the "Morph Frame" seam): a platform driver tells the body
     /// where a native OS window is so it can wrap its hollow torso around it. Split three
@@ -631,6 +643,19 @@ pub fn parse_to_body(text: &str) -> Option<ToBody> {
         },
         "output" => parse_output(&v)?,
         "action_result" => parse_action_result(&v)?,
+        "surface_active" => {
+            let surface = nonempty(v.get("surface"))?;
+            let posture = v.get("posture")?.as_str()?.to_string();
+            if !matches!(posture.as_str(), "work" | "play" | "private") {
+                return None;
+            }
+            Cue::SurfaceActive {
+                surface,
+                posture,
+                label: v.get("label").and_then(|s| s.as_str()).map(String::from),
+                provider_label: v.get("providerLabel").and_then(|s| s.as_str()).map(String::from),
+            }
+        }
         "target_acquired" => Cue::TargetAcquired {
             target_id: nonempty(v.get("targetId"))?,
             title: v.get("title")?.as_str()?.to_string(),
@@ -793,9 +818,24 @@ mod tests {
 
     #[test]
     fn to_soul_and_attention_fixtures_are_not_body_cues() {
-        for kind in ["attached", "clicked", "grabbed", "dropped", "summoned", "dismissed", "said", "attention", "action_request"] {
+        for kind in ["attached", "clicked", "grabbed", "dropped", "summoned", "dismissed", "said", "attention", "action_request", "surface_request"] {
             assert!(parse_to_body(&fixture(kind)).is_none(), "{kind} should not be a body cue");
         }
+    }
+
+    #[test]
+    fn parses_surface_active_fixture() {
+        let active = parse_to_body(&fixture("surface_active")).unwrap();
+        assert_eq!(active.buddy, "hermes");
+        assert_eq!(
+            active.cue,
+            Cue::SurfaceActive {
+                surface: "private_local_chat".into(),
+                posture: "private".into(),
+                label: Some("Private local chat".into()),
+                provider_label: Some("LM Studio".into()),
+            }
+        );
     }
 
     #[test]
@@ -904,6 +944,15 @@ mod tests {
         assert!(g["intent"]["target"].get("value").is_none(), "value omitted when None");
         assert_eq!(g["intent"]["payloadDigest"], "sha256:abc");
         assert!(g["intent"].get("summary").is_none());
+    }
+
+    #[test]
+    fn surface_request_builder_emits_valid_envelope() {
+        let a: Value = serde_json::from_str(&surface_request_json("aether", "private_local_chat")).unwrap();
+        assert_eq!(a["protocol"], "presence");
+        assert_eq!(a["kind"], "surface_request");
+        assert_eq!(a["buddy"], "aether");
+        assert_eq!(a["surface"], "private_local_chat");
     }
 
     #[test]

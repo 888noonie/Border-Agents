@@ -14,7 +14,8 @@
 //
 // Run:  npm run soul:dev          (binds ws://127.0.0.1:17387/border-buddies — the body's default)
 //       BB_POSTURE=play npm run soul:dev
-// Then: BB_BUDDY=owl npm run body:dev   and type `/review` on the body, then `/confirm`.
+// Then: BB_BUDDY=aether AETHER_NAME=Aether BB_LMSTUDIO_MODEL=<loaded-model> npm run body:dev
+// Use the perimeter switcher to request private_local_chat, /confirm it, then type locally.
 //
 // Posture: BB_POSTURE = work | play | private (default work). Ledger persists to a JSON file
 // (BB_SOUL_LEDGER, default <tmp>/bb-soul-ledger.json) so receipts survive restarts and are
@@ -32,7 +33,9 @@ import {
   presenceIntentToActionIntent,
   decisionEmotion,
 } from "../src/soulActions";
+import { buildExecutionReceipt } from "../src/effectorExecutors";
 import { createLiveRepoEditExecutor } from "./liveEffectorExecutors";
+import { createLiveLocalChatConnector, type LocalChatMessage } from "./liveLocalChat";
 import {
   PRESENCE_PROTOCOL,
   parsePresenceMessage,
@@ -40,9 +43,11 @@ import {
   type PresenceActionIntent,
 } from "../src/presenceProtocol";
 import { createDefaultBuddySettings, BUDDY_PROFILES, type BuddyProfile } from "../src/buddyProfiles";
-import type { EffectorId } from "../src/buddyManifest";
-import type { ActionIntent, UserPosture } from "../src/core";
+import { ROUTE_PROVIDER_LABELS, resolveManifestId, type EffectorId } from "../src/buddyManifest";
+import { getSurface, type SurfaceId } from "../src/surfaceManifest";
+import type { ActionIntent, ActionReceipt, ActionRoute, UserPosture } from "../src/core";
 import type { SessionChatLine } from "../src/liveGovernance";
+import { appendExecutionReceiptToLedger } from "../src/receiptLedger";
 
 const PORT = Number(process.env.BB_PRESENCE_PORT ?? 17387);
 const PATH = process.env.BB_PRESENCE_PATH ?? "/border-buddies";
@@ -99,7 +104,11 @@ function profileFor(buddy: string): BuddyProfile {
 const storage = fileStorage(LEDGER_PATH);
 // Live, disk-writing executors rooted at the repo cwd, sandboxed to .border-agents/proofs/.
 // The soul-server is a Node context, so unlike the browser body it injects real executors.
-const EXECUTORS = { repo_edit: createLiveRepoEditExecutor() };
+const EXECUTORS = {
+  repo_edit: createLiveRepoEditExecutor(),
+  local_chat: () => ({ outcome: "ok" as const, detail: "private local chat session attached" }),
+};
+const localChat = createLiveLocalChatConnector();
 // Per-buddy pending effector, set when the gate returns needs_confirmation so a later
 // `/confirm` knows what it is confirming. Mirrors the browser composer's pendingEffector.
 const pending = new Map<string, string>();
@@ -107,6 +116,10 @@ const pending = new Map<string, string>();
 // (same operation + target) it proposed — confirmation must clear the floor on the exact intent,
 // never silently widen to a bare grant.
 const pendingIntent = new Map<string, ActionIntent>();
+const pendingSurface = new Map<string, SurfaceId>();
+const activeSurface = new Map<string, SurfaceId>();
+const attachReceiptId = new Map<string, string>();
+const localChatHistory = new Map<string, LocalChatMessage[]>();
 
 // A single action-backed turn so an `act` effector (repo_edit) can reach the allow path on this
 // real surface: an assistant assertion grades `trusted` and — with `allowAction` on the settings
@@ -117,8 +130,8 @@ const ACTION_BACKING: SessionChatLine[] = [{ role: "assistant", text: "Reviewed 
 
 /** Settings for the gate: the profile's defaults plus `allowAction` so a backed turn can carry
  * may_use_for_action. Per-call (not cached) so a future per-buddy posture stays straightforward. */
-function gateSettings(buddy: string) {
-  return { ...createDefaultBuddySettings(profileFor(buddy)), allowAction: true };
+function gateSettings(buddy: string, effectorId: string) {
+  return { ...createDefaultBuddySettings(profileFor(buddy)), allowAction: effectorId === "repo_edit" };
 }
 
 /** Build the typed intent for a `/review <effector> <target>` command. Defaults to a repo_path
@@ -141,6 +154,8 @@ function authorizeAndReply(
   confirmed: boolean,
   requestId?: string,
   intent?: ActionIntent,
+  posture: UserPosture = POSTURE,
+  route?: ActionRoute,
 ) {
   // The soul projects its own state the instant it begins weighing — the deliberation face.
   // Synchronous here (microseconds), but this is the seam a future provider-backed soul that
@@ -150,8 +165,8 @@ function authorizeAndReply(
   const { receipt, result, execution } = handleActionRequest({
     buddy,
     effectorId,
-    settings: gateSettings(buddy),
-    posture: POSTURE,
+    settings: gateSettings(buddy, effectorId),
+    posture,
     history: ACTION_BACKING,
     // The typed effect to authorize. When present (e.g. a repo_edit targeting a sandbox path),
     // the gate authorizes the EFFECT, not just the grant, and on `allow` the live disk-writing
@@ -159,6 +174,7 @@ function authorizeAndReply(
     // → grant-only: an act effector fails closed. No-execute-on-block holds either way.
     intent,
     executors: EXECUTORS,
+    route,
     confirmed,
     requestId,
     storage,
@@ -169,6 +185,7 @@ function authorizeAndReply(
   } else {
     pending.delete(buddy);
     pendingIntent.delete(buddy);
+    pendingSurface.delete(buddy);
   }
   // The honest outcome face, derived from the real receipt — sent BEFORE the result so the
   // soul is the authoritative source of mood. The native body's `Emotion::for_decision` is the
@@ -184,6 +201,149 @@ function authorizeAndReply(
     execution: execution ? `${execution.outcome}${execution.executor_called ? "" : " (skipped)"}` : "none",
   });
   return receipt;
+}
+
+function providerLabel(provider: string | undefined): string | undefined {
+  if (!provider) return undefined;
+  return ROUTE_PROVIDER_LABELS[provider as keyof typeof ROUTE_PROVIDER_LABELS] ?? provider;
+}
+
+function localChatRoute(): ActionRoute {
+  return { provider: "lm_studio", locality: "local", downgraded: false };
+}
+
+function surfaceIntent(surfaceId: SurfaceId): ActionIntent | undefined {
+  const surface = getSurface(surfaceId);
+  if (!surface?.effectorId) return undefined;
+  return {
+    effectorId: surface.effectorId,
+    operation: "open_session",
+    target: { kind: "url", path: providerLabel(surface.provider) ?? surface.id },
+    summary: `open ${surface.label}`,
+  };
+}
+
+function activateSurface(socket: WebSocket, buddy: string, surfaceId: SurfaceId, receipt?: ActionReceipt) {
+  const surface = getSurface(surfaceId);
+  if (!surface) return;
+  activeSurface.set(buddy, surface.id);
+  if (receipt) {
+    attachReceiptId.set(buddy, receipt.receipt_id);
+  }
+  if (surface.id !== "private_local_chat") {
+    localChatHistory.delete(buddy);
+  }
+  socket.send(
+    JSON.stringify(
+      presence.surfaceActive(buddy, {
+        surface: surface.id,
+        posture: surface.posture,
+        label: surface.label,
+        providerLabel: providerLabel(surface.provider),
+      }),
+    ),
+  );
+}
+
+function requestSurface(socket: WebSocket, buddy: string, surfaceName: string) {
+  const surface = getSurface(surfaceName);
+  if (!surface) {
+    socket.send(JSON.stringify(presence.express(buddy, "alert")));
+    socket.send(JSON.stringify(presence.say(buddy, "That surface is not known yet.")));
+    return;
+  }
+
+  if (surface.id === "session") {
+    attachReceiptId.delete(buddy);
+    activateSurface(socket, buddy, surface.id);
+    socket.send(JSON.stringify(presence.say(buddy, "Session surface active.")));
+    return;
+  }
+
+  if (surface.id === "customize" || !surface.effectorId) {
+    socket.send(JSON.stringify(presence.express(buddy, "alert")));
+    socket.send(JSON.stringify(presence.say(buddy, "Surface customization is not wired yet.")));
+    return;
+  }
+
+  const route = surface.provider === "lm_studio" ? localChatRoute() : undefined;
+  const receipt = authorizeAndReply(
+    socket,
+    buddy,
+    surface.effectorId,
+    false,
+    undefined,
+    surfaceIntent(surface.id),
+    surface.posture,
+    route,
+  );
+
+  if (receipt.decision === "needs_confirmation") {
+    pendingSurface.set(buddy, surface.id);
+    socket.send(
+      JSON.stringify(
+        presence.say(
+          buddy,
+          surface.id === "private_local_chat"
+            ? "Enter private local chat? Your messages stay on this machine — /confirm."
+            : `Enter ${surface.label}? Type /confirm to continue.`,
+        ),
+      ),
+    );
+    return;
+  }
+
+  if (receipt.decision === "allow") {
+    activateSurface(socket, buddy, surface.id, receipt);
+    socket.send(
+      JSON.stringify(
+        presence.say(
+          buddy,
+          surface.id === "private_local_chat"
+            ? "Private local chat ready — running locally."
+            : `${surface.label} ready.`,
+        ),
+      ),
+    );
+    return;
+  }
+
+  socket.send(JSON.stringify(presence.say(buddy, "That surface isn't wired yet.")));
+}
+
+async function routePrivateLocalChat(socket: WebSocket, buddy: string, text: string) {
+  const actionReceiptId = attachReceiptId.get(buddy);
+  if (!actionReceiptId) {
+    socket.send(JSON.stringify(presence.express(buddy, "alert")));
+    socket.send(JSON.stringify(presence.say(buddy, "Private local chat is not authorized yet. Enter the surface first.")));
+    return;
+  }
+
+  socket.send(JSON.stringify(presence.express(buddy, "thinking")));
+  const history = localChatHistory.get(buddy) ?? [
+    { role: "system", content: "You are a private local model connected through Border Agents. Reply directly and do not claim external tool access." },
+  ];
+  const messages: LocalChatMessage[] = [...history, { role: "user", content: text }];
+  const reply = await localChat(messages);
+  const now = new Date().toISOString();
+  const manifestId = resolveManifestId(buddy);
+  const intent: ActionIntent = {
+    effectorId: "local_chat",
+    operation: "chat_completion",
+    target: { kind: "url", path: "lm_studio" },
+    summary: "send a private local chat turn",
+  };
+  const unreachable = /^Local model unreachable\b/.test(reply);
+  const execution = buildExecutionReceipt(
+    { intent, buddy: manifestId, route: localChatRoute(), actionReceiptId, now },
+    true,
+    { outcome: unreachable ? "error" : "ok", detail: unreachable ? reply : "local chat turn completed" },
+  );
+  appendExecutionReceiptToLedger({ buddyId: manifestId, receipt: execution, storage });
+  localChatHistory.set(buddy, [...messages, { role: "assistant", content: reply }].slice(-24));
+  socket.send(JSON.stringify(presence.express(buddy, unreachable ? "alert" : "happy")));
+  socket.send(JSON.stringify(presence.say(buddy, reply)));
+  log("local chat turn", { buddy, receiptId: execution.receipt_id, outcome: execution.outcome });
 }
 
 const server = createServer((_request, response) => {
@@ -215,7 +375,7 @@ wss.on("connection", (socket, request) => {
   const remote = request.socket.remoteAddress ?? "unknown";
   log(`client connected from ${remote}`);
 
-  socket.on("message", (raw) => {
+  socket.on("message", async (raw) => {
     let parsed: unknown;
     try {
       parsed = JSON.parse(safeString(raw));
@@ -260,6 +420,10 @@ wss.on("connection", (socket, request) => {
         // else is free text the soul would forward to a provider (not wired in this server).
         const command = parseActionCommand(message.text);
         if (!command) {
+          if (activeSurface.get(buddy) === "private_local_chat") {
+            await routePrivateLocalChat(socket, buddy, message.text);
+            return;
+          }
           // Free text. This is the GOVERNANCE soul — it gates actions, it does not forward chat
           // to a provider (that is the dev gateway / a provider-backed soul's job). Silently
           // dropping it left the body hung on a "Reply pending — waiting for <buddy>…" promise it
@@ -284,7 +448,31 @@ wss.on("connection", (socket, request) => {
           }
           // Re-authorize the SAME typed effect that was proposed — confirmation clears the floor
           // on the exact intent, it does not fall back to a bare grant.
-          authorizeAndReply(socket, buddy, effectorId, true, undefined, pendingIntent.get(buddy));
+          const surfaceId = pendingSurface.get(buddy);
+          const surface = surfaceId ? getSurface(surfaceId) : undefined;
+          const receipt = authorizeAndReply(
+            socket,
+            buddy,
+            effectorId,
+            true,
+            undefined,
+            pendingIntent.get(buddy),
+            surface?.posture ?? POSTURE,
+            surface?.provider === "lm_studio" ? localChatRoute() : undefined,
+          );
+          if (receipt.decision === "allow" && surface) {
+            activateSurface(socket, buddy, surface.id, receipt);
+            socket.send(
+              JSON.stringify(
+                presence.say(
+                  buddy,
+                  surface.id === "private_local_chat"
+                    ? "Private local chat ready — running locally."
+                    : `${surface.label} ready.`,
+                ),
+              ),
+            );
+          }
           return;
         }
         // `/review <effector> <target>` carries a typed effect (e.g. `/review repo_edit
@@ -302,6 +490,11 @@ wss.on("connection", (socket, request) => {
         const lifted = presenceIntentToActionIntent(message.effector as EffectorId, message.intent);
         const intent = lifted ?? (message.confirmed ? pendingIntent.get(buddy) : undefined);
         authorizeAndReply(socket, buddy, message.effector, message.confirmed === true, message.requestId, intent);
+        return;
+      }
+
+      case "surface_request": {
+        requestSurface(socket, buddy, message.surface);
         return;
       }
 

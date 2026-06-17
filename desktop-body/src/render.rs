@@ -2017,7 +2017,7 @@ fn draw_receipt_rail(pixmap: &mut Pixmap, font: &Font, items: &[ReceiptRailItem]
 fn receipt_glyph_color(glyph: &str) -> [u8; 3] {
     match glyph {
         "✅" => [33, 122, 76],
-        "⏳" => [166, 111, 28],
+        "☑" | "⏳" => [166, 111, 28],
         _ => [170, 48, 45],
     }
 }
@@ -2755,6 +2755,14 @@ mod tests {
         assert_eq!(receipt_rail_card_index(12.0, 45.0, 2), Some(1));
         assert_eq!(receipt_rail_card_index(RECEIPT_RAIL_W as f64 + 1.0, 12.0, 2), None);
         assert_eq!(receipt_rail_card_index(12.0, 90.0, 2), None);
+    }
+
+    #[test]
+    fn receipt_glyph_colors_keep_authorized_not_run_distinct_from_blocked() {
+        assert_eq!(receipt_glyph_color("✅"), [33, 122, 76]);
+        assert_eq!(receipt_glyph_color("☑"), [166, 111, 28]);
+        assert_eq!(receipt_glyph_color("❌"), [170, 48, 45]);
+        assert_ne!(receipt_glyph_color("☑"), receipt_glyph_color("❌"));
     }
 
     #[test]

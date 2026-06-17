@@ -307,12 +307,14 @@ impl ReceiptRailEntry {
 
 fn receipt_status_glyph(decision: &str, executed: Option<bool>) -> &'static str {
     match decision {
-        "allow" if executed == Some(true) => "✅",
+        "allow" if executed == Some(false) => "☑",
+        "allow" => "✅",
         "needs_confirmation" => "⏳",
         _ => "❌",
     }
 }
 
+/// Deterministic seconds-of-day marker from the cue timestamp. It is not localized wall time.
 fn format_ts_hms(ts: u64) -> String {
     let seconds = if ts > 10_000_000_000 { ts / 1000 } else { ts };
     let seconds = seconds % 86_400;
@@ -2489,10 +2491,13 @@ mod tests {
     #[test]
     fn receipt_status_glyph_is_closed_and_fails_loud() {
         assert_eq!(receipt_status_glyph("allow", Some(true)), "✅");
-        assert_eq!(receipt_status_glyph("allow", Some(false)), "❌");
+        assert_eq!(receipt_status_glyph("allow", None), "✅");
+        assert_eq!(receipt_status_glyph("allow", Some(false)), "☑");
         assert_eq!(receipt_status_glyph("needs_confirmation", None), "⏳");
         assert_eq!(receipt_status_glyph("blocked", None), "❌");
         assert_eq!(receipt_status_glyph("maybe", Some(true)), "❌");
+        assert_ne!(receipt_status_glyph("allow", None), receipt_status_glyph("blocked", None));
+        assert_ne!(receipt_status_glyph("allow", Some(false)), receipt_status_glyph("blocked", None));
     }
 
     #[test]

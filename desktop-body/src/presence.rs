@@ -507,6 +507,7 @@ pub struct ActionOutcome {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToBody {
     pub buddy: String,
+    pub ts: u64,
     pub cue: Cue,
 }
 
@@ -694,6 +695,7 @@ pub fn parse_to_body(text: &str) -> Option<ToBody> {
         return None;
     }
     let buddy = v.get("buddy")?.as_str()?.to_string();
+    let ts = v.get("ts")?.as_u64()?;
 
     let cue = match v.get("kind")?.as_str()? {
         "express" => Cue::Express {
@@ -754,7 +756,7 @@ pub fn parse_to_body(text: &str) -> Option<ToBody> {
         _ => return None,
     };
 
-    Some(ToBody { buddy, cue })
+    Some(ToBody { buddy, ts, cue })
 }
 
 /// Resolve an `anchored` position to surface (left, top) margins. Edge-relative math

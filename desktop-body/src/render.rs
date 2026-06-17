@@ -27,6 +27,7 @@ use tiny_skia::{
 pub const SURFACE_W: u32 = 560;
 pub const PINNED_SURFACE_W: u32 = 420;
 pub const PINNED_SURFACE_H: u32 = 176;
+pub const RECEIPT_RAIL_W: u32 = 160;
 const FRAME_SIDE_PAD: f32 = 92.0;
 const FRAME_TOP_PAD: f32 = 118.0;
 const FRAME_BOTTOM_PAD: f32 = 72.0;
@@ -80,6 +81,9 @@ const SURFACE_BLOOM_W: f32 = 116.0;
 const SURFACE_BLOOM_H: f32 = 24.0;
 const SURFACE_BLOOM_R: f32 = 112.0;
 const SURFACE_BLOOM_MAX_ITEMS: usize = 6;
+const RECEIPT_RAIL_PAD: f32 = 8.0;
+const RECEIPT_RAIL_CARD_H: f32 = 28.0;
+const RECEIPT_RAIL_CARD_GAP: f32 = 5.0;
 
 /// Default clay colour — Morph terracotta. Override per-buddy with `BB_COLOR`.
 pub const CLAY_DEFAULT: [u8; 3] = [201, 109, 60];
@@ -702,6 +706,15 @@ pub struct SurfaceDialItem<'a> {
     pub active: bool,
 }
 
+#[derive(Clone, Copy)]
+pub struct ReceiptRailItem<'a> {
+    pub glyph: &'a str,
+    pub effector: &'a str,
+    pub decision: &'a str,
+    pub route_label: Option<&'a str>,
+    pub time: &'a str,
+}
+
 pub enum TorsoOutput<'a> {
     Session(SessionCard<'a>),
     Passport(PassportCard<'a>),
@@ -750,11 +763,33 @@ pub struct BodyView<'a> {
     pub route_health: Option<&'a str>,
     /// Body-observed local→cloud transition flash. Separate from route health.
     pub route_flash: bool,
+    /// Expanded-mode receipt rail items, newest first. Empty still draws the rail panel.
+    pub receipt_rail: &'a [ReceiptRailItem<'a>],
     pub layout: Layout,
     pub pinned: Option<PinnedLayout>,
     pub frame: Option<FrameLayout>,
     /// Clay colour (BB_COLOR) — every shade on the figure derives from this.
     pub color: [u8; 3],
+}
+
+pub fn receipt_rail_visible_for_body_len(body_len: f32) -> bool {
+    body_len >= BODY_LEN_MAX
+}
+
+pub fn receipt_rail_card_index(x: f64, y: f64, count: usize) -> Option<usize> {
+    if x < 0.0 || x > RECEIPT_RAIL_W as f64 {
+        return None;
+    }
+    (0..count).find(|idx| receipt_rail_card_rect(*idx).contains(x, y))
+}
+
+fn receipt_rail_card_rect(idx: usize) -> Rect {
+    Rect {
+        x: RECEIPT_RAIL_PAD,
+        y: RECEIPT_RAIL_PAD + idx as f32 * (RECEIPT_RAIL_CARD_H + RECEIPT_RAIL_CARD_GAP),
+        w: RECEIPT_RAIL_W as f32 - RECEIPT_RAIL_PAD * 2.0,
+        h: RECEIPT_RAIL_CARD_H,
+    }
 }
 
 pub struct Sprite {
@@ -831,44 +866,76 @@ impl Sprite {
             return;
         }
 
-        draw_figure(&mut pixmap, &view.layout, view.color, bob, &pose, view.route_health, view.route_flash);
-        if let Some(font) = &self.font {
-            draw_torso_output(&mut pixmap, font, &view.layout, &view.torso_output);
-            if let Some(label) = view.posture_badge {
-                draw_posture_badge(&mut pixmap, font, &view.layout, label);
-            }
-        }
-        draw_eyes(&mut pixmap, bob, eye_open, face.pupil_dy);
-        draw_mouth(&mut pixmap, bob, &face.mouth);
-        if let Some(font) = &self.font {
-            draw_perimeter_controls(&mut pixmap, font, &view.layout, view.dim_quick);
-            draw_surface_bloom(&mut pixmap, font, &view.layout, view.surface_bloom);
-        }
-
-        if let Some(text) = view.speech {
-            if let Some(font) = &self.font {
-                draw_bubble(&mut pixmap, font, &view.layout, text);
-            }
-        }
-
-        if view.chat_open {
-            if let Some(font) = &self.font {
-                draw_input(
-                    &mut pixmap,
-                    font,
-                    &view.layout,
-                    view.input_text,
-                    view.input_placeholder,
-                    view.input_focused,
-                    view.t,
+        let rail_visible = receipt_rail_visible_for_body_len(view.layout.body_len) && view.pinned.is_none() && view.tucked.is_none();
+        if rail_visible {
+            if let Some(mut body) = Pixmap::new(SURFACE_W, h) {
+                draw_body_content(&mut body, self.font.as_ref(), view, bob, eye_open, face.pupil_dy, &face.mouth, &pose);
+                if let Some(font) = &self.font {
+                    draw_receipt_rail(&mut pixmap, font, view.receipt_rail);
+                }
+                let paint = PixmapPaint::default();
+                pixmap.draw_pixmap(
+                    0,
+                    0,
+                    body.as_ref(),
+                    &paint,
+                    Transform::from_translate(RECEIPT_RAIL_W as f32, 0.0),
+                    None,
                 );
-                draw_paste_button(&mut pixmap, font, &view.layout);
-                draw_governance_button(&mut pixmap, font, view.layout.review_button_rect(), view.review_pending, "Review");
-                draw_governance_button(&mut pixmap, font, view.layout.edit_button_rect(), view.edit_pending, "Edit");
             }
+        } else {
+            draw_body_content(&mut pixmap, self.font.as_ref(), view, bob, eye_open, face.pupil_dy, &face.mouth, &pose);
         }
 
         blit_premultiplied_bgra(pixmap.data(), canvas);
+    }
+}
+
+fn draw_body_content(
+    pixmap: &mut Pixmap,
+    font: Option<&Font>,
+    view: &BodyView,
+    bob: f32,
+    eye_open: f32,
+    pupil_dy: f32,
+    mouth: &Mouth,
+    pose: &FigurePose,
+) {
+    draw_figure(pixmap, &view.layout, view.color, bob, pose, view.route_health, view.route_flash);
+    if let Some(font) = font {
+        draw_torso_output(pixmap, font, &view.layout, &view.torso_output);
+        if let Some(label) = view.posture_badge {
+            draw_posture_badge(pixmap, font, &view.layout, label);
+        }
+    }
+    draw_eyes(pixmap, bob, eye_open, pupil_dy);
+    draw_mouth(pixmap, bob, mouth);
+    if let Some(font) = font {
+        draw_perimeter_controls(pixmap, font, &view.layout, view.dim_quick);
+        draw_surface_bloom(pixmap, font, &view.layout, view.surface_bloom);
+    }
+
+    if let Some(text) = view.speech {
+        if let Some(font) = font {
+            draw_bubble(pixmap, font, &view.layout, text);
+        }
+    }
+
+    if view.chat_open {
+        if let Some(font) = font {
+            draw_input(
+                pixmap,
+                font,
+                &view.layout,
+                view.input_text,
+                view.input_placeholder,
+                view.input_focused,
+                view.t,
+            );
+            draw_paste_button(pixmap, font, &view.layout);
+            draw_governance_button(pixmap, font, view.layout.review_button_rect(), view.review_pending, "Review");
+            draw_governance_button(pixmap, font, view.layout.edit_button_rect(), view.edit_pending, "Edit");
+        }
     }
 }
 
@@ -1912,6 +1979,49 @@ fn draw_passport_card(pixmap: &mut Pixmap, font: &Font, rect: Rect, card: &Passp
     }
 }
 
+fn draw_receipt_rail(pixmap: &mut Pixmap, font: &Font, items: &[ReceiptRailItem]) {
+    fill_round_rect(
+        pixmap,
+        Rect { x: 0.0, y: 0.0, w: RECEIPT_RAIL_W as f32, h: pixmap.height() as f32 },
+        0.0,
+        &solid(Color::from_rgba8(36, 42, 48, 220)),
+    );
+    fill_round_rect(
+        pixmap,
+        Rect { x: RECEIPT_RAIL_W as f32 - 1.0, y: 0.0, w: 1.0, h: pixmap.height() as f32 },
+        0.0,
+        &solid(Color::from_rgba8(255, 255, 255, 32)),
+    );
+
+    for (idx, item) in items.iter().enumerate() {
+        let rect = receipt_rail_card_rect(idx);
+        if rect.y + rect.h > pixmap.height() as f32 - RECEIPT_RAIL_PAD {
+            break;
+        }
+        fill_round_rect(pixmap, rect, 6.0, &solid(Color::from_rgba8(248, 250, 252, 224)));
+        let glyph_color = receipt_glyph_color(item.glyph);
+        draw_line(pixmap, font, item.glyph, rect.x + 5.0, rect.y + 18.0, 11.0, glyph_color);
+
+        let effector_x = rect.x + 22.0;
+        let top = fit_line(font, item.effector, 8.5, 72.0);
+        draw_line(pixmap, font, &top, effector_x, rect.y + 11.0, 8.5, [35, 39, 43]);
+
+        let detail = item.route_label.unwrap_or(item.decision);
+        let detail = fit_line(font, detail, 8.0, 72.0);
+        draw_line(pixmap, font, &detail, effector_x, rect.y + 22.0, 8.0, [83, 91, 99]);
+
+        draw_line(pixmap, font, item.time, rect.x + rect.w - 43.0, rect.y + 18.0, 8.0, [83, 91, 99]);
+    }
+}
+
+fn receipt_glyph_color(glyph: &str) -> [u8; 3] {
+    match glyph {
+        "✅" => [33, 122, 76],
+        "⏳" => [166, 111, 28],
+        _ => [170, 48, 45],
+    }
+}
+
 fn posture_tag_label(posture: &str) -> &'static str {
     match posture {
         "private" => "PRIV",
@@ -2634,6 +2744,20 @@ mod tests {
     }
 
     #[test]
+    fn receipt_rail_is_expanded_mode_only() {
+        assert!(!receipt_rail_visible_for_body_len(BODY_LEN_MAX - 0.1));
+        assert!(receipt_rail_visible_for_body_len(BODY_LEN_MAX));
+    }
+
+    #[test]
+    fn receipt_rail_hit_maps_cards_only_inside_rail() {
+        assert_eq!(receipt_rail_card_index(12.0, 12.0, 2), Some(0));
+        assert_eq!(receipt_rail_card_index(12.0, 45.0, 2), Some(1));
+        assert_eq!(receipt_rail_card_index(RECEIPT_RAIL_W as f64 + 1.0, 12.0, 2), None);
+        assert_eq!(receipt_rail_card_index(12.0, 90.0, 2), None);
+    }
+
+    #[test]
     fn ui_flips_to_face_inward() {
         let right = Layout { facing: Facing::Right, body_len: BODY_LEN_DEFAULT };
         let left = Layout { facing: Facing::Left, body_len: BODY_LEN_DEFAULT };
@@ -2735,6 +2859,7 @@ mod tests {
                 surface_bloom: &[],
                 route_health: None,
                 route_flash: false,
+                receipt_rail: &[],
                 layout,
                 pinned: None,
                 frame: None,
@@ -2972,6 +3097,7 @@ mod tests {
             surface_bloom: &[],
             route_health: None,
             route_flash: false,
+            receipt_rail: &[],
             layout: Layout::initial(),
             pinned: None,
             frame: Some(frame),

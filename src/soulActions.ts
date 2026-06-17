@@ -40,6 +40,7 @@ import {
   type PresenceActionResult,
   type PresenceAlertLevel,
   type PresenceEmotion,
+  type SurfaceRoute,
 } from "./presenceProtocol";
 import { appendActionReceiptToLedger, appendExecutionReceiptToLedger } from "./receiptLedger";
 
@@ -151,6 +152,29 @@ export function decisionAlertLevel(decision: string): PresenceAlertLevel {
     default:
       return "critical";
   }
+}
+
+export type RouteHealth = NonNullable<SurfaceRoute["health"]>;
+export type RouteHealthLastOutcome = "ok" | "degraded" | "failed";
+
+/**
+ * Deterministic soul-side route health. The body paints this; it never derives it.
+ * `gated` is still reachable route infrastructure, so it is healthy unless a stronger
+ * signal says otherwise. Severity wins: unavailable > degraded > ready.
+ */
+export function routeHealthFromSoul(state: {
+  hasRoute: boolean;
+  availability: "available" | "unwired" | "gated";
+  downgraded: boolean;
+  lastOutcome?: RouteHealthLastOutcome;
+}): RouteHealth {
+  if (!state.hasRoute || state.availability === "unwired" || state.lastOutcome === "failed") {
+    return "unavailable";
+  }
+  if (state.downgraded || state.lastOutcome === "degraded") {
+    return "degraded";
+  }
+  return "ready";
 }
 
 function summarize(receipt: ActionReceipt, label: string, execution?: ExecutionReceipt): string {

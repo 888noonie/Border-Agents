@@ -245,6 +245,7 @@ enum TorsoSurfaceSnapshot {
         posture: String,
         provider: Option<String>,
         locality: Option<String>,
+        route_health: Option<String>,
         output_preview: Option<String>,
     },
     Text {
@@ -286,12 +287,13 @@ impl TorsoSurfaceSnapshot {
                     note,
                 })
             }
-            TorsoSurfaceSnapshot::Passport { persona_label, posture, provider, locality, output_preview } => {
+            TorsoSurfaceSnapshot::Passport { persona_label, posture, provider, locality, route_health, output_preview } => {
                 render::TorsoOutput::Passport(render::PassportCard {
                     persona_label,
                     posture,
                     provider: provider.as_deref(),
                     locality: locality.as_deref(),
+                    route_health: route_health.as_deref(),
                     output_preview: output_preview.as_deref(),
                 })
             }
@@ -441,6 +443,8 @@ fn main() {
         active_posture: "work".to_string(),
         active_provider: None,
         active_locality: None,
+        active_route_health: None,
+        route_flash_until: None,
         facing: Facing::Right,
         body_len: render::BODY_LEN_DEFAULT,
         color: env_color("BB_COLOR"),
@@ -693,6 +697,12 @@ struct App {
     /// `local | cloud` from the last `surface_active.route.locality`, drives the passport
     /// locality dot. `None` until a surface with a route is activated.
     active_locality: Option<String>,
+    /// Optional soul-derived `ready | degraded | unavailable` from `surface_active.route.health`.
+    /// Absent means no ring, preserving back-compat with older cues.
+    active_route_health: Option<String>,
+    /// Body-observed local→cloud transition flash deadline. This is presentation memory only,
+    /// separate from soul-derived health.
+    route_flash_until: Option<Instant>,
     /// Which side the bubble/input sit on — recomputed from screen position so the
     /// UI always faces the screen centre, never the docked edge.
     facing: Facing,
@@ -834,6 +844,12 @@ impl App {
         let input_text = self.input_text.clone();
         let input_placeholder = format!("Ask {}...", self.name_label);
         let posture_badge = (self.active_posture == "private").then_some("PRIVATE LOCAL");
+        let route_health = self.active_route_health.clone();
+        let now = Instant::now();
+        let route_flash = self.route_flash_until.is_some_and(|deadline| deadline > now);
+        if !route_flash {
+            self.route_flash_until = None;
+        }
         // Fade each quick button whose surface the soul reported `unwired` (Slice 2a).
         let mut dim_quick = [false; 4];
         for (slot, id) in SURFACE_QUICK.iter().take(4).enumerate() {
@@ -874,6 +890,8 @@ impl App {
             posture_badge,
             dim_quick,
             surface_bloom: &bloom_items,
+            route_health: route_health.as_deref(),
+            route_flash,
             layout,
             pinned,
             frame: None,
@@ -909,6 +927,7 @@ impl App {
                     .clone()
                     .or_else(|| (!self.provider_label.is_empty()).then(|| self.provider_label.clone())),
                 locality: self.active_locality.clone(),
+                route_health: self.active_route_health.clone(),
                 output_preview: Some(self.session_note.clone()),
             },
             TorsoSurface::Text { title, body } => TorsoSurfaceSnapshot::Text {
@@ -1240,7 +1259,13 @@ impl App {
                 self.active_posture = posture;
                 // Prefer the route's provider label + locality when present; the passport row
                 // reads these. Fall back to the flat providerLabel for the provider name.
+                let previous_locality = self.active_locality.as_deref();
+                let next_locality = route.as_ref().map(|r| r.locality.as_str());
+                if previous_locality == Some("local") && next_locality == Some("cloud") {
+                    self.route_flash_until = Some(Instant::now() + Duration::from_secs(2));
+                }
                 self.active_locality = route.as_ref().map(|r| r.locality.clone());
+                self.active_route_health = route.as_ref().and_then(|r| r.health.clone());
                 self.active_provider = route
                     .as_ref()
                     .map(|r| r.label.clone())

@@ -5,6 +5,7 @@ import {
   presenceIntentToActionIntent,
   decisionEmotion,
   decisionAlertLevel,
+  routeHealthFromSoul,
 } from "../soulActions";
 import { readReceiptLedger } from "../receiptLedger";
 import type { BuddySettings } from "../buddyProfiles";
@@ -491,5 +492,82 @@ describe("decisionAlertLevel", () => {
       "confirm",
     ]);
     expect([decisionEmotion("blocked"), decisionAlertLevel("blocked")]).toEqual(["alert", "blocked"]);
+  });
+});
+
+describe("routeHealthFromSoul", () => {
+  test("maps the ready path from real route state", () => {
+    expect(
+      routeHealthFromSoul({
+        hasRoute: true,
+        availability: "available",
+        downgraded: false,
+      }),
+    ).toBe("ready");
+  });
+
+  test("treats gated as reachable route infrastructure", () => {
+    expect(
+      routeHealthFromSoul({
+        hasRoute: true,
+        availability: "gated",
+        downgraded: false,
+        lastOutcome: "ok",
+      }),
+    ).toBe("ready");
+  });
+
+  test("marks missing or unwired routes unavailable", () => {
+    expect(
+      routeHealthFromSoul({
+        hasRoute: false,
+        availability: "available",
+        downgraded: false,
+      }),
+    ).toBe("unavailable");
+    expect(
+      routeHealthFromSoul({
+        hasRoute: true,
+        availability: "unwired",
+        downgraded: false,
+      }),
+    ).toBe("unavailable");
+  });
+
+  test("marks downgraded routes and degraded outcomes degraded", () => {
+    expect(
+      routeHealthFromSoul({
+        hasRoute: true,
+        availability: "available",
+        downgraded: true,
+      }),
+    ).toBe("degraded");
+    expect(
+      routeHealthFromSoul({
+        hasRoute: true,
+        availability: "available",
+        downgraded: false,
+        lastOutcome: "degraded",
+      }),
+    ).toBe("degraded");
+  });
+
+  test("uses most-severe-wins precedence", () => {
+    expect(
+      routeHealthFromSoul({
+        hasRoute: true,
+        availability: "unwired",
+        downgraded: true,
+        lastOutcome: "degraded",
+      }),
+    ).toBe("unavailable");
+    expect(
+      routeHealthFromSoul({
+        hasRoute: true,
+        availability: "available",
+        downgraded: true,
+        lastOutcome: "failed",
+      }),
+    ).toBe("unavailable");
   });
 });

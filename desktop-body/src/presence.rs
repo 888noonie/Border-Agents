@@ -948,12 +948,12 @@ mod tests {
                 posture: "private".into(),
                 label: Some("Private local chat".into()),
                 provider_label: Some("LM Studio".into()),
-                // The nested route crosses the wire and parses identically (Slice 1); `health`
-                // stays None until the soul derives it (Slice 3).
+                // The nested route crosses the wire and parses identically; `health` is
+                // soul-derived and optional for older surface_active cues.
                 route: Some(SurfaceRoute {
                     label: "LM Studio".into(),
                     locality: "local".into(),
-                    health: None,
+                    health: Some("ready".into()),
                 }),
             }
         );

@@ -32,6 +32,7 @@ import {
   parseActionCommand,
   presenceIntentToActionIntent,
   decisionEmotion,
+  routeHealthFromSoul,
 } from "../src/soulActions";
 import { buildExecutionReceipt } from "../src/effectorExecutors";
 import { createLiveRepoEditExecutor } from "./liveEffectorExecutors";
@@ -44,7 +45,7 @@ import {
 } from "../src/presenceProtocol";
 import { createDefaultBuddySettings, BUDDY_PROFILES, type BuddyProfile } from "../src/buddyProfiles";
 import { ROUTE_PROVIDER_LABELS, resolveManifestId, type EffectorId } from "../src/buddyManifest";
-import { getSurface, surfaceHydrationList, type SurfaceId } from "../src/surfaceManifest";
+import { getSurface, surfaceAvailability, surfaceHydrationList, type SurfaceId } from "../src/surfaceManifest";
 import type { ActionIntent, ActionReceipt, ActionRoute, UserPosture } from "../src/core";
 import type { SessionChatLine } from "../src/liveGovernance";
 import { appendExecutionReceiptToLedger } from "../src/receiptLedger";
@@ -213,7 +214,7 @@ function localChatRoute(): ActionRoute {
 }
 
 /** On-device providers run `local`; everything else is `cloud`. Mirrors the local lane in
- * buddyManifest routes (`lm_studio`, `ollama`). `health` is omitted until Slice 3. */
+ * buddyManifest routes (`lm_studio`, `ollama`). */
 const LOCAL_PROVIDERS: ReadonlySet<string> = new Set(["lm_studio", "ollama"]);
 function routeLocality(provider: string): "local" | "cloud" {
   return LOCAL_PROVIDERS.has(provider) ? "local" : "cloud";
@@ -241,8 +242,17 @@ function activateSurface(socket: WebSocket, buddy: string, surfaceId: SurfaceId,
     localChatHistory.delete(buddy);
   }
   const provider = surface.provider;
+  const availability = surfaceAvailability(surface.id);
   const route = provider
-    ? { label: providerLabel(provider) ?? provider, locality: routeLocality(provider) }
+    ? {
+        label: providerLabel(provider) ?? provider,
+        locality: routeLocality(provider),
+        health: routeHealthFromSoul({
+          hasRoute: true,
+          availability,
+          downgraded: false,
+        }),
+      }
     : undefined;
   socket.send(
     JSON.stringify(

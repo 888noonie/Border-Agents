@@ -93,7 +93,7 @@ export const PRESENCE_FIXTURES = {
       posture: "private",
       label: "Private local chat",
       providerLabel: "LM Studio",
-      route: { label: "LM Studio", locality: "local" },
+      route: { label: "LM Studio", locality: "local", health: "ready" },
     },
     { ts: 1021 },
   ),

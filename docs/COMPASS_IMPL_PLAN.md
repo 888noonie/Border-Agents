@@ -204,9 +204,10 @@ Gate at this checkpoint: `npm run gen:fixtures` clean; `cd desktop-body && cargo
 - `ArrowN/E/S/W` skip `unwired` surfaces while cycling so they never dead-end on an unavailable surface.
 - Quick buttons render dim when their surface is `unwired`. Tapping a dim quick button does not emit `surface_request`; it shows a "not wired yet" speech cue.
 
-### 2b · Hold-to-bloom dial (separate PR)
-- Hold gesture (250ms in place — new press-timing + arc hit-testing, distinct from the `CLICK_SLOP` drag→`grabbed` path): bloom a radial dial of all 6 surface labels at clock positions, full text, active at 12 o'clock, prev/next at 10 and 2.
-- Tap arc segment → `surface_request { surface }`. Needs its own test harness beyond the round-trip.
+### 2b · Hold-to-bloom dial ✅ LANDED (2026-06-16)
+- Hold gesture (250ms in place — new press-timing + segment hit-testing, distinct from the `CLICK_SLOP` drag→`grabbed` path): blooms a radial dial of all 6 surface labels at clock positions, full text, active at 12 o'clock, prev/next at 10 and 2.
+- Tap a dial segment or drag-release onto one → `surface_request { surface }`. The dial builds on the stored hydrate surface list; the body stays manifest-free.
+- Own Rust harness covers hold timing/stillness, active-at-12 rotation, six-slot clock geometry, and segment hit-testing. Gate at this checkpoint: `cd desktop-body && cargo test` → **50 passed**.
 
 ### Protocol additions for Slice 2
 2a adds soul-pushed ordered `surfaces[]` on `hydrate`. `surface_request` already exists.
@@ -315,7 +316,7 @@ effectors?: { id: string; granted: boolean }[];
 | 1f | `gen:fixtures` + `cargo test` parity | cargo 41 ✅ | **DONE** |
 | Phase C | Forge `/review repo_edit <path>` browser proof | Playwright 12 ✅ | **DONE** |
 | 2a | Arrow cycle + soul-pushed hydrate `surfaces[]` availability dim | `tsc` clean · vitest 217 ✅ · cargo 46 ✅ | **DONE** |
-| 2b | Hold-to-bloom dial (separate input subsystem) | own harness | charter |
+| 2b | Hold-to-bloom dial (separate input subsystem) | cargo 50 ✅ | **DONE** |
 | 3 | `route.health` ring (needs soul derivation spec) | health-derivation unit test | charter |
 | 4 | Receipt rail — *extend* existing Review/Confirm, thin cues only | receipt accumulation test | charter |
 | 5 | Eyes/ears/mouth + vision shutter + host launch (governance, not render) | effectors[] round-trip test | charter |

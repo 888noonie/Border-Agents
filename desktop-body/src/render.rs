@@ -76,6 +76,10 @@ const UI_GAP: f32 = 16.0;
 const PANEL_LABEL_PX: f32 = 10.0;
 const PERIMETER_SIZE: f32 = 20.0;
 const PERIMETER_GAP: f32 = 6.0;
+const SURFACE_BLOOM_W: f32 = 116.0;
+const SURFACE_BLOOM_H: f32 = 24.0;
+const SURFACE_BLOOM_R: f32 = 112.0;
+const SURFACE_BLOOM_MAX_ITEMS: usize = 6;
 
 /// Default clay colour — Morph terracotta. Override per-buddy with `BB_COLOR`.
 pub const CLAY_DEFAULT: [u8; 3] = [201, 109, 60];
@@ -220,6 +224,12 @@ impl Layout {
             .into_iter()
             .find_map(|(candidate, rect)| (candidate == id).then_some(rect))
             .unwrap_or_else(|| self.torso_rect())
+    }
+
+    pub fn surface_bloom_rects(&self, count: usize) -> Vec<Rect> {
+        debug_assert!(count <= SURFACE_BLOOM_MAX_ITEMS, "surface bloom supports six visible slots");
+        let torso = self.torso_rect();
+        surface_bloom_rects_from_center(torso.x + torso.w / 2.0, torso.y + torso.h / 2.0, count.min(SURFACE_BLOOM_MAX_ITEMS))
     }
 
     pub fn torso_action_rect(&self, action: TorsoAction) -> Rect {
@@ -683,6 +693,13 @@ pub struct PassportCard<'a> {
     pub output_preview: Option<&'a str>,
 }
 
+#[derive(Clone, Copy)]
+pub struct SurfaceDialItem<'a> {
+    pub label: &'a str,
+    pub availability: &'a str,
+    pub active: bool,
+}
+
 pub enum TorsoOutput<'a> {
     Session(SessionCard<'a>),
     Passport(PassportCard<'a>),
@@ -725,6 +742,8 @@ pub struct BodyView<'a> {
     /// Per-quick-button dim flag (Quick0..3): true when that quick surface is `unwired`, so the
     /// button renders faded. Availability is soul-pushed (Slice 2a) — the body never derives it.
     pub dim_quick: [bool; 4],
+    /// Hold-to-bloom surface dial items, ordered active-at-12 by the body state machine.
+    pub surface_bloom: &'a [SurfaceDialItem<'a>],
     pub layout: Layout,
     pub pinned: Option<PinnedLayout>,
     pub frame: Option<FrameLayout>,
@@ -817,6 +836,7 @@ impl Sprite {
         draw_mouth(&mut pixmap, bob, &face.mouth);
         if let Some(font) = &self.font {
             draw_perimeter_controls(&mut pixmap, font, &view.layout, view.dim_quick);
+            draw_surface_bloom(&mut pixmap, font, &view.layout, view.surface_bloom);
         }
 
         if let Some(text) = view.speech {
@@ -1323,6 +1343,64 @@ fn draw_perimeter_controls(pixmap: &mut Pixmap, font: &Font, layout: &Layout, di
             PANEL_TEXT_PX,
             text,
         );
+    }
+}
+
+fn surface_bloom_rects_from_center(cx: f32, cy: f32, count: usize) -> Vec<Rect> {
+    const ANGLES_DEG: [f32; SURFACE_BLOOM_MAX_ITEMS] = [-90.0, -30.0, 30.0, 90.0, 150.0, 210.0];
+    ANGLES_DEG
+        .iter()
+        .take(count.min(SURFACE_BLOOM_MAX_ITEMS))
+        .map(|deg| {
+            let rad = deg.to_radians();
+            Rect {
+                x: cx + rad.cos() * SURFACE_BLOOM_R - SURFACE_BLOOM_W / 2.0,
+                y: cy + rad.sin() * SURFACE_BLOOM_R - SURFACE_BLOOM_H / 2.0,
+                w: SURFACE_BLOOM_W,
+                h: SURFACE_BLOOM_H,
+            }
+        })
+        .collect()
+}
+
+pub fn surface_bloom_hit(layout: &Layout, count: usize, x: f64, y: f64) -> Option<usize> {
+    layout
+        .surface_bloom_rects(count)
+        .into_iter()
+        .enumerate()
+        .find_map(|(idx, rect)| rect.contains(x, y).then_some(idx))
+}
+
+fn draw_surface_bloom(pixmap: &mut Pixmap, font: &Font, layout: &Layout, items: &[SurfaceDialItem]) {
+    if items.is_empty() {
+        return;
+    }
+    for (item, rect) in items.iter().zip(layout.surface_bloom_rects(items.len())) {
+        let unwired = item.availability == "unwired";
+        let bg = if item.active {
+            Color::from_rgba8(28, 42, 58, 238)
+        } else if unwired {
+            Color::from_rgba8(248, 250, 252, 112)
+        } else {
+            Color::from_rgba8(248, 250, 252, 236)
+        };
+        draw_round_rect(pixmap, rect, bg);
+        if let Some(path) = round_rect_path(rect, 8.0) {
+            let mut stroke = Stroke::default();
+            stroke.width = if item.active { 2.0 } else { 1.0 };
+            let edge = if item.active { 190 } else if unwired { 54 } else { 118 };
+            pixmap.stroke_path(&path, &solid(Color::from_rgba8(0, 0, 0, edge)), &stroke, Transform::identity(), None);
+        }
+        let label = fit_line(font, item.label, 9.5, rect.w - 14.0);
+        let tw = measure(font, &label, 9.5);
+        let fg = if item.active {
+            [238, 246, 255]
+        } else if unwired {
+            [118, 126, 140]
+        } else {
+            [22, 30, 42]
+        };
+        draw_line(pixmap, font, &label, rect.x + (rect.w - tw) / 2.0, rect.y + 15.0, 9.5, fg);
     }
 }
 
@@ -2588,6 +2666,7 @@ mod tests {
                 edit_pending: false,
                 posture_badge: None,
                 dim_quick: dim,
+                surface_bloom: &[],
                 layout,
                 pinned: None,
                 frame: None,
@@ -2615,6 +2694,39 @@ mod tests {
             alpha_sum(&dimmed) < alpha_sum(&bright),
             "an unwired Quick0 button should paint fainter than a wired one",
         );
+    }
+
+    #[test]
+    fn surface_bloom_slots_follow_clock_positions() {
+        let layout = Layout::initial();
+        let torso = layout.torso_rect();
+        let center = (torso.x + torso.w / 2.0, torso.y + torso.h / 2.0);
+        let rects = layout.surface_bloom_rects(6);
+
+        assert_eq!(rects.len(), 6);
+        let mid = |rect: Rect| (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
+        let slot0 = mid(rects[0]);
+        let slot1 = mid(rects[1]);
+        let slot3 = mid(rects[3]);
+        let slot5 = mid(rects[5]);
+
+        assert!((slot0.0 - center.0).abs() < 0.5, "active slot should be centered at 12");
+        assert!(slot0.1 < center.1, "active slot should sit above the torso center");
+        assert!(slot1.0 > center.0 && slot1.1 < center.1, "next slot should sit at 2 o'clock");
+        assert!(slot5.0 < center.0 && slot5.1 < center.1, "previous slot should sit at 10 o'clock");
+        assert!(slot3.1 > center.1, "opposite slot should sit at 6 o'clock");
+    }
+
+    #[test]
+    fn surface_bloom_hit_maps_each_pill_to_its_index() {
+        let layout = Layout::initial();
+        let rects = layout.surface_bloom_rects(6);
+        for (idx, rect) in rects.iter().enumerate() {
+            let x = (rect.x + rect.w / 2.0) as f64;
+            let y = (rect.y + rect.h / 2.0) as f64;
+            assert_eq!(surface_bloom_hit(&layout, 6, x, y), Some(idx));
+        }
+        assert_eq!(surface_bloom_hit(&layout, 6, 1.0, 1.0), None);
     }
 
     #[test]
@@ -2780,6 +2892,7 @@ mod tests {
             edit_pending: false,
             posture_badge: None,
             dim_quick: [false; 4],
+            surface_bloom: &[],
             layout: Layout::initial(),
             pinned: None,
             frame: Some(frame),

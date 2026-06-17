@@ -65,13 +65,14 @@ use wayland_protocols::wp::relative_pointer::zv1::client::{
 };
 
 const CLICK_SLOP: f64 = 5.0;
+const SURFACE_BLOOM_HOLD: Duration = Duration::from_millis(250);
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 const INPUT_PASTE_MAX_CHARS: usize = 8_000;
 /// Pre-hydrate fallback seed only. The authoritative ordered surface list (with per-surface
 /// availability) arrives soul-pushed on `hydrate` and supersedes this — see `ordered_surfaces`.
 /// Kept so the perimeter still cycles on a fresh body before the first hydrate lands.
-const SURFACE_ORDER: &[&str] = &["session", "private_local_chat", "claude_code", "live_hermes", "agent_zero"];
+const SURFACE_ORDER: &[&str] = &["session", "private_local_chat", "claude_code", "live_hermes", "agent_zero", "customize"];
 const SURFACE_QUICK: &[&str] = &["session", "private_local_chat", "claude_code", "agent_zero"];
 
 /// Drop the buddy with its head within this many pixels of a screen edge and it tucks
@@ -95,6 +96,14 @@ fn next_cyclable_index(order: &[presence::SurfaceDescriptor], start: usize, delt
         }
     }
     None
+}
+
+fn rotate_surfaces_for_bloom(order: Vec<presence::SurfaceDescriptor>, active_surface: &str) -> Vec<presence::SurfaceDescriptor> {
+    if order.is_empty() {
+        return order;
+    }
+    let start = order.iter().position(|s| s.id == active_surface).unwrap_or(0);
+    (0..order.len()).map(|offset| order[(start + offset) % order.len()].clone()).collect()
 }
 
 fn env_i32(key: &str, fallback: i32) -> i32 {
@@ -428,6 +437,7 @@ fn main() {
         pending_effector: None,
         active_surface: "session".to_string(),
         surfaces: Vec::new(),
+        surface_bloom_open: false,
         active_posture: "work".to_string(),
         active_provider: None,
         active_locality: None,
@@ -529,11 +539,14 @@ fn main() {
 struct PressState {
     target: PressTarget,
     secondary: bool,
+    started_at: Instant,
     /// Accumulated physical pointer travel since press — distinguishes click from drag.
     dist: f64,
     /// Whether `grabbed` has been emitted for this press (fires once, when `dist`
     /// first crosses the click slop — never on press, or every click is a phantom grab).
     grabbed_sent: bool,
+    /// Whether this press already bloomed the surface dial.
+    bloom_started: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -546,11 +559,36 @@ enum PressTarget {
     /// The on-body Edit / Confirm governance button — emits a typed `repo_edit` intent.
     Edit,
     Perimeter(PerimeterId),
+    SurfaceBloom(usize),
     TorsoAction(TorsoAction),
     /// The legs/feet zone — dragging it vertically stretches the body.
     Feet,
     Bump,
     Outside,
+}
+
+fn is_surface_bloom_press(target: PressTarget) -> bool {
+    matches!(
+        target,
+        PressTarget::Perimeter(
+            PerimeterId::ArrowN
+                | PerimeterId::ArrowE
+                | PerimeterId::ArrowS
+                | PerimeterId::ArrowW
+                | PerimeterId::Quick0
+                | PerimeterId::Quick1
+                | PerimeterId::Quick2
+                | PerimeterId::Quick3
+        )
+    )
+}
+
+fn should_open_surface_bloom(press: &PressState, now: Instant) -> bool {
+    !press.secondary
+        && !press.bloom_started
+        && press.dist <= CLICK_SLOP
+        && is_surface_bloom_press(press.target)
+        && now.duration_since(press.started_at) >= SURFACE_BLOOM_HOLD
 }
 
 /// The native OS window currently available for pinning, kept live by target cues.
@@ -648,6 +686,8 @@ struct App {
     /// until the first `hydrate` carrying surfaces; until then the body falls back to the
     /// `SURFACE_ORDER` seed below treated as all-available.
     surfaces: Vec<presence::SurfaceDescriptor>,
+    /// Local hold-to-bloom dial state; selection still emits `surface_request`.
+    surface_bloom_open: bool,
     active_posture: String,
     active_provider: Option<String>,
     /// `local | cloud` from the last `surface_active.route.locality`, drives the passport
@@ -721,6 +761,7 @@ impl App {
     }
 
     fn tick(&mut self) {
+        self.update_surface_bloom_hold();
         self.draw();
         let _ = self.conn.flush();
     }
@@ -798,6 +839,19 @@ impl App {
         for (slot, id) in SURFACE_QUICK.iter().take(4).enumerate() {
             dim_quick[slot] = self.surface_availability(id) == "unwired";
         }
+        let bloom_order = self.surface_bloom_surfaces();
+        let bloom_items: Vec<render::SurfaceDialItem<'_>> = if self.surface_bloom_open {
+            bloom_order
+                .iter()
+                .map(|surface| render::SurfaceDialItem {
+                    label: surface.label.as_str(),
+                    availability: surface.availability.as_str(),
+                    active: surface.id == self.active_surface,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let pinned = self.pinned_layout();
         let (Some(pool), Some(layer)) = (self.pool.as_mut(), self.layer.as_ref()) else {
             return;
@@ -819,6 +873,7 @@ impl App {
             edit_pending: self.pending_effector.as_deref() == Some("repo_edit"),
             posture_badge,
             dim_quick,
+            surface_bloom: &bloom_items,
             layout,
             pinned,
             frame: None,
@@ -1104,6 +1159,11 @@ impl App {
             let mut rects = vec![render::head_rect().as_i32(), layout.feet_rect().as_i32()];
             for (_, rect) in self.active_perimeter_controls(layout) {
                 rects.push(rect.as_i32());
+            }
+            if self.surface_bloom_open {
+                for rect in layout.surface_bloom_rects(self.surface_bloom_surfaces().len()) {
+                    rects.push(rect.as_i32());
+                }
             }
             if self.speech.is_some() {
                 rects.push(layout.bubble_rect().as_i32());
@@ -1398,6 +1458,15 @@ impl App {
     fn on_press(&mut self, x: f64, y: f64, button: u32) {
         let secondary = button == BTN_RIGHT;
         let primary = button == BTN_LEFT;
+        let bloom_hit = self.surface_bloom_open.then(|| self.surface_bloom_hit_index(x, y)).flatten();
+        if let Some(idx) = bloom_hit {
+            self.press = Some(PressState { target: PressTarget::SurfaceBloom(idx), secondary, started_at: Instant::now(), dist: 0.0, grabbed_sent: false, bloom_started: false });
+            return;
+        }
+        if self.surface_bloom_open {
+            self.surface_bloom_open = false;
+            self.update_input_region();
+        }
         // While tucked, the only live target is the bump; a click on it summons the
         // buddy back out. The bump is not draggable in v1.
         if let Some(edge) = self.tucked {
@@ -1406,7 +1475,7 @@ impl App {
             } else {
                 PressTarget::Outside
             };
-            self.press = Some(PressState { target, secondary, dist: 0.0, grabbed_sent: false });
+            self.press = Some(PressState { target, secondary, started_at: Instant::now(), dist: 0.0, grabbed_sent: false, bloom_started: false });
             return;
         }
 
@@ -1442,7 +1511,7 @@ impl App {
             PressTarget::Outside
         };
 
-        self.press = Some(PressState { target, secondary, dist: 0.0, grabbed_sent: false });
+        self.press = Some(PressState { target, secondary, started_at: Instant::now(), dist: 0.0, grabbed_sent: false, bloom_started: false });
         if primary && target == PressTarget::Head && !self.pinned_to_target {
             self.drag = true;
         }
@@ -1453,6 +1522,11 @@ impl App {
     fn on_drag_delta(&mut self, dx: f64, dy: f64) {
         let Some(press) = self.press.as_mut() else { return };
         press.dist += dx.abs() + dy.abs();
+        let close_bloom = press.dist > CLICK_SLOP && self.surface_bloom_open && !press.bloom_started;
+        if close_bloom {
+            self.surface_bloom_open = false;
+            press.bloom_started = false;
+        }
         if self.pinned_to_target && press.target == PressTarget::Head {
             if press.dist > CLICK_SLOP {
                 self.margin_left += dx;
@@ -1485,6 +1559,9 @@ impl App {
         if grab_now {
             self.emit_grabbed();
         }
+        if close_bloom {
+            self.update_input_region();
+        }
     }
 
     /// Apply a new torso stretch: clamp, resize the surface to fit, and keep the
@@ -1502,9 +1579,34 @@ impl App {
         self.update_input_region();
     }
 
-    fn on_release(&mut self) {
+    fn on_release(&mut self, x: f64, y: f64) {
         let Some(press) = self.press.take() else { return };
         self.drag = false;
+
+        if let PressTarget::SurfaceBloom(idx) = press.target {
+            self.surface_bloom_open = false;
+            if press.dist <= CLICK_SLOP {
+                if let Some(surface) = self.surface_bloom_surface_at(idx) {
+                    self.input_focused = false;
+                    self.request_surface(&surface);
+                    return;
+                }
+            }
+            self.update_input_region();
+            return;
+        }
+
+        if press.bloom_started {
+            if let Some(surface) = self.surface_bloom_hit(x, y) {
+                self.surface_bloom_open = false;
+                self.input_focused = false;
+                self.request_surface(&surface);
+                return;
+            }
+            self.surface_bloom_open = true;
+            self.update_input_region();
+            return;
+        }
 
         // A click on the tucked bump summons the buddy back out.
         if press.target == PressTarget::Bump {
@@ -1564,7 +1666,7 @@ impl App {
                 self.input_focused = false;
                 self.on_torso_action(action);
             }
-            PressTarget::Feet | PressTarget::Bump | PressTarget::Outside => {
+            PressTarget::Feet | PressTarget::Bump | PressTarget::SurfaceBloom(_) | PressTarget::Outside => {
                 self.input_focused = false;
             }
         }
@@ -1586,6 +1688,23 @@ impl App {
         } else {
             self.surfaces.clone()
         }
+    }
+
+    fn surface_bloom_surfaces(&self) -> Vec<presence::SurfaceDescriptor> {
+        rotate_surfaces_for_bloom(self.ordered_surfaces(), &self.active_surface)
+    }
+
+    fn surface_bloom_hit(&self, x: f64, y: f64) -> Option<String> {
+        let idx = self.surface_bloom_hit_index(x, y)?;
+        self.surface_bloom_surface_at(idx)
+    }
+
+    fn surface_bloom_hit_index(&self, x: f64, y: f64) -> Option<usize> {
+        render::surface_bloom_hit(&self.layout(), self.surface_bloom_surfaces().len(), x, y)
+    }
+
+    fn surface_bloom_surface_at(&self, idx: usize) -> Option<String> {
+        self.surface_bloom_surfaces().get(idx).map(|surface| surface.id.clone())
     }
 
     fn surface_availability(&self, id: &str) -> &str {
@@ -1653,6 +1772,22 @@ impl App {
             PerimeterId::Add => self.request_surface("customize"),
             PerimeterId::Paste | PerimeterId::Review | PerimeterId::Edit => {}
         }
+    }
+
+    fn update_surface_bloom_hold(&mut self) {
+        let should_open = self
+            .press
+            .as_ref()
+            .is_some_and(|press| should_open_surface_bloom(press, Instant::now()));
+        if !should_open || self.surface_bloom_open {
+            return;
+        }
+        if let Some(press) = self.press.as_mut() {
+            press.bloom_started = true;
+        }
+        self.surface_bloom_open = true;
+        self.speech = None;
+        self.update_input_region();
     }
 
     /// Ask the soul to run the read-only `receipt_review` effector through the action gate.
@@ -2069,7 +2204,7 @@ impl PointerHandler for App {
             let (px, py) = event.position;
             match event.kind {
                 PointerEventKind::Press { button, .. } => self.on_press(px, py, button),
-                PointerEventKind::Release { .. } => self.on_release(),
+                PointerEventKind::Release { .. } => self.on_release(px, py),
                 // Dragging is driven by wp_relative_pointer deltas, not these
                 // surface-local positions (which move with the surface frame).
                 _ => {}
@@ -2172,6 +2307,47 @@ mod tests {
         assert_eq!(next_cyclable_index(&[], 0, 1), None);
         let all_unwired = vec![surf("a", "unwired"), surf("b", "unwired")];
         assert_eq!(next_cyclable_index(&all_unwired, 0, 1), None);
+    }
+
+    #[test]
+    fn bloom_order_rotates_active_surface_to_twelve_oclock() {
+        let order = vec![
+            surf("session", "available"),
+            surf("private_local_chat", "gated"),
+            surf("claude_code", "unwired"),
+            surf("live_hermes", "unwired"),
+            surf("agent_zero", "unwired"),
+            surf("customize", "available"),
+        ];
+        let rotated = rotate_surfaces_for_bloom(order, "claude_code");
+        let ids: Vec<&str> = rotated.iter().map(|surface| surface.id.as_str()).collect();
+        assert_eq!(ids, vec!["claude_code", "live_hermes", "agent_zero", "customize", "session", "private_local_chat"]);
+    }
+
+    #[test]
+    fn hold_to_bloom_requires_surface_press_time_and_stillness() {
+        let now = Instant::now();
+        let old_enough = now.checked_sub(SURFACE_BLOOM_HOLD + Duration::from_millis(1)).unwrap();
+        let fresh = now.checked_sub(SURFACE_BLOOM_HOLD - Duration::from_millis(1)).unwrap();
+        let base = PressState {
+            target: PressTarget::Perimeter(PerimeterId::ArrowN),
+            secondary: false,
+            started_at: old_enough,
+            dist: 0.0,
+            grabbed_sent: false,
+            bloom_started: false,
+        };
+
+        assert!(should_open_surface_bloom(&base, now));
+        assert!(!should_open_surface_bloom(&PressState { started_at: fresh, ..base }, now));
+        assert!(!should_open_surface_bloom(&PressState { dist: CLICK_SLOP + 0.1, ..base }, now));
+        assert!(!should_open_surface_bloom(&PressState { secondary: true, ..base }, now));
+        assert!(!should_open_surface_bloom(&PressState { target: PressTarget::Head, ..base }, now));
+        assert!(!should_open_surface_bloom(&PressState { target: PressTarget::Perimeter(PerimeterId::Add), ..base }, now));
+        assert!(!should_open_surface_bloom(&PressState { target: PressTarget::Paste, ..base }, now));
+        assert!(!should_open_surface_bloom(&PressState { target: PressTarget::Review, ..base }, now));
+        assert!(!should_open_surface_bloom(&PressState { target: PressTarget::Edit, ..base }, now));
+        assert!(!should_open_surface_bloom(&PressState { bloom_started: true, ..base }, now));
     }
 
     #[test]

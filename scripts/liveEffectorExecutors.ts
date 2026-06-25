@@ -106,7 +106,13 @@ export function liveExecutorSandbox(root: string = process.cwd()): string {
 /** True if `command` resolves to an executable on PATH. Synchronous so the executor can
  *  fail closed with a clear `error` outcome (its signature returns synchronously, so the
  *  async spawn `error` event is too late to surface as an outcome). */
-function commandOnPath(command: string): boolean {
+export function commandOnPath(command: string): boolean {
+  if (command.trim().length === 0) {
+    // An empty command must never resolve — `join(dir, "")` is the dir itself, which is
+    // traversable and would otherwise read as "executable". Launcher executors pass a
+    // configured command, so an empty one is a misconfiguration we fail closed on.
+    return false;
+  }
   // An explicit path (contains a separator) is checked directly.
   if (command.includes("/")) {
     try {

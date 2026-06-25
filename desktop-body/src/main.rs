@@ -147,6 +147,25 @@ fn buddy_env(buddy: &str, suffix: &str) -> Option<String> {
     std::env::var(buddy_env_key(buddy, suffix)).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
 
+/// Pure margin clamp for the figure bounding box: returns the (left, top) margins that keep at
+/// least `keep` pixels of `fig` visible inside a screen of size `(sw, sh)`. Margins may go
+/// negative to reach the left/top edges. When the screen is smaller than `keep`, the valid
+/// range collapses so the result still degrades to a sane in-bounds value. Extracted from
+/// `App::clamp_margins` so the geometry is unit-testable without a live `App`.
+fn clamp_figure_margins(
+    margin_left: f64,
+    margin_top: f64,
+    fig: render::Rect,
+    (sw, sh): (f64, f64),
+    keep: f64,
+) -> (f64, f64) {
+    let min_left = keep - (fig.x + fig.w) as f64;
+    let max_left = (sw - keep - fig.x as f64).max(min_left);
+    let min_top = keep - (fig.y + fig.h) as f64;
+    let max_top = (sh - keep - fig.y as f64).max(min_top);
+    (margin_left.clamp(min_left, max_left), margin_top.clamp(min_top, max_top))
+}
+
 fn copy_to_clipboard(text: &str) -> Result<(), String> {
     let trimmed = text.trim_end();
     if trimmed.is_empty() {
@@ -619,6 +638,10 @@ struct PressState {
 #[derive(Clone, Copy, PartialEq)]
 enum PressTarget {
     Head,
+    /// The clay body (torso, arms, legs) outside any control — a move handle like the head,
+    /// so a buddy whose head was dragged off-screen can still be grabbed and pulled back. Unlike
+    /// the head, a tap here does NOT toggle chat (only a drag moves the buddy).
+    Body,
     Input,
     Paste,
     /// The on-body Review / Confirm governance button (visible while chat is open).
@@ -973,6 +996,7 @@ impl App {
                     label: surface.label.as_str(),
                     availability: surface.availability.as_str(),
                     active: surface.id == self.active_surface,
+                    kind: surface.kind.as_str(),
                 })
                 .collect()
         } else {
@@ -1245,18 +1269,23 @@ impl App {
         }
     }
 
-    /// Keep the buddy *head* fully on-screen — not just the surface edge — so it can
-    /// never slide off (the head sits centered inside a wider, mostly-transparent
-    /// surface). Margins are allowed to go negative to reach the left/top edges.
+    /// Keep the buddy figure on-screen — not just the head — so it can never be dragged
+    /// fully off (the whole clay body is a drag handle now, not only the head). At least
+    /// `DRAG_KEEP_VISIBLE` pixels of the figure bounding box must stay visible on each axis;
+    /// margins may go negative to reach the left/top edges. On a screen smaller than the
+    /// keep-visible sliver, the range collapses so the clamp still degrades sanely.
     fn clamp_margins(&mut self) {
-        let head = render::head_rect();
         let (sw, sh) = self.screen.unwrap_or((f64::MAX, f64::MAX));
-        let min_left = -(head.x as f64);
-        let max_left = (sw - (head.x + head.w) as f64).max(min_left);
-        let min_top = -(head.y as f64);
-        let max_top = (sh - (head.y + head.h) as f64).max(min_top);
-        self.margin_left = self.margin_left.clamp(min_left, max_left);
-        self.margin_top = self.margin_top.clamp(min_top, max_top);
+        let fig = render::figure_bbox(self.body_len);
+        let (left, top) = clamp_figure_margins(
+            self.margin_left,
+            self.margin_top,
+            fig,
+            (sw, sh),
+            render::DRAG_KEEP_VISIBLE as f64,
+        );
+        self.margin_left = left;
+        self.margin_top = top;
     }
 
     fn active_perimeter_controls(&self, layout: render::Layout) -> Vec<(PerimeterId, render::Rect)> {
@@ -1675,12 +1704,14 @@ impl App {
             PressTarget::TorsoAction(action)
         } else if layout.feet_rect().contains(body_x, y) {
             PressTarget::Feet
+        } else if render::point_in_draggable_body(&layout, body_x, y) {
+            PressTarget::Body
         } else {
             PressTarget::Outside
         };
 
         self.press = Some(PressState { target, secondary, started_at: Instant::now(), dist: 0.0, grabbed_sent: false, bloom_started: false });
-        if primary && target == PressTarget::Head && !self.pinned_to_target {
+        if primary && matches!(target, PressTarget::Head | PressTarget::Body) && !self.pinned_to_target {
             self.drag = true;
         }
     }
@@ -1799,10 +1830,10 @@ impl App {
         }
 
         if press.dist > CLICK_SLOP {
-            // A head drag ended. If it came to rest near an edge, tuck it there;
+            // A head or body drag ended. If it came to rest near an edge, tuck it there;
             // otherwise report where it landed so the placement can be persisted.
             // (Feet drags are local resizes — nothing to tuck or report.)
-            if press.target == PressTarget::Head {
+            if matches!(press.target, PressTarget::Head | PressTarget::Body) {
                 if let Some(edge) = self.nearest_edge_within_threshold() {
                     self.tuck_to(edge);
                 } else {
@@ -1841,7 +1872,11 @@ impl App {
                 self.input_focused = false;
                 self.on_torso_action(action);
             }
-            PressTarget::Feet | PressTarget::Bump | PressTarget::SurfaceBloom(_) | PressTarget::Outside => {
+            PressTarget::Body
+            | PressTarget::Feet
+            | PressTarget::Bump
+            | PressTarget::SurfaceBloom(_)
+            | PressTarget::Outside => {
                 self.input_focused = false;
             }
         }
@@ -2124,7 +2159,10 @@ impl App {
         let (sw, sh) = self.screen.unwrap_or((f64::MAX, f64::MAX));
         let (surface_w, surface_h) = self.requested_surface_size();
         if let Some(layer) = self.layer.as_ref() {
-            layer.set_size(render::SURFACE_W, self.layout().surface_h());
+            // Size for the FULL figure (rail included), not the bump — so a later summon
+            // never has to grow the surface back and the receipt rail can't be clipped
+            // when the buddy pops out stretched. Tucked rendering only paints the bump.
+            layer.set_size(self.requested_surface_w(), self.layout().surface_h());
             layer.commit();
         }
 
@@ -2156,19 +2194,26 @@ impl App {
     /// inward off the edge, restore full input, and tell the soul.
     fn summon(&mut self) {
         let Some(edge) = self.tucked.take() else { return };
-        let head = render::head_rect();
+        let fig = render::figure_bbox(self.body_len);
         let inset = TUCK_THRESHOLD; // land clear of the tuck zone so it doesn't re-tuck
         let (sw, sh) = self.screen.unwrap_or((f64::MAX, f64::MAX));
+        // Place the whole figure bbox just inside the edge it was tucked against, so the
+        // body (not only the head) pops fully on-screen — the receipt-rail/expanded case
+        // the old head-only placement could leave half-clipped.
         match edge {
-            presence::Edge::Left => self.margin_left = -(head.x as f64) + inset,
+            presence::Edge::Left => self.margin_left = -(fig.x as f64) + inset,
             presence::Edge::Right => {
-                self.margin_left = sw - (head.x + head.w) as f64 - inset;
+                self.margin_left = sw - (fig.x + fig.w) as f64 - inset;
             }
-            presence::Edge::Top => self.margin_top = -(head.y as f64) + inset,
+            presence::Edge::Top => self.margin_top = -(fig.y as f64) + inset,
             presence::Edge::Bottom => {
-                self.margin_top = sh - (head.y + head.h) as f64 - inset;
+                self.margin_top = sh - (fig.y + fig.h) as f64 - inset;
             }
         }
+        // Restore the full-figure surface (rail included) — tucked sizing kept it at the
+        // full extent, but reassert so a stretched body with the receipt rail visible can
+        // never pop out into a surface too narrow to hold the rail (the clip bug).
+        self.set_layer_size(self.requested_surface_w(), self.layout().surface_h());
         self.clamp_margins();
         self.update_input_region();
         self.reposition();
@@ -2651,6 +2696,44 @@ mod tests {
             let rect = controls.iter().find_map(|(candidate, rect)| (*candidate == id).then_some(*rect)).expect("control exists");
             assert!(rect.w > 0.0 && rect.h > 0.0, "{id:?} should have area");
         }
+    }
+
+    #[test]
+    fn clamp_keeps_a_sliver_of_the_figure_visible_at_every_edge() {
+        // The real figure bbox (default stretch): roughly x∈[141,419], y∈[14,284].
+        let fig = render::figure_bbox(render::BODY_LEN_DEFAULT);
+        let keep = render::DRAG_KEEP_VISIBLE as f64;
+        let sw = 1920.0;
+        let sh = 1080.0;
+
+        // Dragged fully off the right: clamp pulls the left edge back so `keep` px stays visible.
+        let (left, _) = clamp_figure_margins(5000.0, 0.0, fig, (sw, sh), keep);
+        assert_eq!(left, sw - keep - fig.x as f64);
+        assert!(left + fig.x as f64 <= sw - keep + 0.5);
+        assert!(left + (fig.x + fig.w) as f64 >= sw - keep - 0.5, "a sliver must remain visible");
+
+        // Dragged fully off the left: clamp lets the margin go negative so `keep` px stays visible.
+        let (left, _) = clamp_figure_margins(-5000.0, 0.0, fig, (sw, sh), keep);
+        assert_eq!(left, keep - (fig.x + fig.w) as f64);
+        assert!(left + (fig.x + fig.w) as f64 >= keep - 0.5);
+        assert!(left + fig.x as f64 <= keep + 0.5, "a sliver must remain visible");
+
+        // Dragged fully off the bottom and top.
+        let (_, top) = clamp_figure_margins(0.0, 5000.0, fig, (sw, sh), keep);
+        assert_eq!(top, sh - keep - fig.y as f64);
+        let (_, top) = clamp_figure_margins(0.0, -5000.0, fig, (sw, sh), keep);
+        assert_eq!(top, keep - (fig.y + fig.h) as f64);
+    }
+
+    #[test]
+    fn clamp_degrades_safely_when_screen_smaller_than_keep_sliver() {
+        // A screen smaller than the keep-visible budget must still clamp to a single in-bounds
+        // value rather than panicking or inverting the min/max range.
+        let fig = render::figure_bbox(render::BODY_LEN_DEFAULT);
+        let tiny = (40.0, 40.0);
+        let (left, top) = clamp_figure_margins(10_000.0, 10_000.0, fig, tiny, render::DRAG_KEEP_VISIBLE as f64);
+        // min == max on a too-small screen, so the clamp pins the margin to that single value.
+        assert!(left.is_finite() && top.is_finite());
     }
 }
 

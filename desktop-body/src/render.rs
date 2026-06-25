@@ -491,10 +491,48 @@ pub fn head_rect() -> Rect {
     Rect { x: FIG_CX - HEAD_R, y: HEAD_CY - HEAD_R, w: HEAD_R * 2.0, h: HEAD_R * 2.0 }
 }
 
+/// The bounding box of the whole clay figure (head ∪ torso ∪ arms-at-reach ∪ legs ∪ feet)
+/// in surface-local coordinates, for a given torso stretch. This is what `clamp_margins`
+/// keeps on-screen so the buddy can never be dragged fully off — the head alone is too
+/// small a guarantee now that the whole body is a drag handle.
+pub fn figure_bbox(body_len: f32) -> Rect {
+    let arm_reach = ARM_UPPER + ARM_FORE; // how far an arm can swing out from the torso
+    let half_w = HEAD_R.max(TORSO_W / 2.0 + arm_reach);
+    let top = HEAD_CY - HEAD_R;
+    let bottom = TORSO_TOP + body_len + LEG_H + FOOT_H;
+    Rect { x: FIG_CX - half_w, y: top, w: half_w * 2.0, h: (bottom - top).max(0.0) }
+}
+
+/// Minimum sliver of the figure that must stay visible on each axis when dragging —
+/// belt-and-suspenders beyond the body-drag handle, so a fast drag can never park the
+/// buddy fully off-screen even if the head slips past an edge.
+pub const DRAG_KEEP_VISIBLE: f32 = 36.0;
+
 pub fn point_in_head(px: f64, py: f64) -> bool {
     let dx = px as f32 - FIG_CX;
     let dy = py as f32 - HEAD_CY;
     dx * dx + dy * dy <= HEAD_R * HEAD_R
+}
+
+/// True if the point is on the clay figure itself — head, torso, arms, or legs. The WHOLE
+/// body is a move handle, not just the head, so a buddy whose head was dragged off-screen can
+/// still be grabbed by a visible arm/torso and pulled back. Spans the torso plus an arm-reach
+/// flank on each side, from the shoulders down past the feet. Callers check the specific
+/// controls (perimeter buttons, torso actions, input, feet-stretch) FIRST, so this only claims
+/// the figure's non-interactive body and the immediate flanks where the arms swing.
+pub fn point_in_draggable_body(layout: &Layout, px: f64, py: f64) -> bool {
+    if point_in_head(px, py) {
+        return true;
+    }
+    let torso = layout.torso_rect();
+    let reach = ARM_UPPER + ARM_FORE; // how far an arm can swing out from the torso
+    let body = Rect {
+        x: torso.x - reach,
+        y: torso.y,
+        w: torso.w + reach * 2.0,
+        h: torso.h + LEG_H + FOOT_H,
+    };
+    body.contains(px, py)
 }
 
 // --- pose (the future-animation seam) ---------------------------------------------
@@ -704,6 +742,10 @@ pub struct SurfaceDialItem<'a> {
     pub label: &'a str,
     pub availability: &'a str,
     pub active: bool,
+    /// `"surface"` (switches the active surface) or `"launcher"` (opens an external tool via
+    /// a reach action_request). Launcher pills render a distinct `→` glyph so they read
+    /// differently from surface-switch pills at a glance.
+    pub kind: &'a str,
 }
 
 #[derive(Clone, Copy)]
@@ -1502,10 +1544,14 @@ fn draw_surface_bloom(pixmap: &mut Pixmap, font: &Font, layout: &Layout, items: 
     }
     for (item, rect) in items.iter().zip(layout.surface_bloom_rects(items.len())) {
         let unwired = item.availability == "unwired";
+        let launcher = item.kind == "launcher";
         let bg = if item.active {
             Color::from_rgba8(28, 42, 58, 238)
         } else if unwired {
             Color::from_rgba8(248, 250, 252, 112)
+        } else if launcher {
+            // Launchers wear a faint warm wash so they read as "open a tool", not "switch surface".
+            Color::from_rgba8(255, 244, 224, 236)
         } else {
             Color::from_rgba8(248, 250, 252, 236)
         };
@@ -1513,19 +1559,37 @@ fn draw_surface_bloom(pixmap: &mut Pixmap, font: &Font, layout: &Layout, items: 
         if let Some(path) = round_rect_path(rect, 8.0) {
             let mut stroke = Stroke::default();
             stroke.width = if item.active { 2.0 } else { 1.0 };
-            let edge = if item.active { 190 } else if unwired { 54 } else { 118 };
+            let edge = if item.active { 190 } else if unwired { 54 } else if launcher { 150 } else { 118 };
             pixmap.stroke_path(&path, &solid(Color::from_rgba8(0, 0, 0, edge)), &stroke, Transform::identity(), None);
         }
-        let label = fit_line(font, item.label, 9.5, rect.w - 14.0);
-        let tw = measure(font, &label, 9.5);
-        let fg = if item.active {
-            [238, 246, 255]
-        } else if unwired {
-            [118, 126, 140]
+        // Launcher pills lead with a `→` glyph (the reach metaphor: hand off to an external
+        // tool). Surface-switch pills stay label-only, so the two kinds are distinct at a glance.
+        let label_x;
+        let label_text;
+        if launcher {
+            let glyph = "→";
+            let gx = rect.x + 8.0;
+            draw_line(pixmap, font, glyph, gx, rect.y + 15.0, 9.5, fg_for_bloom(item.active, unwired));
+            label_x = gx + measure(font, glyph, 9.5) + 3.0;
+            label_text = item.label;
         } else {
-            [22, 30, 42]
-        };
-        draw_line(pixmap, font, &label, rect.x + (rect.w - tw) / 2.0, rect.y + 15.0, 9.5, fg);
+            label_text = item.label;
+            label_x = rect.x + 4.0;
+        }
+        let label = fit_line(font, label_text, 9.5, rect.x + rect.w - label_x - 6.0);
+        let tw = measure(font, &label, 9.5);
+        let fg = fg_for_bloom(item.active, unwired);
+        draw_line(pixmap, font, &label, label_x + (rect.x + rect.w - 6.0 - label_x - tw).max(0.0) / 2.0, rect.y + 15.0, 9.5, fg);
+    }
+}
+
+fn fg_for_bloom(active: bool, unwired: bool) -> [u8; 3] {
+    if active {
+        [238, 246, 255]
+    } else if unwired {
+        [118, 126, 140]
+    } else {
+        [22, 30, 42]
     }
 }
 
@@ -2779,6 +2843,49 @@ mod tests {
     }
 
     #[test]
+    fn figure_bbox_contains_head_torso_arms_and_feet() {
+        // The drag-clamp relies on this bbox covering every grabbable part of the figure,
+        // so a buddy dragged by any limb can never slip fully off-screen.
+        let bbox = figure_bbox(BODY_LEN_DEFAULT);
+        // Head circle sits inside the bbox horizontally and vertically.
+        let head = head_rect();
+        assert!(bbox.x <= head.x && bbox.x + bbox.w >= head.x + head.w);
+        assert!(bbox.y <= head.y && bbox.y + bbox.h >= head.y + head.h);
+        // Torso fits inside, and the bbox reaches past the arms-at-reach flank on each side.
+        let torso = Layout { facing: Facing::Right, body_len: BODY_LEN_DEFAULT }.torso_rect();
+        assert!(bbox.x <= torso.x && bbox.x + bbox.w >= torso.x + torso.w);
+        let arm_reach = ARM_UPPER + ARM_FORE;
+        assert!(bbox.w >= TORSO_W + arm_reach * 2.0);
+        // Bottom of the bbox reaches the feet (hips + leg + foot), so a feet-grab is covered.
+        let hips = TORSO_TOP + BODY_LEN_DEFAULT;
+        assert!(bbox.y + bbox.h >= hips + LEG_H + FOOT_H);
+    }
+
+    #[test]
+    fn figure_bbox_grows_with_body_stretch() {
+        let short = figure_bbox(BODY_LEN_MIN);
+        let tall = figure_bbox(BODY_LEN_MAX);
+        assert!(tall.h > short.h, "a stretched torso must produce a taller figure bbox");
+        // Width is independent of stretch.
+        assert_eq!(short.w, tall.w);
+    }
+
+    #[test]
+    fn figure_and_receipt_rail_fit_within_requested_surface_at_max_stretch() {
+        // The summon-from-tuck clip bug: when the body is fully expanded the receipt rail is
+        // visible, so the surface must be SURFACE_W + RECEIPT_RAIL_W wide. The figure bbox
+        // lives in the SURFACE_W half (offset by RECEIPT_RAIL_W when the rail is drawn), so
+        // it must fit inside SURFACE_W — otherwise summoning from a tuck clips the rail or
+        // the figure. This pins both invariants together.
+        let bbox = figure_bbox(BODY_LEN_MAX);
+        assert!(receipt_rail_visible_for_body_len(BODY_LEN_MAX));
+        assert!(bbox.x >= 0.0 && bbox.x + bbox.w <= SURFACE_W as f32,
+            "figure bbox must fit in the SURFACE_W half so the rail never clips it");
+        assert_eq!(SURFACE_W + RECEIPT_RAIL_W, 560 + 160,
+            "requested surface width at max stretch is SURFACE_W + RECEIPT_RAIL_W");
+    }
+
+    #[test]
     fn input_expands_with_lines_up_to_cap() {
         let l = Layout::initial();
         let one = l.input_rect(1).h;
@@ -2975,6 +3082,80 @@ mod tests {
         let fitted = fit_line(&font, long, 10.0, 70.0);
         assert!(fitted.ends_with('…'), "truncated text must signal the clip");
         assert!(measure(&font, &fitted, 10.0) <= 70.0, "truncated text must fit the budget");
+    }
+
+    #[test]
+    fn bloom_launcher_pill_is_visually_distinct_from_surface_pill() {
+        // A launcher pill must read differently from a surface-switch pill — the reach metaphor
+        // (open an external tool) is a different action than switching the active surface, so
+        // identical rendering would be a trust-legibility bug. We assert it two ways: the
+        // launcher pill's background tint differs, and the `→` glyph adds pixels a surface pill
+        // never draws.
+        let Some(font) = load_font() else { return };
+        let layout = Layout::initial();
+        // Draw each pill alone into its own pixmap — with one item, both land at rects[0], so
+        // we sample the same slot for a clean apples-to-apples comparison.
+        let rects = layout.surface_bloom_rects(1);
+        let pill_rect = rects[0];
+
+        let surface_item = SurfaceDialItem { label: "Session", availability: "available", active: false, kind: "surface" };
+        let launcher_item = SurfaceDialItem { label: "Open in Cursor", availability: "gated", active: false, kind: "launcher" };
+
+        let mut surface_px = Pixmap::new(SURFACE_W, layout.surface_h()).unwrap();
+        draw_surface_bloom(&mut surface_px, &font, &layout, &[surface_item]);
+        let mut launcher_px = Pixmap::new(SURFACE_W, layout.surface_h()).unwrap();
+        draw_surface_bloom(&mut launcher_px, &font, &layout, &[launcher_item]);
+
+        // Sample the background tint along the pill's top edge (y = pill top + 2) — text sits
+        // on a baseline lower in the pill, so this row reads the fill, not glyphs or label.
+        let cx = (pill_rect.x + pill_rect.w / 2.0) as i32;
+        let cy = (pill_rect.y + 2.0) as i32;
+        let s = sample_argb(&surface_px, cx, cy);
+        let l = sample_argb(&launcher_px, cx, cy);
+        assert!(s != l, "launcher pill background ({:?}) must differ from surface pill ({:?})", l, s);
+        // The launcher wash is warm (R > B); the surface wash is cool (B >= R).
+        assert!(l.0 > l.2, "launcher pill should be warm-tinted (r>b), got {:?}", l);
+        assert!(s.2 >= s.0, "surface pill should be cool-tinted (b>=r), got {:?}", s);
+
+        // The `→` glyph: the launcher pill has dark glyph pixels near its left that the surface
+        // pill (label-only, centered) does not. Count pixels in the leftmost band that are
+        // significantly darker than the pill fill — those are glyph strokes, not background.
+        let lp = count_dark_in_rect(&launcher_px, (pill_rect.x + 6.0) as i32, (pill_rect.y + 3.0) as i32, 22, 18);
+        let sp = count_dark_in_rect(&surface_px, (pill_rect.x + 6.0) as i32, (pill_rect.y + 3.0) as i32, 22, 18);
+        assert!(lp > sp, "launcher pill should draw a leading glyph the surface pill lacks ({} vs {} dark px)", lp, sp);
+    }
+
+    fn sample_argb(p: &Pixmap, x: i32, y: i32) -> (u8, u8, u8, u8) {
+        let w = p.width() as i32;
+        let data = p.data();
+        let i = ((y * w + x) * 4) as usize;
+        (data[i], data[i + 1], data[i + 2], data[i + 3])
+    }
+
+    /// Count pixels darker than the pill fill — glyph strokes (the `→` and the label) are dark
+    /// ink, so this isolates text/glyph pixels from the warm/cool background wash.
+    fn count_dark_in_rect(p: &Pixmap, x0: i32, y0: i32, w: i32, h: i32) -> usize {
+        let pw = p.width() as i32;
+        let ph = p.height() as i32;
+        let data = p.data();
+        let mut n = 0;
+        for dy in 0..h {
+            for dx in 0..w {
+                let x = x0 + dx;
+                let y = y0 + dy;
+                if x < 0 || y < 0 || x >= pw || y >= ph {
+                    continue;
+                }
+                let i = ((y * pw + x) * 4) as usize;
+                let a = data[i + 3] as i32;
+                // Only count where ink has actually landed (alpha) AND the channel values are
+                // dark — the pill fills are bright (≥200), glyph strokes drop well below 90.
+                if a > 80 && (data[i] as i32 + data[i + 1] as i32 + data[i + 2] as i32) < 270 {
+                    n += 1;
+                }
+            }
+        }
+        n
     }
 
     #[test]

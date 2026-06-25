@@ -149,6 +149,38 @@ export const BUDDY_PROFILES: Record<string, BuddyProfile> = {
     supportedSurfaces: ["border"],
     capabilities: TEXT_ONLY_CAPABILITIES,
   },
+  // The Forge governance identity's own body profile, so `BB_BUDDY=forge` gives a body whose
+  // head reads "Forge" (the crab persona reads "Claw"). Same clay/sprite as crab — only the
+  // display identity differs — so the launcher reach grants (open_vscode/open_cursor/
+  // open_terminal) the bloom dial opens are unchanged. `resolveManifestId("forge") → "forge"`.
+  forge: {
+    schemaVersion: 1,
+    identity: {
+      id: "forge",
+      name: "Forge",
+      shortName: "Forge",
+      ownerKind: "agent",
+      ownerLabel: "Border Agents",
+      role: "Build & Code",
+    },
+    adapterDefaults: {
+      provider: "codex",
+      modelLabel: "Codex",
+      connectionLabel: "Local session",
+    },
+    authorityDefaults: {
+      allowAction: false,
+      allowExternalShare: false,
+      memoryMode: "purpose_graded",
+    },
+    appearance: {
+      color: "#ff4d4d",
+      defaultEdge: "left",
+      defaultDockSlot: 0.72,
+    },
+    supportedSurfaces: ["border"],
+    capabilities: TEXT_ONLY_CAPABILITIES,
+  },
   owl: {
     schemaVersion: 1,
     identity: {

@@ -194,6 +194,15 @@ impl Layout {
         Rect { x: col_x + BUBBLE_W - w, y: INPUT_Y - h - 5.0, w, h }
     }
 
+    /// The on-body Edit / Confirm control — emits a typed `repo_edit` ActionIntent (an act
+    /// effector). It sits one row ABOVE Review so the read-only and act governance controls
+    /// never crowd the narrow column; like Review it flips to Confirm while the soul holds the
+    /// action at needs_confirmation. The body builds + emits the intent; the soul authorizes (law 7).
+    pub fn edit_button_rect(&self) -> Rect {
+        let review = self.review_button_rect();
+        Rect { x: review.x, y: review.y - review.h - 5.0, w: review.w, h: review.h }
+    }
+
     pub fn paste_button_rect(&self) -> Rect {
         let review = self.review_button_rect();
         Rect { x: review.x - 58.0, y: review.y, w: 52.0, h: review.h }
@@ -486,6 +495,20 @@ impl Emotion {
         })
     }
 
+    /// The face a governance `action_result` decision should wear. The face is the fastest,
+    /// most pre-rational channel a user has, so each decision must read DISTINCT at a glance —
+    /// and HONESTLY: this is the trust membrane projecting its real state, never affect that
+    /// outruns the outcome. `allow` smiles, `needs_confirmation` asks (the questioning Curious
+    /// mouth), `blocked` (and any unknown — fail loud) holds the firm open-mouth Alert stop.
+    /// The body only renders the decision it was handed; it never makes it (AGENTS.md law 7).
+    pub fn for_decision(decision: &str) -> Emotion {
+        match decision {
+            "allow" => Emotion::Happy,
+            "needs_confirmation" => Emotion::Curious,
+            _ => Emotion::Alert,
+        }
+    }
+
     fn face(self) -> Face {
         match self {
             Emotion::Neutral => Face { eye_open: 1.0, pupil_dy: 0.0, mouth: Mouth::Smile(0.18) },
@@ -628,9 +651,12 @@ pub struct BodyView<'a> {
     pub input_text: &'a str,
     pub input_placeholder: &'a str,
     pub input_focused: bool,
-    /// The on-body Review control is a Confirm button when the soul's last action_result
-    /// asked for confirmation. The body only renders this state; it never authorizes.
+    /// The on-body Review control is a Confirm button when the soul's last action_result for
+    /// `receipt_review` asked for confirmation. The body only renders this state; never authorizes.
     pub review_pending: bool,
+    /// The Edit control is a Confirm button when the soul's last action_result for `repo_edit`
+    /// asked for confirmation. Kept distinct from `review_pending` so each act's confirm is its own.
+    pub edit_pending: bool,
     pub layout: Layout,
     pub pinned: Option<PinnedLayout>,
     pub frame: Option<FrameLayout>,
@@ -737,7 +763,8 @@ impl Sprite {
                     view.t,
                 );
                 draw_paste_button(&mut pixmap, font, &view.layout);
-                draw_review_button(&mut pixmap, font, &view.layout, view.review_pending);
+                draw_governance_button(&mut pixmap, font, view.layout.review_button_rect(), view.review_pending, "Review");
+                draw_governance_button(&mut pixmap, font, view.layout.edit_button_rect(), view.edit_pending, "Edit");
             }
         }
 
@@ -1118,14 +1145,14 @@ fn draw_pinned_input(
     }
 }
 
-/// The on-body Review / Confirm control (governance affordance). Plain text labels — the
-/// loaded font has no guarantee of glyph icons. Confirm state is tinted to read as "active".
-fn draw_review_button(pixmap: &mut Pixmap, font: &Font, layout: &Layout, pending: bool) {
-    let rect = layout.review_button_rect();
+/// An on-body governance control (Review / Edit). Plain text labels — the loaded font has no
+/// guarantee of glyph icons. While the soul holds the action at needs_confirmation the control
+/// reads "Confirm", tinted active. The body only renders this state; it never authorizes (law 7).
+fn draw_governance_button(pixmap: &mut Pixmap, font: &Font, rect: Rect, pending: bool, idle_label: &str) {
     let (bg, fg, label) = if pending {
         (Color::from_rgba8(56, 188, 214, 240), [8, 30, 38], "Confirm")
     } else {
-        (Color::from_rgba8(247, 251, 255, 238), [24, 40, 64], "Review")
+        (Color::from_rgba8(247, 251, 255, 238), [24, 40, 64], idle_label)
     };
     draw_round_rect(pixmap, rect, bg);
     if let Some(path) = round_rect_path(rect, 9.0) {
@@ -2211,22 +2238,45 @@ mod tests {
     }
 
     #[test]
+    fn governance_decisions_wear_distinct_honest_faces() {
+        // Each decision must read DISTINCT at a glance — the whole point of the face channel.
+        assert_eq!(Emotion::for_decision("allow"), Emotion::Happy);
+        assert_eq!(Emotion::for_decision("needs_confirmation"), Emotion::Curious);
+        assert_eq!(Emotion::for_decision("blocked"), Emotion::Alert);
+        // And they are genuinely three different faces, not aliases.
+        let (allow, ask, block) = (
+            Emotion::for_decision("allow"),
+            Emotion::for_decision("needs_confirmation"),
+            Emotion::for_decision("blocked"),
+        );
+        assert_ne!(allow, ask);
+        assert_ne!(ask, block);
+        assert_ne!(allow, block);
+        // Fail loud: an unknown decision must NOT smile — it holds the alert stop.
+        assert_eq!(Emotion::for_decision("garbage"), Emotion::Alert);
+    }
+
+    #[test]
     fn input_buttons_sit_above_the_input_and_share_its_column() {
         for facing in [Facing::Left, Facing::Right] {
             let l = Layout { facing, body_len: BODY_LEN_MIN };
             let review = l.review_button_rect();
             let paste = l.paste_button_rect();
+            let edit = l.edit_button_rect();
             let input = l.input_region_rect();
             // Above the input, not overlapping it.
             assert!(review.y + review.h <= input.y, "review button overlaps input ({facing:?})");
             assert!(paste.y + paste.h <= input.y, "paste button overlaps input ({facing:?})");
             // Within the bubble/input column (right-aligned to it).
-            for btn in [review, paste] {
+            for btn in [review, paste, edit] {
                 assert!(btn.x >= input.x - 0.5);
                 assert!(btn.x + btn.w <= input.x + input.w + 0.5);
                 assert!(btn.y >= 0.0);
             }
             assert!(paste.x + paste.w <= review.x, "paste button overlaps review ({facing:?})");
+            // Edit sits one row ABOVE Review (act control above the read-only one), same column.
+            assert!(edit.y + edit.h <= review.y, "edit button overlaps review row ({facing:?})");
+            assert_eq!(edit.x, review.x, "edit shares the review column ({facing:?})");
         }
     }
 
@@ -2337,6 +2387,7 @@ mod tests {
             input_placeholder: "Ask Border Wizard...",
             input_focused: false,
             review_pending: false,
+            edit_pending: false,
             layout: Layout::initial(),
             pinned: None,
             frame: Some(frame),

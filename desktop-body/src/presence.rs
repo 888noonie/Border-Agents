@@ -264,6 +264,66 @@ pub fn action_request_json(buddy: &str, effector: &str, confirmed: bool, request
     to_soul("action_request", buddy, fields)
 }
 
+/// A typed action intent the body fills on an `action_request` — the wire membrane: only a typed
+/// intent may authorize an `act` effector (e.g. `repo_edit`). The body builds one from a fixed
+/// affordance; it never parses free text into it. The soul validates it against the manifest + gate
+/// and lifts it into the core `ActionIntent` (AGENTS.md law 7 — the body fills fields, the soul
+/// interprets). Borrowed `&str` throughout so call sites pass literals/state fields without
+/// allocating. A `none`/value-less target is grant-only — the soul will refuse to authorize an
+/// effect from it.
+#[derive(Debug, Clone, Copy)]
+pub struct ActionIntent<'a> {
+    /// Effector-specific verb, e.g. "write_patch".
+    pub operation: &'a str,
+    /// One of `repo_path` | `file_path` | `url` | `command` | `none` (re-validated soul-side).
+    pub target_kind: &'a str,
+    /// The concrete target — a repo-relative path, URL, or command string. `None` pairs with a
+    /// `none`/grant-only intent.
+    pub target_value: Option<&'a str>,
+    /// One-line, user-facing description of the intended effect. The soul synthesizes one if absent.
+    pub summary: Option<&'a str>,
+    /// Hash of the payload (diff/command/body) so the receipt pins WHAT was authorized.
+    pub payload_digest: Option<&'a str>,
+}
+
+/// Render an `ActionIntent` to its wire object — mirrors the TS `PresenceActionIntent` shape so the
+/// soul's strict parser (`isActionIntent`) accepts it. Optional fields are omitted, not nulled.
+fn intent_value(intent: &ActionIntent) -> Value {
+    let mut target = json!({ "kind": intent.target_kind });
+    if let Some(v) = intent.target_value {
+        target["value"] = json!(v);
+    }
+    let mut obj = json!({ "operation": intent.operation, "target": target });
+    if let Some(s) = intent.summary {
+        obj["summary"] = json!(s);
+    }
+    if let Some(d) = intent.payload_digest {
+        obj["payloadDigest"] = json!(d);
+    }
+    obj
+}
+
+/// Like `action_request_json`, but carrying a typed `intent` — the body asking the soul to
+/// authorize a specific EFFECT (operation + target), not just the effector grant. Authorization
+/// still happens soul-side; this only fills the wire fields (law 7). `confirmed` is the follow-up
+/// press after a `needs_confirmation`; `request_id` correlates the resulting `action_result`.
+pub fn action_request_intent_json(
+    buddy: &str,
+    effector: &str,
+    intent: &ActionIntent,
+    confirmed: bool,
+    request_id: Option<&str>,
+) -> String {
+    let mut fields = json!({ "effector": effector, "intent": intent_value(intent) });
+    if confirmed {
+        fields["confirmed"] = json!(true);
+    }
+    if let Some(id) = request_id {
+        fields["requestId"] = json!(id);
+    }
+    to_soul("action_request", buddy, fields)
+}
+
 /// The user dragged the visible frame head while the buddy was framing a native window.
 /// This is only a request: moving the OS window is an effector owned by the soul/driver,
 /// never by the body.
@@ -801,6 +861,49 @@ mod tests {
         let c: Value = serde_json::from_str(&action_request_json("hermes", "receipt_review", true, Some("req-9"))).unwrap();
         assert_eq!(c["confirmed"], true);
         assert_eq!(c["requestId"], "req-9");
+    }
+
+    #[test]
+    fn action_request_intent_builder_emits_typed_intent() {
+        // A repo_edit effect aimed at a sandbox path — the typed intent the soul lifts + gates.
+        let intent = ActionIntent {
+            operation: "write_patch",
+            target_kind: "repo_path",
+            target_value: Some(".border-agents/proofs/notes.md"),
+            summary: Some("write notes.md"),
+            payload_digest: None,
+        };
+        let a: Value =
+            serde_json::from_str(&action_request_intent_json("hermes", "repo_edit", &intent, false, Some("req-edit-1")))
+                .unwrap();
+        assert_eq!(a["protocol"], "presence");
+        assert_eq!(a["kind"], "action_request");
+        assert_eq!(a["effector"], "repo_edit");
+        assert_eq!(a["requestId"], "req-edit-1");
+        assert!(a.get("confirmed").is_none(), "confirmed omitted when false");
+        // The typed intent rides in the `intent` object the soul validates with isActionIntent.
+        assert_eq!(a["intent"]["operation"], "write_patch");
+        assert_eq!(a["intent"]["target"]["kind"], "repo_path");
+        assert_eq!(a["intent"]["target"]["value"], ".border-agents/proofs/notes.md");
+        assert_eq!(a["intent"]["summary"], "write notes.md");
+        assert!(a["intent"].get("payloadDigest").is_none(), "absent optional omitted");
+
+        // A grant-only / value-less target emits a bare `none` kind with no value key, and the
+        // confirm follow-up carries confirmed:true.
+        let grant_only = ActionIntent {
+            operation: "noop",
+            target_kind: "none",
+            target_value: None,
+            summary: None,
+            payload_digest: Some("sha256:abc"),
+        };
+        let g: Value =
+            serde_json::from_str(&action_request_intent_json("hermes", "repo_edit", &grant_only, true, None)).unwrap();
+        assert_eq!(g["confirmed"], true);
+        assert_eq!(g["intent"]["target"]["kind"], "none");
+        assert!(g["intent"]["target"].get("value").is_none(), "value omitted when None");
+        assert_eq!(g["intent"]["payloadDigest"], "sha256:abc");
+        assert!(g["intent"].get("summary").is_none());
     }
 
     #[test]

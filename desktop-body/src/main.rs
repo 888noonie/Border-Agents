@@ -381,7 +381,7 @@ fn main() {
         modifiers: Modifiers::default(),
         input_text: String::new(),
         input_focused: false,
-        pending_review: false,
+        pending_effector: None,
         facing: Facing::Right,
         body_len: render::BODY_LEN_DEFAULT,
         color: env_color("BB_COLOR"),
@@ -494,6 +494,8 @@ enum PressTarget {
     Paste,
     /// The on-body Review / Confirm governance button (visible while chat is open).
     Review,
+    /// The on-body Edit / Confirm governance button — emits a typed `repo_edit` intent.
+    Edit,
     TorsoAction(TorsoAction),
     /// The legs/feet zone — dragging it vertically stretches the body.
     Feet,
@@ -585,9 +587,11 @@ struct App {
     input_text: String,
     /// Whether the input box has focus — gates keystrokes and shows the caret.
     input_focused: bool,
-    /// True after the soul's last action_result for this body asked for confirmation, so
-    /// the Review button renders (and acts) as Confirm. Cleared on any allow/blocked result.
-    pending_review: bool,
+    /// The effector whose last action_result asked for confirmation, so its on-body governance
+    /// button renders (and acts) as Confirm: `receipt_review` flips Review, `repo_edit` flips Edit.
+    /// Kept per-effector (not a bare bool) so one act's pending confirm never flips the other's
+    /// button. Cleared on any allow/blocked result. `None` = nothing awaiting confirmation.
+    pending_effector: Option<String>,
     /// Which side the bubble/input sit on — recomputed from screen position so the
     /// UI always faces the screen centre, never the docked edge.
     facing: Facing,
@@ -736,7 +740,8 @@ impl App {
             input_text: &input_text,
             input_placeholder: &input_placeholder,
             input_focused: self.input_focused,
-            review_pending: self.pending_review,
+            review_pending: self.pending_effector.as_deref() == Some("receipt_review"),
+            edit_pending: self.pending_effector.as_deref() == Some("repo_edit"),
             layout,
             pinned,
             frame: None,
@@ -810,7 +815,7 @@ impl App {
     fn show_reply_in_torso(&mut self, text: &str) {
         self.torso_surface = classify_torso_surface(text);
         self.awaiting_reply = false;
-        self.pending_review = false;
+        self.pending_effector = None;
         self.session_note = "Latest provider output loaded in the torso.".to_string();
     }
 
@@ -826,7 +831,7 @@ impl App {
         data_base64: Option<String>,
     ) {
         self.awaiting_reply = false;
-        self.pending_review = false;
+        self.pending_effector = None;
         match surface {
             "text" => {
                 let body = text.unwrap_or_default();
@@ -1020,6 +1025,7 @@ impl App {
                 rects.push(layout.input_region_rect().as_i32());
                 rects.push(layout.paste_button_rect().as_i32());
                 rects.push(layout.review_button_rect().as_i32());
+                rects.push(layout.edit_button_rect().as_i32());
             }
             rects.push(layout.torso_action_rect(TorsoAction::Expand).as_i32());
             rects.push(layout.torso_action_rect(TorsoAction::Copy).as_i32());
@@ -1068,15 +1074,14 @@ impl App {
             presence::Cue::Output { surface, text, caption, media_type, data_base64 } => {
                 self.apply_output(&surface, text, caption, media_type, data_base64);
             }
-            presence::Cue::ActionResult { decision, summary, .. } => {
-                // Present the soul's authorization outcome — the body renders it, it never
-                // decides it (law 7). A non-`allow` outcome draws an alert expression so the
-                // user notices the gate held or wants confirmation. `needs_confirmation`
-                // flips the on-body Review button into a Confirm button until resolved.
-                self.pending_review = decision == "needs_confirmation";
-                if decision != "allow" {
-                    self.set_emotion(Emotion::Alert);
-                }
+            presence::Cue::ActionResult { effector, decision, summary, .. } => {
+                // Present the soul's authorization outcome — the body renders it, it never decides
+                // it (law 7). The face is the fastest read: each decision wears a DISTINCT, honest
+                // expression (allow→happy, needs_confirmation→curious, blocked→alert) so a glance
+                // conveys it before any prose. `needs_confirmation` also flips THIS effector's
+                // on-body button (Review or Edit) into Confirm until resolved.
+                self.pending_effector = (decision == "needs_confirmation").then_some(effector);
+                self.set_emotion(Emotion::for_decision(&decision));
                 if let Some(text) = summary {
                     self.say(text);
                 }
@@ -1274,7 +1279,7 @@ impl App {
         self.send_to_soul(presence::said_json(&self.buddy, &text));
         self.set_emotion(Emotion::Thinking);
         self.awaiting_reply = true;
-        self.pending_review = false;
+        self.pending_effector = None;
         self.presence_status = format!("{} is thinking", self.buddy);
         self.torso_surface = TorsoSurface::Text {
             title: "Reply pending".to_string(),
@@ -1315,6 +1320,8 @@ impl App {
             PressTarget::Paste
         } else if self.chat_open && layout.review_button_rect().contains(x, y) {
             PressTarget::Review
+        } else if self.chat_open && layout.edit_button_rect().contains(x, y) {
+            PressTarget::Edit
         } else if self.chat_open && layout.input_region_rect().contains(x, y) {
             PressTarget::Input
         } else if let Some(action) = render::torso_action_at(&layout, x, y) {
@@ -1435,6 +1442,10 @@ impl App {
                 self.input_focused = false;
                 self.request_review();
             }
+            PressTarget::Edit => {
+                self.input_focused = false;
+                self.request_repo_edit();
+            }
             PressTarget::TorsoAction(action) => {
                 self.input_focused = false;
                 self.on_torso_action(action);
@@ -1450,7 +1461,7 @@ impl App {
     /// Confirm and the next press re-requests with `confirmed`. The body only asks — the soul
     /// authorizes and sends back the ActionReceipt it renders (AGENTS.md law 7).
     fn request_review(&mut self) {
-        let confirmed = self.pending_review;
+        let confirmed = self.pending_effector.as_deref() == Some("receipt_review");
         self.send_to_soul(presence::action_request_json(
             &self.buddy,
             "receipt_review",
@@ -1461,6 +1472,37 @@ impl App {
             "Confirming review…".to_string()
         } else {
             "Requesting receipt review…".to_string()
+        });
+        self.update_input_region();
+    }
+
+    /// Ask the soul to run the `repo_edit` act-effector with a TYPED ActionIntent aimed at a
+    /// sandbox proof path. The body builds the intent from this fixed affordance — it never parses
+    /// free text into one — and emits it; the soul authorizes through the action gate and runs the
+    /// live executor only on `allow` (AGENTS.md law 7). First press proposes the effect; once the
+    /// soul replies needs_confirmation the Edit button becomes Confirm and the next press re-emits
+    /// it `confirmed`. This is the inbound half of the membrane the soul→body outcome mirrors.
+    fn request_repo_edit(&mut self) {
+        const PROOF_TARGET: &str = ".border-agents/proofs/from-body.md";
+        let confirmed = self.pending_effector.as_deref() == Some("repo_edit");
+        let intent = presence::ActionIntent {
+            operation: "write_patch",
+            target_kind: "repo_path",
+            target_value: Some(PROOF_TARGET),
+            summary: Some("write a proof note from the body"),
+            payload_digest: None,
+        };
+        self.send_to_soul(presence::action_request_intent_json(
+            &self.buddy,
+            "repo_edit",
+            &intent,
+            confirmed,
+            None,
+        ));
+        self.speech = Some(if confirmed {
+            "Confirming repo edit…".to_string()
+        } else {
+            format!("Requesting repo_edit on {PROOF_TARGET}…")
         });
         self.update_input_region();
     }

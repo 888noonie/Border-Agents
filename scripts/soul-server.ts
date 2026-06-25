@@ -26,11 +26,23 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 
-import { handleActionRequest, parseActionCommand } from "../src/soulActions";
+import {
+  handleActionRequest,
+  parseActionCommand,
+  presenceIntentToActionIntent,
+  decisionEmotion,
+} from "../src/soulActions";
 import { createLiveRepoEditExecutor } from "./liveEffectorExecutors";
-import { PRESENCE_PROTOCOL, parsePresenceMessage, presence } from "../src/presenceProtocol";
+import {
+  PRESENCE_PROTOCOL,
+  parsePresenceMessage,
+  presence,
+  type PresenceActionIntent,
+} from "../src/presenceProtocol";
 import { createDefaultBuddySettings, BUDDY_PROFILES, type BuddyProfile } from "../src/buddyProfiles";
-import type { UserPosture } from "../src/core";
+import type { EffectorId } from "../src/buddyManifest";
+import type { ActionIntent, UserPosture } from "../src/core";
+import type { SessionChatLine } from "../src/liveGovernance";
 
 const PORT = Number(process.env.BB_PRESENCE_PORT ?? 17387);
 const PATH = process.env.BB_PRESENCE_PATH ?? "/border-buddies";
@@ -91,6 +103,32 @@ const EXECUTORS = { repo_edit: createLiveRepoEditExecutor() };
 // Per-buddy pending effector, set when the gate returns needs_confirmation so a later
 // `/confirm` knows what it is confirming. Mirrors the browser composer's pendingEffector.
 const pending = new Map<string, string>();
+// Per-buddy pending intent, so the `/confirm` round-trip re-authorizes the SAME typed effect
+// (same operation + target) it proposed — confirmation must clear the floor on the exact intent,
+// never silently widen to a bare grant.
+const pendingIntent = new Map<string, ActionIntent>();
+
+// A single action-backed turn so an `act` effector (repo_edit) can reach the allow path on this
+// real surface: an assistant assertion grades `trusted` and — with `allowAction` on the settings
+// below — carries `may_use_for_action`, the trusted backing the gate requires before it will
+// authorize a high-risk effect. Without backing the gate fails closed (empty frame), which is
+// correct but means repo_edit could only ever block. This is the "action-backed memory turn".
+const ACTION_BACKING: SessionChatLine[] = [{ role: "assistant", text: "Reviewed the patch; it is safe to apply." }];
+
+/** Settings for the gate: the profile's defaults plus `allowAction` so a backed turn can carry
+ * may_use_for_action. Per-call (not cached) so a future per-buddy posture stays straightforward. */
+function gateSettings(buddy: string) {
+  return { ...createDefaultBuddySettings(profileFor(buddy)), allowAction: true };
+}
+
+/** Build the typed intent for a `/review <effector> <target>` command. Defaults to a repo_path
+ * `write_patch` (repo_edit is the only act effector today); the gate's protected-target policy and
+ * the executor sandbox still arbitrate where the write may actually land. */
+function commandIntent(effectorId: EffectorId, target: string | undefined): ActionIntent | undefined {
+  if (!target) return undefined;
+  const wire: PresenceActionIntent = { operation: "write_patch", target: { kind: "repo_path", value: target } };
+  return presenceIntentToActionIntent(effectorId, wire);
+}
 
 /**
  * Run one effector request through the real gate and send the body the resulting cue. Records
@@ -102,16 +140,24 @@ function authorizeAndReply(
   effectorId: string,
   confirmed: boolean,
   requestId?: string,
+  intent?: ActionIntent,
 ) {
+  // The soul projects its own state the instant it begins weighing — the deliberation face.
+  // Synchronous here (microseconds), but this is the seam a future provider-backed soul that
+  // genuinely thinks for seconds lights up automatically: the body shows `thinking`, then the
+  // honest outcome face below. Mood belongs to the soul (law 7), so it announces both.
+  socket.send(JSON.stringify(presence.express(buddy, "thinking")));
   const { receipt, result, execution } = handleActionRequest({
     buddy,
     effectorId,
-    settings: createDefaultBuddySettings(profileFor(buddy)),
+    settings: gateSettings(buddy),
     posture: POSTURE,
-    history: [],
-    // Real disk-writing executors, sandboxed to .border-agents/proofs/. They only run on an
-    // `allow` carrying an intent; until the body emits a typed intent over the wire, repo_edit
-    // requests authorize but skip execution. No-execute-on-block still holds either way.
+    history: ACTION_BACKING,
+    // The typed effect to authorize. When present (e.g. a repo_edit targeting a sandbox path),
+    // the gate authorizes the EFFECT, not just the grant, and on `allow` the live disk-writing
+    // executor (sandboxed to .border-agents/proofs/) runs and emits an ExecutionReceipt. Absent
+    // → grant-only: an act effector fails closed. No-execute-on-block holds either way.
+    intent,
     executors: EXECUTORS,
     confirmed,
     requestId,
@@ -119,9 +165,15 @@ function authorizeAndReply(
   });
   if (receipt.decision === "needs_confirmation") {
     pending.set(buddy, effectorId);
+    if (intent) pendingIntent.set(buddy, intent);
   } else {
     pending.delete(buddy);
+    pendingIntent.delete(buddy);
   }
+  // The honest outcome face, derived from the real receipt — sent BEFORE the result so the
+  // soul is the authoritative source of mood. The native body's `Emotion::for_decision` is the
+  // designed twin/fallback; they agree, so there is no flicker, never a smile that outruns a block.
+  socket.send(JSON.stringify(presence.express(buddy, decisionEmotion(receipt.decision))));
   socket.send(JSON.stringify(result));
   log("authorized", {
     buddy,
@@ -208,7 +260,20 @@ wss.on("connection", (socket, request) => {
         // else is free text the soul would forward to a provider (not wired in this server).
         const command = parseActionCommand(message.text);
         if (!command) {
-          log("said (free text — no provider wired in soul-server)", { buddy, text: message.text });
+          // Free text. This is the GOVERNANCE soul — it gates actions, it does not forward chat
+          // to a provider (that is the dev gateway / a provider-backed soul's job). Silently
+          // dropping it left the body hung on a "Reply pending — waiting for <buddy>…" promise it
+          // could never keep. Answer honestly instead, so the body clears that false pending: a
+          // pending state must never outrun what the soul can actually deliver.
+          socket.send(
+            JSON.stringify(
+              presence.say(
+                buddy,
+                "I'm the governance soul — I gate actions, I don't relay chat. Try /review or /confirm. (Free conversation needs a provider-backed soul.)",
+              ),
+            ),
+          );
+          log("said (free text — governance soul declined honestly)", { buddy, text: message.text });
           return;
         }
         if (command.kind === "confirm") {
@@ -217,16 +282,26 @@ wss.on("connection", (socket, request) => {
             socket.send(JSON.stringify(presence.say(buddy, "Nothing is awaiting confirmation.")));
             return;
           }
-          authorizeAndReply(socket, buddy, effectorId, true);
+          // Re-authorize the SAME typed effect that was proposed — confirmation clears the floor
+          // on the exact intent, it does not fall back to a bare grant.
+          authorizeAndReply(socket, buddy, effectorId, true, undefined, pendingIntent.get(buddy));
           return;
         }
-        authorizeAndReply(socket, buddy, command.effectorId, false);
+        // `/review <effector> <target>` carries a typed effect (e.g. `/review repo_edit
+        // .border-agents/proofs/notes.md`); bare `/review` is grant-only. The soul builds the
+        // intent here — the body only reported the text (law 7).
+        const intent = commandIntent(command.effectorId as EffectorId, command.target);
+        authorizeAndReply(socket, buddy, command.effectorId, false, undefined, intent);
         return;
       }
 
       case "action_request": {
-        // A body (or future surface) emitted the typed action cue directly.
-        authorizeAndReply(socket, buddy, message.effector, message.confirmed === true, message.requestId);
+        // A body (or future surface) emitted the typed action cue directly. Lift the wire intent
+        // into a core ActionIntent; on a confirm follow-up that omits it, fall back to the pending
+        // intent so the executor still runs against the originally-proposed effect.
+        const lifted = presenceIntentToActionIntent(message.effector as EffectorId, message.intent);
+        const intent = lifted ?? (message.confirmed ? pendingIntent.get(buddy) : undefined);
+        authorizeAndReply(socket, buddy, message.effector, message.confirmed === true, message.requestId, intent);
         return;
       }
 

@@ -1,5 +1,10 @@
 import { describe, expect, test } from "vitest";
-import { handleActionRequest, parseActionCommand } from "../soulActions";
+import {
+  handleActionRequest,
+  parseActionCommand,
+  presenceIntentToActionIntent,
+  decisionEmotion,
+} from "../soulActions";
 import { readReceiptLedger } from "../receiptLedger";
 import type { BuddySettings } from "../buddyProfiles";
 import type { SessionChatLine } from "../liveGovernance";
@@ -322,5 +327,73 @@ describe("parseActionCommand", () => {
     expect(parseActionCommand("/reviewer")).toBeNull(); // must be /review or "/review "
     expect(parseActionCommand("/confirming")).toBeNull();
     expect(parseActionCommand("")).toBeNull();
+  });
+});
+
+describe("presenceIntentToActionIntent", () => {
+  test("lifts a concrete repo_path intent into a core ActionIntent", () => {
+    const intent = presenceIntentToActionIntent("repo_edit", {
+      operation: "write_patch",
+      target: { kind: "repo_path", value: ".border-agents/proofs/notes.md" },
+      summary: "write notes.md",
+    });
+    expect(intent).toEqual({
+      effectorId: "repo_edit",
+      operation: "write_patch",
+      target: { kind: "repo_path", path: ".border-agents/proofs/notes.md" },
+      summary: "write notes.md",
+    });
+  });
+
+  test("synthesizes a summary when the body omits one", () => {
+    const intent = presenceIntentToActionIntent("repo_edit", {
+      operation: "write_patch",
+      target: { kind: "repo_path", value: "x.md" },
+    });
+    expect(intent?.summary).toBe("write_patch x.md");
+  });
+
+  test("carries an optional payloadDigest through verbatim", () => {
+    const intent = presenceIntentToActionIntent("repo_edit", {
+      operation: "apply_patch",
+      target: { kind: "repo_path", value: "x.md" },
+      payloadDigest: "sha256:abc",
+    });
+    expect(intent?.payloadDigest).toBe("sha256:abc");
+  });
+
+  test("a none / value-less / absent target degrades to undefined (grant-only, fails closed)", () => {
+    expect(presenceIntentToActionIntent("repo_edit", undefined)).toBeUndefined();
+    expect(
+      presenceIntentToActionIntent("repo_edit", { operation: "noop", target: { kind: "none" } }),
+    ).toBeUndefined();
+    expect(
+      presenceIntentToActionIntent("repo_edit", { operation: "write_patch", target: { kind: "repo_path" } }),
+    ).toBeUndefined();
+    expect(presenceIntentToActionIntent("repo_edit", { operation: "write_patch" })).toBeUndefined();
+  });
+});
+
+describe("decisionEmotion", () => {
+  test("each gate decision maps to a distinct, honest face", () => {
+    expect(decisionEmotion("allow")).toBe("happy");
+    expect(decisionEmotion("needs_confirmation")).toBe("curious");
+    expect(decisionEmotion("blocked")).toBe("alert");
+    // distinctness — a glance must tell the three border outcomes apart
+    const faces = new Set(["allow", "needs_confirmation", "blocked"].map(decisionEmotion));
+    expect(faces.size).toBe(3);
+  });
+
+  test("any unknown decision fails loud (alert), never a reassuring face", () => {
+    expect(decisionEmotion("garbage")).toBe("alert");
+    expect(decisionEmotion("")).toBe("alert");
+  });
+
+  test("stays in lockstep with the native body's for_decision twin", () => {
+    // These pairings ARE the cross-surface contract (desktop-body render.rs Emotion::for_decision):
+    // if either side drifts, the body and soul would disagree on what the gate just did.
+    expect(decisionEmotion("allow")).toBe("happy"); //              → Emotion::Happy
+    expect(decisionEmotion("needs_confirmation")).toBe("curious"); // → Emotion::Curious
+    expect(decisionEmotion("blocked")).toBe("alert"); //            → Emotion::Alert
   });
 });

@@ -689,6 +689,8 @@ pub struct PassportCard<'a> {
     pub provider: Option<&'a str>,
     /// "local" | "cloud" from `surface_active.route.locality`, if any — drives the locality dot.
     pub locality: Option<&'a str>,
+    /// Optional soul-derived route health. Absent means no health chrome.
+    pub route_health: Option<&'a str>,
     /// First line of the last output, shown as an idle peek (never replaces the full Text/Image cards).
     pub output_preview: Option<&'a str>,
 }
@@ -744,6 +746,10 @@ pub struct BodyView<'a> {
     pub dim_quick: [bool; 4],
     /// Hold-to-bloom surface dial items, ordered active-at-12 by the body state machine.
     pub surface_bloom: &'a [SurfaceDialItem<'a>],
+    /// Soul-derived route health from `surface_active.route.health`; absent means no ring.
+    pub route_health: Option<&'a str>,
+    /// Body-observed local→cloud transition flash. Separate from route health.
+    pub route_flash: bool,
     pub layout: Layout,
     pub pinned: Option<PinnedLayout>,
     pub frame: Option<FrameLayout>,
@@ -825,7 +831,7 @@ impl Sprite {
             return;
         }
 
-        draw_figure(&mut pixmap, &view.layout, view.color, bob, &pose);
+        draw_figure(&mut pixmap, &view.layout, view.color, bob, &pose, view.route_health, view.route_flash);
         if let Some(font) = &self.font {
             draw_torso_output(&mut pixmap, font, &view.layout, &view.torso_output);
             if let Some(label) = view.posture_badge {
@@ -892,9 +898,18 @@ fn lighten(c: [u8; 3], f: f32) -> [u8; 3] {
 
 // --- figure drawing -----------------------------------------------------------------
 
-fn draw_figure(pixmap: &mut Pixmap, layout: &Layout, color: [u8; 3], bob: f32, pose: &FigurePose) {
+fn draw_figure(
+    pixmap: &mut Pixmap,
+    layout: &Layout,
+    color: [u8; 3],
+    bob: f32,
+    pose: &FigurePose,
+    route_health: Option<&str>,
+    route_flash: bool,
+) {
     let hips_y = layout.hips_y();
     let limb = solid(rgb(shade(color, 0.94)));
+    draw_route_boundary_chrome(pixmap, layout, route_health, route_flash);
 
     // Legs + feet (drawn first so the torso bottom overlaps the hip joins).
     let mut leg_stroke = Stroke::default();
@@ -979,6 +994,49 @@ fn draw_figure(pixmap: &mut Pixmap, layout: &Layout, color: [u8; 3], bob: f32, p
     }
 
     draw_clay_texture(pixmap, layout, color, bob);
+}
+
+fn draw_route_boundary_chrome(
+    pixmap: &mut Pixmap,
+    layout: &Layout,
+    route_health: Option<&str>,
+    route_flash: bool,
+) {
+    if let Some(color) = route_health.and_then(route_health_ring_color) {
+        stroke_figure_boundary(pixmap, layout, color, 2.0, 4.0);
+    }
+    if route_flash {
+        stroke_figure_boundary(pixmap, layout, Color::from_rgba8(238, 162, 55, 205), 3.0, 8.0);
+    }
+}
+
+fn route_health_ring_color(health: &str) -> Option<Color> {
+    route_health_ring_rgba(health).map(|[r, g, b, a]| Color::from_rgba8(r, g, b, a))
+}
+
+fn route_health_ring_rgba(health: &str) -> Option<[u8; 4]> {
+    match health {
+        "ready" => Some([52, 168, 96, 180]),
+        "degraded" => Some([218, 147, 45, 205]),
+        "unavailable" => Some([210, 63, 60, 215]),
+        _ => None,
+    }
+}
+
+fn stroke_figure_boundary(pixmap: &mut Pixmap, layout: &Layout, color: Color, width: f32, outset: f32) {
+    let paint = solid(color);
+    let mut stroke = Stroke::default();
+    stroke.width = width;
+    stroke.line_cap = tiny_skia::LineCap::Round;
+    stroke.line_join = tiny_skia::LineJoin::Round;
+
+    if let Some(path) = ellipse_path(FIG_CX, HEAD_CY, HEAD_R + outset, HEAD_R + outset) {
+        pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+    }
+    let torso = inset_rect(layout.torso_rect(), -outset, -outset);
+    if let Some(path) = round_rect_path(torso, TORSO_R + outset) {
+        pixmap.stroke_path(&path, &paint, &stroke, Transform::identity(), None);
+    }
 }
 
 fn draw_frame_view(
@@ -1801,6 +1859,14 @@ fn draw_passport_card(pixmap: &mut Pixmap, font: &Font, rect: Rect, card: &Passp
 
     // Row 1 — route chip: provider name, then a locality dot (green=local, blue=cloud).
     let row1_baseline = row0_baseline + 14.0;
+    if card.route_health == Some("degraded") {
+        fill_round_rect(
+            pixmap,
+            Rect { x: x - 3.0, y: row1_baseline - 11.0, w: text_w + 6.0, h: 14.0 },
+            6.0,
+            &solid(Color::from_rgba8(218, 147, 45, 42)),
+        );
+    }
     if let Some(provider) = card.provider {
         let prov = fit_line(font, provider, 10.0, (text_w - 12.0).max(0.0));
         draw_line(pixmap, font, &prov, x, row1_baseline, 10.0, [63, 56, 52]);
@@ -2667,6 +2733,8 @@ mod tests {
                 posture_badge: None,
                 dim_quick: dim,
                 surface_bloom: &[],
+                route_health: None,
+                route_flash: false,
                 layout,
                 pinned: None,
                 frame: None,
@@ -2694,6 +2762,14 @@ mod tests {
             alpha_sum(&dimmed) < alpha_sum(&bright),
             "an unwired Quick0 button should paint fainter than a wired one",
         );
+    }
+
+    #[test]
+    fn route_health_ring_colors_follow_closed_set() {
+        assert_eq!(route_health_ring_rgba("ready"), Some([52, 168, 96, 180]));
+        assert_eq!(route_health_ring_rgba("degraded"), Some([218, 147, 45, 205]));
+        assert_eq!(route_health_ring_rgba("unavailable"), Some([210, 63, 60, 215]));
+        assert_eq!(route_health_ring_rgba("flaky"), None);
     }
 
     #[test]
@@ -2785,6 +2861,7 @@ mod tests {
             posture: "private",
             provider: Some("Some Very Long Provider Gateway Label That Should Truncate"),
             locality: Some("local"),
+            route_health: Some("degraded"),
             output_preview: Some(
                 "A long idle preview line that should wrap and clip inside the panel, never spilling past the torso edge.",
             ),
@@ -2893,6 +2970,8 @@ mod tests {
             posture_badge: None,
             dim_quick: [false; 4],
             surface_bloom: &[],
+            route_health: None,
+            route_flash: false,
             layout: Layout::initial(),
             pinned: None,
             frame: Some(frame),

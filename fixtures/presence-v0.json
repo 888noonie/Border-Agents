@@ -292,7 +292,8 @@
     "providerLabel": "LM Studio",
     "route": {
       "label": "LM Studio",
-      "locality": "local"
+      "locality": "local",
+      "health": "ready"
     }
   }
 }

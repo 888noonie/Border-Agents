@@ -93,7 +93,9 @@ fn next_cyclable_index(order: &[presence::SurfaceDescriptor], start: usize, delt
     let start = start as isize;
     for step in 1..=len {
         let idx = (start + delta * step).rem_euclid(len) as usize;
-        if order[idx].availability != "unwired" {
+        // Skip unwired surfaces (can't activate) and launchers (those open a tool, not a
+        // surface — reachable only via the bloom dial, never the arrow cycle).
+        if order[idx].availability != "unwired" && !order[idx].is_launcher() {
             return Some(idx);
         }
     }
@@ -1753,9 +1755,9 @@ impl App {
         if let PressTarget::SurfaceBloom(idx) = press.target {
             self.surface_bloom_open = false;
             if press.dist <= CLICK_SLOP {
-                if let Some(surface) = self.surface_bloom_surface_at(idx) {
+                if let Some(desc) = self.surface_bloom_descriptor_at(idx) {
                     self.input_focused = false;
-                    self.request_surface(&surface);
+                    self.activate_bloom_descriptor(&desc);
                     return;
                 }
             }
@@ -1764,11 +1766,13 @@ impl App {
         }
 
         if press.bloom_started {
-            if let Some(surface) = self.surface_bloom_hit(body_x, y) {
-                self.surface_bloom_open = false;
-                self.input_focused = false;
-                self.request_surface(&surface);
-                return;
+            if let Some(idx) = self.surface_bloom_hit_index(body_x, y) {
+                if let Some(desc) = self.surface_bloom_descriptor_at(idx) {
+                    self.surface_bloom_open = false;
+                    self.input_focused = false;
+                    self.activate_bloom_descriptor(&desc);
+                    return;
+                }
             }
             self.surface_bloom_open = true;
             self.update_input_region();
@@ -1854,6 +1858,8 @@ impl App {
                     id: (*id).to_string(),
                     label: (*id).to_string(),
                     availability: "available".to_string(),
+                    kind: "surface".to_string(),
+                    effector: None,
                 })
                 .collect()
         } else {
@@ -1865,17 +1871,25 @@ impl App {
         rotate_surfaces_for_bloom(self.ordered_surfaces(), &self.active_surface)
     }
 
-    fn surface_bloom_hit(&self, x: f64, y: f64) -> Option<String> {
-        let idx = self.surface_bloom_hit_index(x, y)?;
-        self.surface_bloom_surface_at(idx)
-    }
-
     fn surface_bloom_hit_index(&self, x: f64, y: f64) -> Option<usize> {
         render::surface_bloom_hit(&self.layout(), self.surface_bloom_surfaces().len(), x, y)
     }
 
-    fn surface_bloom_surface_at(&self, idx: usize) -> Option<String> {
-        self.surface_bloom_surfaces().get(idx).map(|surface| surface.id.clone())
+    fn surface_bloom_descriptor_at(&self, idx: usize) -> Option<presence::SurfaceDescriptor> {
+        self.surface_bloom_surfaces().get(idx).cloned()
+    }
+
+    /// Act on a bloom-dial selection: a launcher opens its external tool through the gate; a
+    /// plain surface switches the active surface. Centralises the kind-branch both selection
+    /// paths (tap-on-pill and drag-release-on-pill) share.
+    fn activate_bloom_descriptor(&mut self, desc: &presence::SurfaceDescriptor) {
+        if desc.is_launcher() {
+            if let Some(effector) = desc.effector.as_deref() {
+                self.request_launch(effector, &desc.label);
+            }
+        } else {
+            self.request_surface(&desc.id);
+        }
     }
 
     fn surface_availability(&self, id: &str) -> &str {
@@ -1984,6 +1998,22 @@ impl App {
             "Confirming review…".to_string()
         } else {
             "Requesting receipt review…".to_string()
+        });
+        self.update_input_region();
+    }
+
+    /// Ask the soul to launch an external tool (a reach effector like `open_cursor`). The body
+    /// only names the effector — the soul owns the workspace target it opens (AGENTS.md law 7).
+    /// First tap requests; the soul replies `needs_confirmation` (which sets `pending_effector`),
+    /// and re-tapping the same launcher pill confirms. After the soul remembers the confirmation
+    /// for the session, later taps open silently. The body never spawns the process itself.
+    fn request_launch(&mut self, effector: &str, label: &str) {
+        let confirmed = self.pending_effector.as_deref() == Some(effector);
+        self.send_to_soul(presence::action_request_json(&self.buddy, effector, confirmed, None));
+        self.speech = Some(if confirmed {
+            format!("Opening {label}…")
+        } else {
+            format!("Open {label}?")
         });
         self.update_input_region();
     }
@@ -2462,6 +2492,18 @@ mod tests {
             id: id.to_string(),
             label: id.to_string(),
             availability: availability.to_string(),
+            kind: "surface".to_string(),
+            effector: None,
+        }
+    }
+
+    fn launcher(id: &str, effector: &str) -> presence::SurfaceDescriptor {
+        presence::SurfaceDescriptor {
+            id: id.to_string(),
+            label: id.to_string(),
+            availability: "gated".to_string(),
+            kind: "launcher".to_string(),
+            effector: Some(effector.to_string()),
         }
     }
 
@@ -2542,6 +2584,22 @@ mod tests {
         assert_eq!(next_cyclable_index(&[], 0, 1), None);
         let all_unwired = vec![surf("a", "unwired"), surf("b", "unwired")];
         assert_eq!(next_cyclable_index(&all_unwired, 0, 1), None);
+    }
+
+    #[test]
+    fn cycle_skips_launchers_so_they_stay_bloom_only() {
+        // Launchers ride the bloom dial but the arrow cycle must step over them — arrows switch
+        // surfaces, they never open a tool. Forward/backward from session both skip open_cursor.
+        let order = vec![
+            surf("session", "available"),
+            launcher("open_cursor", "open_cursor"),
+            surf("agent_zero", "gated"),
+        ];
+        assert_eq!(next_cyclable_index(&order, 0, 1), Some(2));
+        assert_eq!(next_cyclable_index(&order, 0, -1), Some(2));
+        // A dial of only launchers has nothing to cycle to.
+        let only_launchers = vec![launcher("open_cursor", "open_cursor"), launcher("open_vscode", "open_vscode")];
+        assert_eq!(next_cyclable_index(&only_launchers, 0, 1), None);
     }
 
     #[test]

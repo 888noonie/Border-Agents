@@ -467,11 +467,23 @@ pub enum Cue {
 
 /// One entry in the `hydrate` surface list. Mirrors the TS `PresenceSurfaceDescriptor`:
 /// `availability` is the closed set `available | unwired | gated` — `unwired` renders dimmed.
+/// `kind` is `surface` (default — switches the active surface) or `launcher` (opens an external
+/// tool via a reach `action_request`); a launcher carries the `effector` id to request. Both new
+/// fields are additive: an absent `kind` parses as `surface` so older soul snapshots still load.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SurfaceDescriptor {
     pub id: String,
     pub label: String,
     pub availability: String,
+    pub kind: String,
+    pub effector: Option<String>,
+}
+
+impl SurfaceDescriptor {
+    /// A launcher opens a tool (action_request) instead of switching the active surface.
+    pub fn is_launcher(&self) -> bool {
+        self.kind == "launcher"
+    }
 }
 
 /// The route an active surface is riding. Mirrors the TS `SurfaceRoute`: `locality` is the
@@ -625,7 +637,14 @@ fn parse_surfaces(value: &Value) -> Option<Vec<SurfaceDescriptor>> {
         if !matches!(availability.as_str(), "available" | "unwired" | "gated") {
             return None;
         }
-        out.push(SurfaceDescriptor { id, label, availability });
+        // Additive (Slice 0 launchers): `kind` defaults to "surface"; `effector` names the
+        // reach effector a launcher requests. A present-but-unknown `kind` drops the cue.
+        let kind = item.get("kind").and_then(|v| v.as_str()).unwrap_or("surface").to_string();
+        if !matches!(kind.as_str(), "surface" | "launcher") {
+            return None;
+        }
+        let effector = item.get("effector").and_then(|v| v.as_str()).map(|s| s.to_string());
+        out.push(SurfaceDescriptor { id, label, availability, kind, effector });
     }
     Some(out)
 }
@@ -852,6 +871,35 @@ mod tests {
             }
             other => panic!("expected hydrate, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn hydrate_parses_launcher_descriptor_and_defaults_kind_to_surface() {
+        let base = r#"{"protocol":"presence","v":0,"kind":"hydrate","buddy":"h","ts":1,"surfaces":"#;
+        // A surface with no `kind` defaults to "surface" and is not a launcher (back-compat).
+        let surface = format!("{base}[{{\"id\":\"session\",\"label\":\"Session\",\"availability\":\"available\"}}]}}");
+        match parse_to_body(&surface).unwrap().cue {
+            Cue::Hydrate { surfaces, .. } => {
+                assert_eq!(surfaces[0].kind, "surface");
+                assert!(!surfaces[0].is_launcher());
+                assert_eq!(surfaces[0].effector, None);
+            }
+            other => panic!("expected hydrate, got {other:?}"),
+        }
+        // A launcher carries kind + effector and reads back as a launcher.
+        let launcher = format!(
+            "{base}[{{\"id\":\"open_cursor\",\"label\":\"Open in Cursor\",\"availability\":\"gated\",\"kind\":\"launcher\",\"effector\":\"open_cursor\"}}]}}"
+        );
+        match parse_to_body(&launcher).unwrap().cue {
+            Cue::Hydrate { surfaces, .. } => {
+                assert!(surfaces[0].is_launcher());
+                assert_eq!(surfaces[0].effector.as_deref(), Some("open_cursor"));
+            }
+            other => panic!("expected hydrate, got {other:?}"),
+        }
+        // An unknown `kind` drops the whole cue, mirroring the TS guard.
+        let bad_kind = format!("{base}[{{\"id\":\"x\",\"label\":\"X\",\"availability\":\"gated\",\"kind\":\"bogus\"}}]}}");
+        assert!(parse_to_body(&bad_kind).is_none());
     }
 
     #[test]

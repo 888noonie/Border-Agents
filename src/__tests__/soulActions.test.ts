@@ -228,6 +228,109 @@ describe("handleActionRequest", () => {
   });
 });
 
+// Launcher reach effectors (Slice 0): open a tool the user already has, through the gate.
+// They are low-risk reach, so the confirmation floor asks once under work posture, then the
+// executor opens the tool on the confirmed allow — proving the launch path runs the executor.
+describe("launcher reach effectors", () => {
+  /** The launcher intent the soul synthesises: open the workspace, file_path (never a repo_path,
+   * so the protected-target block can't apply), low-risk reach. */
+  function launcherIntent(effectorId: "open_cursor" | "open_vscode" | "open_terminal", root = "/work/space") {
+    return {
+      effectorId,
+      operation: "open",
+      target: { kind: "file_path" as const, path: root },
+      summary: `open ${root} in ${effectorId}`,
+    };
+  }
+
+  test("forge launching open_cursor asks once under work, then opens on confirm", () => {
+    const storage = memoryStorage();
+    const opened: string[] = [];
+    const executors = {
+      open_cursor: (ctx: { intent: { target: { path: string } } }) => {
+        opened.push(ctx.intent.target.path);
+        return { outcome: "ok" as const, detail: "opened" };
+      },
+    };
+
+    // First request (unconfirmed): granted + wired, but low-risk reach hits the work-posture
+    // confirmation floor — needs_confirmation, and crucially NOT blocked and NOT yet executed.
+    const first = handleActionRequest({
+      buddy: "forge",
+      effectorId: "open_cursor",
+      settings: BASE_SETTINGS,
+      posture: "work",
+      history: [],
+      intent: launcherIntent("open_cursor"),
+      executors,
+      storage,
+      now: "2026-06-25T12:00:00Z",
+    });
+    expect(first.receipt.decision).toBe("needs_confirmation");
+    expect(first.receipt.rules.some((r) => r.policy_rule === "action.blocked.ungranted")).toBe(false);
+    expect(first.execution).toBeUndefined();
+    expect(opened).toEqual([]);
+
+    // Confirmed: allow, and the executor opens the tool exactly once.
+    const second = handleActionRequest({
+      buddy: "forge",
+      effectorId: "open_cursor",
+      settings: BASE_SETTINGS,
+      posture: "work",
+      history: [],
+      intent: launcherIntent("open_cursor"),
+      executors,
+      confirmed: true,
+      storage,
+      now: "2026-06-25T12:00:01Z",
+    });
+    expect(second.receipt.decision).toBe("allow");
+    expect(second.receipt.risk).toBe("low");
+    expect(second.execution?.outcome).toBe("ok");
+    expect(opened).toEqual(["/work/space"]);
+  });
+
+  test("a launcher whose CLI is missing surfaces the error, not a false 'Running'", () => {
+    const storage = memoryStorage();
+    const executors = {
+      open_cursor: () => ({ outcome: "error" as const, detail: "cursor not found on PATH" }),
+    };
+    const { receipt, result } = handleActionRequest({
+      buddy: "forge",
+      effectorId: "open_cursor",
+      settings: BASE_SETTINGS,
+      posture: "work",
+      history: [],
+      intent: launcherIntent("open_cursor"),
+      executors,
+      confirmed: true,
+      storage,
+      now: "2026-06-25T12:00:02Z",
+    });
+    expect(receipt.decision).toBe("allow");
+    expect(result.summary).toContain("didn't run");
+    expect(result.summary).toContain("cursor not found on PATH");
+    expect(result.summary).not.toContain("Running");
+  });
+
+  test("a launcher is never blocked as an unbacked action — reach needs no action grant", () => {
+    const storage = memoryStorage();
+    const { receipt } = handleActionRequest({
+      buddy: "forge",
+      effectorId: "open_vscode",
+      settings: BASE_SETTINGS, // allowAction false: a reach effector needs no may_use_for_action
+      posture: "work",
+      history: [],
+      intent: launcherIntent("open_vscode"),
+      storage,
+      now: "2026-06-25T12:00:00Z",
+    });
+    expect(receipt.rules.some((r) => r.policy_rule === "action.blocked.no_action_grant")).toBe(false);
+    expect(receipt.rules.some((r) => r.policy_rule === "action.blocked.unwired")).toBe(false);
+    expect(receipt.decision).toBe("needs_confirmation");
+  });
+});
+
 // The first true `act` effector through the full seam: body request → resolve → gate
 // (intent-level) → executor (only on allow) → ledger. Proves the membrane end-to-end,
 // not just the core gate — the layer the owl→veritas seam slipped through.

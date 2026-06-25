@@ -22,6 +22,7 @@
     "gateway:wizard": "BB_SOUL=wizard node scripts/gateway-dev.mjs",
     "soul:dev": "tsx scripts/soul-server.ts",
     "body:dev": "bash scripts/bb-body.sh",
+    "bb:spawn": "bash scripts/bb-spawn.sh",
     "gen:fixtures": "tsx scripts/gen-presence-fixtures.ts",
     "report": "bash scripts/bb-report.sh",
     "clean:cache": "bash scripts/bb-clean.sh",

@@ -35,16 +35,17 @@ import {
   routeHealthFromSoul,
 } from "../src/soulActions";
 import { buildExecutionReceipt } from "../src/effectorExecutors";
-import { createLiveRepoEditExecutor } from "./liveEffectorExecutors";
+import { createLiveLauncherExecutor, createLiveRepoEditExecutor } from "./liveEffectorExecutors";
 import { createLiveLocalChatConnector, type LocalChatMessage } from "./liveLocalChat";
 import {
   PRESENCE_PROTOCOL,
   parsePresenceMessage,
   presence,
   type PresenceActionIntent,
+  type PresenceSurfaceDescriptor,
 } from "../src/presenceProtocol";
 import { createDefaultBuddySettings, BUDDY_PROFILES, type BuddyProfile } from "../src/buddyProfiles";
-import { ROUTE_PROVIDER_LABELS, resolveManifestId, type EffectorId } from "../src/buddyManifest";
+import { EFFECTOR_SPECS, manifestEntry, ROUTE_PROVIDER_LABELS, resolveManifestId, type EffectorId } from "../src/buddyManifest";
 import { getSurface, surfaceAvailability, surfaceHydrationList, type SurfaceId } from "../src/surfaceManifest";
 import type { ActionIntent, ActionReceipt, ActionRoute, UserPosture } from "../src/core";
 import type { SessionChatLine } from "../src/liveGovernance";
@@ -108,7 +109,16 @@ const storage = fileStorage(LEDGER_PATH);
 const EXECUTORS = {
   repo_edit: createLiveRepoEditExecutor(),
   local_chat: () => ({ outcome: "ok" as const, detail: "private local chat session attached" }),
+  // Launchers — open a tool the user already has, detached. Reach effectors: the gate
+  // authorizes the reach grant + intent, then these only spawn the app (no file write, no
+  // command run). BB_TERMINAL overrides the terminal binary (default cosmic-term on COSMIC).
+  open_vscode: createLiveLauncherExecutor({ command: "code" }),
+  open_cursor: createLiveLauncherExecutor({ command: "cursor" }),
+  open_terminal: createLiveLauncherExecutor({ command: process.env.BB_TERMINAL ?? "cosmic-term", isTerminal: true }),
 };
+
+// Launcher reach effectors that participate in confirm-once-per-session (see sessionConfirmed).
+const LAUNCHER_EFFECTORS: ReadonlySet<EffectorId> = new Set<EffectorId>(["open_vscode", "open_cursor", "open_terminal"]);
 const localChat = createLiveLocalChatConnector();
 // Per-buddy pending effector, set when the gate returns needs_confirmation so a later
 // `/confirm` knows what it is confirming. Mirrors the browser composer's pendingEffector.
@@ -119,6 +129,27 @@ const pending = new Map<string, string>();
 const pendingIntent = new Map<string, ActionIntent>();
 const pendingSurface = new Map<string, SurfaceId>();
 const activeSurface = new Map<string, SurfaceId>();
+// Per-buddy set of launcher effectors the user has already confirmed THIS session. A launcher is
+// low-risk reach, so the gate's confirmation floor (work/private posture confirms low-risk actions)
+// asks once; after the user confirms, the soul remembers and passes confirmed:true on later launches
+// so opening a tool you already approved doesn't nag. This is the soul remembering the USER's prior
+// confirmation (a session grant) — law 7 clean: the body never self-authorizes, the gate is unchanged.
+// Cleared when the soul restarts, so a fresh session asks once again.
+const sessionConfirmed = new Map<string, Set<EffectorId>>();
+
+function isSessionConfirmed(buddy: string, effectorId: string): boolean {
+  return sessionConfirmed.get(buddy)?.has(effectorId as EffectorId) ?? false;
+}
+
+function rememberSessionConfirm(buddy: string, effectorId: string): void {
+  if (!LAUNCHER_EFFECTORS.has(effectorId as EffectorId)) return;
+  let set = sessionConfirmed.get(buddy);
+  if (!set) {
+    set = new Set<EffectorId>();
+    sessionConfirmed.set(buddy, set);
+  }
+  set.add(effectorId as EffectorId);
+}
 const attachReceiptId = new Map<string, string>();
 const localChatHistory = new Map<string, LocalChatMessage[]>();
 
@@ -144,6 +175,41 @@ function commandIntent(effectorId: EffectorId, target: string | undefined): Acti
   return presenceIntentToActionIntent(effectorId, wire);
 }
 
+/** The workspace a launcher opens. The SOUL owns this path (law 7) — the body never reports it. */
+function launcherWorkspace(): string {
+  return process.env.BB_WORKSPACE ?? process.cwd();
+}
+
+/** The typed intent for a launcher reach effector. The body emits only the effector id; the soul
+ * fills in the workspace target here so the gate authorizes the EFFECT (and the executor opens it). */
+function launcherIntent(effectorId: EffectorId): ActionIntent {
+  const root = launcherWorkspace();
+  const wire: PresenceActionIntent = {
+    operation: "open",
+    target: { kind: "file_path", value: root },
+    summary: `open ${root} in ${EFFECTOR_SPECS[effectorId].label}`,
+  };
+  // file_path target + non-empty value always lifts to a concrete intent.
+  return presenceIntentToActionIntent(effectorId, wire)!;
+}
+
+/** The hydrate surface list for `buddy`: the canonical surfaces plus a launcher entry per granted
+ * launcher reach effector. Launchers ride the same bloom dial (additive `kind:"launcher"`), so the
+ * body opens them via action_request instead of switching the active surface. */
+function hydrationSurfacesFor(buddy: string): PresenceSurfaceDescriptor[] {
+  const entry = manifestEntry(resolveManifestId(buddy));
+  const launchers: PresenceSurfaceDescriptor[] = (entry?.effectors ?? [])
+    .filter((id) => LAUNCHER_EFFECTORS.has(id))
+    .map((id) => ({
+      id,
+      label: EFFECTOR_SPECS[id].label,
+      availability: "gated" as const,
+      kind: "launcher" as const,
+      effector: id,
+    }));
+  return [...surfaceHydrationList(), ...launchers];
+}
+
 /**
  * Run one effector request through the real gate and send the body the resulting cue. Records
  * / clears the pending effector for the confirm round-trip. Returns the receipt for logging.
@@ -163,6 +229,10 @@ function authorizeAndReply(
   // genuinely thinks for seconds lights up automatically: the body shows `thinking`, then the
   // honest outcome face below. Mood belongs to the soul (law 7), so it announces both.
   socket.send(JSON.stringify(presence.express(buddy, "thinking")));
+  // Confirm-once-per-session for launchers: a tool the user already approved this session is
+  // auto-confirmed so it opens without a second tap. The gate still sees a confirmed action and
+  // records it the same way — this only spares the repeat prompt, never widens authorization.
+  const effectiveConfirmed = confirmed || isSessionConfirmed(buddy, effectorId);
   const { receipt, result, execution } = handleActionRequest({
     buddy,
     effectorId,
@@ -176,7 +246,7 @@ function authorizeAndReply(
     intent,
     executors: EXECUTORS,
     route,
-    confirmed,
+    confirmed: effectiveConfirmed,
     requestId,
     storage,
   });
@@ -187,6 +257,9 @@ function authorizeAndReply(
     pending.delete(buddy);
     pendingIntent.delete(buddy);
     pendingSurface.delete(buddy);
+    // First time a launcher reaches `allow` it was just confirmed by the user; remember it so the
+    // rest of the session opens silently. No-op for non-launcher effectors.
+    if (receipt.decision === "allow") rememberSessionConfirm(buddy, effectorId);
   }
   // The honest outcome face, derived from the real receipt — sent BEFORE the result so the
   // soul is the authoritative source of mood. The native body's `Emotion::for_decision` is the
@@ -427,7 +500,7 @@ wss.on("connection", (socket, request) => {
       case "attached": {
         // Handshake: acknowledge with a hydrate snapshot + a greeting so the body settles in.
         socket.send(
-          JSON.stringify(presence.hydrate(buddy, { emotion: "neutral", surfaces: surfaceHydrationList() })),
+          JSON.stringify(presence.hydrate(buddy, { emotion: "neutral", surfaces: hydrationSurfacesFor(buddy) })),
         );
         socket.send(JSON.stringify(presence.express(buddy, "happy")));
         socket.send(
@@ -512,7 +585,14 @@ wss.on("connection", (socket, request) => {
         // into a core ActionIntent; on a confirm follow-up that omits it, fall back to the pending
         // intent so the executor still runs against the originally-proposed effect.
         const lifted = presenceIntentToActionIntent(message.effector as EffectorId, message.intent);
-        const intent = lifted ?? (message.confirmed ? pendingIntent.get(buddy) : undefined);
+        let intent = lifted ?? (message.confirmed ? pendingIntent.get(buddy) : undefined);
+        // Launchers arrive as a bare action_request (the body names only the effector). The soul
+        // owns the workspace target, so synthesise the typed intent here — without it the executor
+        // would not run on `allow` (grant-only). Same target on the confirm round-trip, so confirm
+        // re-authorizes the exact effect.
+        if (!intent && LAUNCHER_EFFECTORS.has(message.effector as EffectorId)) {
+          intent = launcherIntent(message.effector as EffectorId);
+        }
         authorizeAndReply(socket, buddy, message.effector, message.confirmed === true, message.requestId, intent);
         return;
       }

@@ -124,7 +124,7 @@ Border Agents/                                    # Parent folder (no .git — d
     │   └── (duplicates profile/settings/placement concerns)
     │
     ├── assets/                                   # Marketing/screenshots
-    ├── .vscode/tasks.json                        # "BB start", "BB gateway", "BB stop", "BB clean cache", "BB browser preview"
+    ├── .vscode/tasks.json                        # BB start | BB start full | BB spawn | BB stop (+ debug pieces)
     │
     └── (build artifacts ignored: dist/, node_modules/, src-tauri/target/)
 ```

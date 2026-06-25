@@ -140,6 +140,7 @@ export type EffectorId =
   | "open_gmail"
   | "open_calendar"
   | "open_vscode"
+  | "open_cursor"
   // research — reach: surface sources and receipts, don't fabricate them
   | "web_search"
   | "open_source"
@@ -149,7 +150,8 @@ export type EffectorId =
   | "doc_build"
   | "slides_build"
   | "file_export"
-  // coding — act: touch the project
+  // coding — reach: open the tool; act: touch the project
+  | "open_terminal"
   | "terminal"
   | "repo_edit"
   // voice — reach/act split on the device
@@ -194,7 +196,11 @@ export const EFFECTOR_SPECS: Record<EffectorId, EffectorSpec> = {
   open_github: reach("open_github", "Open GitHub", "Open a GitHub view; read-only until repo write is separately granted.", true),
   open_gmail: reach("open_gmail", "Open Gmail", "Open Gmail; drafting only, never send without explicit confirmation.", true),
   open_calendar: reach("open_calendar", "Open Calendar", "Open the calendar; propose events, never create without confirmation.", true),
-  open_vscode: reach("open_vscode", "Open in VS Code", "Open files/folders in the editor; no edits applied by this effector."),
+  // Launcher reach effectors — open a tool the user already has. Gated through
+  // GATED_WIRED_REACH_EFFECTORS below; the executor only spawns the app (detached),
+  // it never edits a file or runs a command.
+  open_vscode: { ...reach("open_vscode", "Open in VS Code", "Open files/folders in the editor; no edits applied by this effector."), wired: true },
+  open_cursor: { ...reach("open_cursor", "Open in Cursor", "Open files/folders in Cursor; no edits applied by this effector."), wired: true },
   web_search: reach("web_search", "Web search", "Query the web and return sources; surface citations, do not assert unsourced facts."),
   open_source: reach("open_source", "Open source", "Open a cited source in the browser for the user to read."),
   // First live effector — read-only, gated. See GATED_WIRED_EFFECTORS below.
@@ -203,6 +209,7 @@ export const EFFECTOR_SPECS: Record<EffectorId, EffectorSpec> = {
   doc_build: act("doc_build", "Build document", "Assemble a document artifact; user reviews before any export or share."),
   slides_build: act("slides_build", "Build slides", "Assemble a slide deck; user reviews before any export or share."),
   file_export: act("file_export", "Export file", "Write an artifact to disk at a user-confirmed path. Confirm overwrite."),
+  open_terminal: { ...reach("open_terminal", "Open Terminal", "Launch a terminal window; runs no shell command by this effector. Distinct from the `terminal` act effector."), wired: true },
   terminal: act("terminal", "Run terminal command", "Execute a shell command. Highest-risk effector: requires per-command confirmation."),
   // First true `act` effector behind the membrane — gated through GATED_WIRED_ACT_EFFECTORS.
   // The gate authorizes the EFFECT (typed intent + target), not just the grant; protected
@@ -243,7 +250,7 @@ export const BUDDY_MANIFEST: Record<string, BuddyManifestEntry> = {
     role: "Build & Code",
     capability: "coding",
     routes: { primary: ["claude", "codex"], fallback: ["gpt"], local: ["lm_studio"] },
-    effectors: ["open_github", "open_vscode", "repo_edit", "terminal"],
+    effectors: ["open_github", "open_vscode", "open_cursor", "open_terminal", "repo_edit", "terminal"],
     reachFirst: true,
     persona: "crab",
   },
@@ -310,7 +317,14 @@ export const BUDDY_MANIFEST: Record<string, BuddyManifestEntry> = {
 //                intent schema and an execution-outcome receipt (and the gate/soul suites
 //                prove the no-execute-on-block invariant). This is the only way an `act`
 //                effector goes live — never by flipping a spec in place.
-export const GATED_WIRED_REACH_EFFECTORS: ReadonlySet<EffectorId> = new Set<EffectorId>(["receipt_review", "local_chat"]);
+export const GATED_WIRED_REACH_EFFECTORS: ReadonlySet<EffectorId> = new Set<EffectorId>([
+  "receipt_review",
+  "local_chat",
+  // Launchers — open a tool the user already has, detached. Read-only hand-off.
+  "open_vscode",
+  "open_cursor",
+  "open_terminal",
+]);
 
 export interface GatedActEffector {
   id: EffectorId;

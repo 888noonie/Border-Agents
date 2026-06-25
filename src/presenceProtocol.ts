@@ -204,7 +204,17 @@ export interface PresenceSurfaceDescriptor {
   id: string;
   label: string;
   availability: PresenceSurfaceAvailability;
+  /**
+   * `surface` (default) cycles/switches the active surface. `launcher` opens an external tool
+   * via a reach `action_request` for `effector`, instead of becoming the active surface. Additive
+   * (Slice 0): an absent `kind` means `surface`, so older snapshots and fixtures remain valid.
+   */
+  kind?: PresenceSurfaceDescriptorKind;
+  /** For a `launcher`, the reach effector id the body requests (e.g. "open_cursor"). */
+  effector?: string;
 }
+
+export type PresenceSurfaceDescriptorKind = "surface" | "launcher";
 
 /**
  * Full snapshot so a late-joining or reconnecting body can hydrate at once. `surfaces` is
@@ -637,7 +647,11 @@ function isSurfaceDescriptorArray(value: unknown): value is PresenceSurfaceDescr
         isObject(item) &&
         isNonEmptyString(item.id) &&
         typeof item.label === "string" &&
-        isSurfaceAvailability(item.availability),
+        isSurfaceAvailability(item.availability) &&
+        // Additive (Slice 0 launchers): both fields optional. A present-but-bad `kind`/`effector`
+        // drops the whole cue, mirroring the Rust `parse_surfaces` guard.
+        (item.kind === undefined || item.kind === "surface" || item.kind === "launcher") &&
+        (item.effector === undefined || typeof item.effector === "string"),
     )
   );
 }

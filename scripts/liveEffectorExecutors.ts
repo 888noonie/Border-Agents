@@ -17,8 +17,9 @@
 // artifact recording WHAT was authorized (operation, summary, digest, and the authorizing
 // ActionReceipt id) — an honest on-disk record that the membrane permitted this write.
 
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve, sep } from "node:path";
+import { accessSync, constants as fsConstants, mkdirSync, writeFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { delimiter, dirname, join, resolve, sep } from "node:path";
 
 import { canonicalizeRepoPath } from "../src/core";
 import { REPO_EDIT_PROOF_DIR, type EffectorExecutor, type ExecutionContext } from "../src/effectorExecutors";
@@ -89,4 +90,87 @@ export function createLiveRepoEditExecutor(opts: { root?: string } = {}): Effect
 /** The sandbox directory an executor rooted at `root` will write into — useful for demos/tests. */
 export function liveExecutorSandbox(root: string = process.cwd()): string {
   return join(root, canonicalizeRepoPath(REPO_EDIT_PROOF_DIR).path);
+}
+
+// ---------------------------------------------------------------------------
+// Launcher executors — reach: open a tool the user already has, detached.
+//
+// Unlike repo_edit these never write a file or run a command; they spawn the real
+// GUI app and let it go (`detached` + `unref`) so it outlives the soul process. The
+// action gate has already authorized the reach grant + intent before we run; the
+// only world effect here is "a window opened". The intent target is a file_path/url
+// (the workspace or a file), never a repo_path, so the gate's protected-target block
+// is a no-op for launchers — and we never touch the filesystem ourselves.
+// ---------------------------------------------------------------------------
+
+/** True if `command` resolves to an executable on PATH. Synchronous so the executor can
+ *  fail closed with a clear `error` outcome (its signature returns synchronously, so the
+ *  async spawn `error` event is too late to surface as an outcome). */
+function commandOnPath(command: string): boolean {
+  // An explicit path (contains a separator) is checked directly.
+  if (command.includes("/")) {
+    try {
+      accessSync(command, fsConstants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  const dirs = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
+  for (const dir of dirs) {
+    try {
+      accessSync(join(dir, command), fsConstants.X_OK);
+      return true;
+    } catch {
+      // not here — keep scanning
+    }
+  }
+  return false;
+}
+
+/**
+ * Build a launcher executor that spawns `command`. `workspaceRoot` (defaults to
+ * BB_WORKSPACE or the process cwd) is the place to open when the intent carries no
+ * concrete path. For editors the resolved location is passed as an argument
+ * (`code <path>`); for a terminal (`isTerminal`) it becomes the child's working
+ * directory and no path argument is appended.
+ */
+export function createLiveLauncherExecutor(opts: {
+  command: string;
+  isTerminal?: boolean;
+  workspaceRoot?: string;
+}): EffectorExecutor {
+  const workspaceRoot = opts.workspaceRoot ?? process.env.BB_WORKSPACE ?? process.cwd();
+
+  return (ctx) => {
+    const { target } = ctx.intent;
+    const where =
+      (target.kind === "file_path" || target.kind === "url") && target.path.length > 0 ? target.path : workspaceRoot;
+
+    if (!commandOnPath(opts.command)) {
+      return {
+        outcome: "error",
+        detail: `${opts.command} not found on PATH — install the '${opts.command}' command to use this launcher`,
+      };
+    }
+
+    try {
+      const child = spawn(opts.command, opts.isTerminal ? [] : [where], {
+        cwd: opts.isTerminal ? where : workspaceRoot,
+        detached: true,
+        stdio: "ignore",
+      });
+      // PATH was already checked, but a late spawn failure (e.g. perms) would otherwise
+      // crash the soul as an unhandled 'error' — swallow it; the window simply won't open.
+      child.on("error", () => {});
+      child.unref();
+      return {
+        outcome: "ok",
+        detail: opts.isTerminal ? `opened ${opts.command} (cwd ${where})` : `opened ${where} in ${opts.command}`,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { outcome: "error", detail: `failed to launch ${opts.command}: ${message}` };
+    }
+  };
 }

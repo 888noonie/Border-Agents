@@ -304,7 +304,7 @@ effectors?: { id: string; granted: boolean }[];
 
 ## Build Order Summary
 
-**Roundtable verdict: Slice 1 is complete, and the Phase C browser proof has landed. Slices 2–5 remain charter (design intent), not committed scope, until the next fork is explicitly chosen. Phase C protocol fields are frozen — COMPASS additive fields must not break golden fixtures or Playwright specs.**
+**Status (2026-06-25): Slices 1–4 + Phase C are DONE, Opus-audited, and LANDED on `main`** (PRs #6–#11 merged; `main` tree-identical to the former `slice-4` tip; `tsc` clean, vitest 222 green). **Slice 5 remains charter (design intent), not committed scope, until the next fork is explicitly chosen. Phase C protocol fields are frozen — COMPASS additive fields must not break golden fixtures or Playwright specs.**
 
 **Phase C browser proof (landed):** `e2e/governance-act-effector.spec.ts` proves the live Forge execution membrane for `repo_edit`: protected target blocked, traversal blocked, safe target without action-backing blocked, and the same safe target with action-backing flowing `needs_confirmation → Confirm → allow` with an execution receipt. Gate: full Playwright suite **12 passed**.
 
@@ -317,8 +317,8 @@ effectors?: { id: string; granted: boolean }[];
 | Phase C | Forge `/review repo_edit <path>` browser proof | Playwright 12 ✅ | **DONE** |
 | 2a | Arrow cycle + soul-pushed hydrate `surfaces[]` availability dim | `tsc` clean · vitest 217 ✅ · cargo 46 ✅ | **DONE** |
 | 2b | Hold-to-bloom dial (separate input subsystem) | cargo 50 ✅ | **DONE** |
-| 3 | `route.health` ring (needs soul derivation spec) | health-derivation unit test | charter |
-| 4 | Receipt rail — *extend* existing Review/Confirm, thin cues only | receipt accumulation test | charter |
+| 3 | `route.health` ring + `routeHealthFromSoul` soul derivation | `tsc` clean · vitest 222 ✅ · cargo 51 ✅ | **DONE** |
+| 4 | Receipt rail — *extends* existing Review/Confirm, thin cues only | `tsc` clean · vitest 222 ✅ · cargo 57 ✅ | **DONE** |
 | 5 | Eyes/ears/mouth + vision shutter + host launch (governance, not render) | effectors[] round-trip test | charter |
 
 Each slice ships independently. Each leaves the body in a working, honest state.

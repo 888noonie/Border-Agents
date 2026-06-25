@@ -32,7 +32,7 @@ use calloop::channel::Event as ChannelEvent;
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{EventLoop, LoopSignal};
 use calloop_wayland_source::WaylandSource;
-use render::{BodyView, BumpEdge, Emotion, Facing, Sprite, TorsoAction};
+use render::{BodyView, BumpEdge, Emotion, Facing, PerimeterId, Sprite, TorsoAction};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, Region},
     delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
@@ -68,6 +68,8 @@ const CLICK_SLOP: f64 = 5.0;
 const BTN_LEFT: u32 = 0x110;
 const BTN_RIGHT: u32 = 0x111;
 const INPUT_PASTE_MAX_CHARS: usize = 8_000;
+const SURFACE_ORDER: &[&str] = &["session", "private_local_chat", "claude_code", "live_hermes", "agent_zero"];
+const SURFACE_QUICK: &[&str] = &["session", "private_local_chat", "claude_code", "agent_zero"];
 
 /// Drop the buddy with its head within this many pixels of a screen edge and it tucks
 /// against that edge.
@@ -195,6 +197,9 @@ enum TorsoSurface {
 }
 
 enum TorsoSurfaceSnapshot {
+    /// Retained as a rollback fallback — the idle state now snapshots `Passport` instead (see
+    /// `snapshot_torso_output`). Kept constructible-on-demand so reverting is a one-line change.
+    #[allow(dead_code)]
     Session {
         name: String,
         provider: String,
@@ -202,6 +207,14 @@ enum TorsoSurfaceSnapshot {
         gateway: String,
         status: String,
         note: String,
+    },
+    /// The idle/status passport ledger that supersedes `Session` (fits the 142px torso).
+    Passport {
+        persona_label: String,
+        posture: String,
+        provider: Option<String>,
+        locality: Option<String>,
+        output_preview: Option<String>,
     },
     Text {
         title: String,
@@ -240,6 +253,15 @@ impl TorsoSurfaceSnapshot {
                     gateway,
                     status,
                     note,
+                })
+            }
+            TorsoSurfaceSnapshot::Passport { persona_label, posture, provider, locality, output_preview } => {
+                render::TorsoOutput::Passport(render::PassportCard {
+                    persona_label,
+                    posture,
+                    provider: provider.as_deref(),
+                    locality: locality.as_deref(),
+                    output_preview: output_preview.as_deref(),
                 })
             }
             TorsoSurfaceSnapshot::Text { title, body } => {
@@ -382,6 +404,10 @@ fn main() {
         input_text: String::new(),
         input_focused: false,
         pending_effector: None,
+        active_surface: "session".to_string(),
+        active_posture: "work".to_string(),
+        active_provider: None,
+        active_locality: None,
         facing: Facing::Right,
         body_len: render::BODY_LEN_DEFAULT,
         color: env_color("BB_COLOR"),
@@ -496,6 +522,7 @@ enum PressTarget {
     Review,
     /// The on-body Edit / Confirm governance button — emits a typed `repo_edit` intent.
     Edit,
+    Perimeter(PerimeterId),
     TorsoAction(TorsoAction),
     /// The legs/feet zone — dragging it vertically stretches the body.
     Feet,
@@ -592,6 +619,12 @@ struct App {
     /// Kept per-effector (not a bare bool) so one act's pending confirm never flips the other's
     /// button. Cleared on any allow/blocked result. `None` = nothing awaiting confirmation.
     pending_effector: Option<String>,
+    active_surface: String,
+    active_posture: String,
+    active_provider: Option<String>,
+    /// `local | cloud` from the last `surface_active.route.locality`, drives the passport
+    /// locality dot. `None` until a surface with a route is activated.
+    active_locality: Option<String>,
     /// Which side the bubble/input sit on — recomputed from screen position so the
     /// UI always faces the screen centre, never the docked edge.
     facing: Facing,
@@ -609,6 +642,14 @@ fn edge_to_bump(edge: presence::Edge) -> BumpEdge {
         presence::Edge::Bottom => BumpEdge::Bottom,
         presence::Edge::Left => BumpEdge::Left,
     }
+}
+
+fn active_perimeter_controls_for(chat_open: bool, layout: render::Layout) -> Vec<(PerimeterId, render::Rect)> {
+    layout
+        .perimeter_controls()
+        .into_iter()
+        .filter(|(id, _)| chat_open || !matches!(id, PerimeterId::Paste | PerimeterId::Review | PerimeterId::Edit))
+        .collect()
 }
 
 fn pick_output(app: &App) -> Option<wl_output::WlOutput> {
@@ -723,6 +764,7 @@ impl App {
         let speech = self.speech.clone();
         let input_text = self.input_text.clone();
         let input_placeholder = format!("Ask {}...", self.name_label);
+        let posture_badge = (self.active_posture == "private").then_some("PRIVATE LOCAL");
         let pinned = self.pinned_layout();
         let (Some(pool), Some(layer)) = (self.pool.as_mut(), self.layer.as_ref()) else {
             return;
@@ -742,6 +784,7 @@ impl App {
             input_focused: self.input_focused,
             review_pending: self.pending_effector.as_deref() == Some("receipt_review"),
             edit_pending: self.pending_effector.as_deref() == Some("repo_edit"),
+            posture_badge,
             layout,
             pinned,
             frame: None,
@@ -768,13 +811,16 @@ impl App {
     fn snapshot_torso_output(&self) -> TorsoSurfaceSnapshot {
         // Owned snapshot — the decoded image is lent separately in draw() (see torso_image).
         match &self.torso_surface {
-            TorsoSurface::Session => TorsoSurfaceSnapshot::Session {
-                name: self.name_label.clone(),
-                provider: self.provider_label.clone(),
-                model: self.model_label.clone(),
-                gateway: self.gateway_label.clone(),
-                status: self.presence_status.clone(),
-                note: self.session_note.clone(),
+            // Idle/status now wears the passport ledger (Session snapshot retained for rollback).
+            TorsoSurface::Session => TorsoSurfaceSnapshot::Passport {
+                persona_label: self.name_label.clone(),
+                posture: self.active_posture.clone(),
+                provider: self
+                    .active_provider
+                    .clone()
+                    .or_else(|| (!self.provider_label.is_empty()).then(|| self.provider_label.clone())),
+                locality: self.active_locality.clone(),
+                output_preview: Some(self.session_note.clone()),
             },
             TorsoSurface::Text { title, body } => TorsoSurfaceSnapshot::Text {
                 title: title.clone(),
@@ -994,6 +1040,10 @@ impl App {
         self.margin_top = self.margin_top.clamp(min_top, max_top);
     }
 
+    fn active_perimeter_controls(&self, layout: render::Layout) -> Vec<(PerimeterId, render::Rect)> {
+        active_perimeter_controls_for(self.chat_open, layout)
+    }
+
     /// Input region = only the parts that should catch the pointer; everywhere else
     /// is transparent AND click-through. Recomputed whenever the menu/bubble toggles.
     fn update_input_region(&mut self) {
@@ -1018,14 +1068,14 @@ impl App {
             // Head = move/dock handle; feet = stretch handle. The torso stays
             // mostly click-through — only the small torso action points catch input.
             let mut rects = vec![render::head_rect().as_i32(), layout.feet_rect().as_i32()];
+            for (_, rect) in self.active_perimeter_controls(layout) {
+                rects.push(rect.as_i32());
+            }
             if self.speech.is_some() {
                 rects.push(layout.bubble_rect().as_i32());
             }
             if self.chat_open {
                 rects.push(layout.input_region_rect().as_i32());
-                rects.push(layout.paste_button_rect().as_i32());
-                rects.push(layout.review_button_rect().as_i32());
-                rects.push(layout.edit_button_rect().as_i32());
             }
             rects.push(layout.torso_action_rect(TorsoAction::Expand).as_i32());
             rects.push(layout.torso_action_rect(TorsoAction::Copy).as_i32());
@@ -1085,6 +1135,23 @@ impl App {
                 if let Some(text) = summary {
                     self.say(text);
                 }
+                self.update_input_region();
+            }
+            presence::Cue::SurfaceActive { surface, posture, label, provider_label, route } => {
+                self.active_surface = surface;
+                self.active_posture = posture;
+                // Prefer the route's provider label + locality when present; the passport row
+                // reads these. Fall back to the flat providerLabel for the provider name.
+                self.active_locality = route.as_ref().map(|r| r.locality.clone());
+                self.active_provider = route
+                    .as_ref()
+                    .map(|r| r.label.clone())
+                    .or_else(|| provider_label.clone());
+                if let Some(provider) = provider_label {
+                    self.provider_label = provider;
+                }
+                self.presence_status = label.clone().unwrap_or_else(|| "Surface active".to_string());
+                self.say(label.unwrap_or_else(|| "Surface active".to_string()));
                 self.update_input_region();
             }
             presence::Cue::TargetAcquired { target_id, title, app_id, bounds } => {
@@ -1316,12 +1383,17 @@ impl App {
             }
         } else if render::point_in_head(x, y) {
             PressTarget::Head
-        } else if self.chat_open && layout.paste_button_rect().contains(x, y) {
-            PressTarget::Paste
-        } else if self.chat_open && layout.review_button_rect().contains(x, y) {
-            PressTarget::Review
-        } else if self.chat_open && layout.edit_button_rect().contains(x, y) {
-            PressTarget::Edit
+        } else if let Some((id, _)) = self
+            .active_perimeter_controls(layout)
+            .into_iter()
+            .find(|(_, rect)| rect.contains(x, y))
+        {
+            match id {
+                PerimeterId::Paste => PressTarget::Paste,
+                PerimeterId::Review => PressTarget::Review,
+                PerimeterId::Edit => PressTarget::Edit,
+                other => PressTarget::Perimeter(other),
+            }
         } else if self.chat_open && layout.input_region_rect().contains(x, y) {
             PressTarget::Input
         } else if let Some(action) = render::torso_action_at(&layout, x, y) {
@@ -1446,6 +1518,10 @@ impl App {
                 self.input_focused = false;
                 self.request_repo_edit();
             }
+            PressTarget::Perimeter(id) => {
+                self.input_focused = false;
+                self.on_perimeter_control(id);
+            }
             PressTarget::TorsoAction(action) => {
                 self.input_focused = false;
                 self.on_torso_action(action);
@@ -1453,6 +1529,44 @@ impl App {
             PressTarget::Feet | PressTarget::Bump | PressTarget::Outside => {
                 self.input_focused = false;
             }
+        }
+    }
+
+    fn surface_index(&self) -> usize {
+        SURFACE_ORDER.iter().position(|id| *id == self.active_surface.as_str()).unwrap_or(0)
+    }
+
+    fn request_surface(&mut self, surface: &str) {
+        self.send_to_soul(presence::surface_request_json(&self.buddy, surface));
+        self.speech = Some(format!("Requesting surface: {surface}"));
+        self.update_input_region();
+    }
+
+    fn cycle_surface(&mut self, delta: isize) {
+        let len = SURFACE_ORDER.len() as isize;
+        let idx = self.surface_index() as isize;
+        let next = (idx + delta).rem_euclid(len) as usize;
+        self.request_surface(SURFACE_ORDER[next]);
+    }
+
+    fn on_perimeter_control(&mut self, id: PerimeterId) {
+        match id {
+            PerimeterId::ArrowN | PerimeterId::ArrowW => self.cycle_surface(-1),
+            PerimeterId::ArrowS | PerimeterId::ArrowE => self.cycle_surface(1),
+            PerimeterId::Quick0 | PerimeterId::Quick1 | PerimeterId::Quick2 | PerimeterId::Quick3 => {
+                let idx = match id {
+                    PerimeterId::Quick0 => 0,
+                    PerimeterId::Quick1 => 1,
+                    PerimeterId::Quick2 => 2,
+                    PerimeterId::Quick3 => 3,
+                    _ => 0,
+                };
+                if let Some(surface) = SURFACE_QUICK.get(idx) {
+                    self.request_surface(surface);
+                }
+            }
+            PerimeterId::Add => self.request_surface("customize"),
+            PerimeterId::Paste | PerimeterId::Review | PerimeterId::Edit => {}
         }
     }
 
@@ -1924,6 +2038,34 @@ impl Dispatch<ZwpRelativePointerV1, ()> for App {
     ) {
         if let RelativePointerEvent::RelativeMotion { dx, dy, .. } = event {
             state.on_drag_delta(dx, dy);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn perimeter_controls_filter_chat_buttons_with_chat_state() {
+        let layout = render::Layout::initial();
+        let closed = active_perimeter_controls_for(false, layout);
+        let open = active_perimeter_controls_for(true, layout);
+
+        assert!(!closed.iter().any(|(id, _)| matches!(id, PerimeterId::Paste | PerimeterId::Review | PerimeterId::Edit)));
+        assert!(open.iter().any(|(id, _)| *id == PerimeterId::Paste));
+        assert!(open.iter().any(|(id, _)| *id == PerimeterId::Review));
+        assert!(open.iter().any(|(id, _)| *id == PerimeterId::Edit));
+        assert_eq!(open.len(), layout.perimeter_controls().len());
+    }
+
+    #[test]
+    fn perimeter_surface_controls_have_clickable_rects() {
+        let layout = render::Layout::initial();
+        let controls = active_perimeter_controls_for(false, layout);
+        for id in [PerimeterId::ArrowN, PerimeterId::ArrowE, PerimeterId::ArrowS, PerimeterId::ArrowW, PerimeterId::Quick0, PerimeterId::Add] {
+            let rect = controls.iter().find_map(|(candidate, rect)| (*candidate == id).then_some(*rect)).expect("control exists");
+            assert!(rect.w > 0.0 && rect.h > 0.0, "{id:?} should have area");
         }
     }
 }

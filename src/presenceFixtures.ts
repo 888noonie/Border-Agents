@@ -60,6 +60,7 @@ export const PRESENCE_FIXTURES = {
       receiptId: "action:hermes:receipt_review:t0",
       requestId: "req-1",
       summary: "Opening the receipt ledger.",
+      alertLevel: "ready",
       outcome: {
         executed: true,
         executionReceiptId: "exec:hermes:receipt_review:t0",
@@ -67,6 +68,18 @@ export const PRESENCE_FIXTURES = {
       },
     },
     { ts: 1019 },
+  ),
+  surface_request: presence.surfaceRequest(BUDDY, "private_local_chat", { ts: 1020 }),
+  surface_active: presence.surfaceActive(
+    BUDDY,
+    {
+      surface: "private_local_chat",
+      posture: "private",
+      label: "Private local chat",
+      providerLabel: "LM Studio",
+      route: { label: "LM Studio", locality: "local" },
+    },
+    { ts: 1021 },
   ),
 } as const;
 

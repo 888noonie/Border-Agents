@@ -38,6 +38,7 @@ import {
   presence,
   type PresenceActionIntent,
   type PresenceActionResult,
+  type PresenceAlertLevel,
   type PresenceEmotion,
 } from "./presenceProtocol";
 import { appendActionReceiptToLedger, appendExecutionReceiptToLedger } from "./receiptLedger";
@@ -130,6 +131,25 @@ export function decisionEmotion(decision: string): PresenceEmotion {
       return "curious";
     default:
       return "alert";
+  }
+}
+
+/**
+ * Chrome twin of `decisionEmotion`: maps a gate decision to the passport/ring alert tier the
+ * soul sends on `action_result`. Face and chrome derive from the same decision so the body
+ * never infers policy state from a facial-expression string (law 7). Garbage fails loud at
+ * `critical`, the same "never a reassuring face on bad input" stance as `decisionEmotion`.
+ */
+export function decisionAlertLevel(decision: string): PresenceAlertLevel {
+  switch (decision) {
+    case "allow":
+      return "ready";
+    case "needs_confirmation":
+      return "confirm";
+    case "blocked":
+      return "blocked";
+    default:
+      return "critical";
   }
 }
 
@@ -285,6 +305,7 @@ function finish(
     receiptId: receipt.receipt_id,
     requestId: args.requestId,
     summary: summarize(receipt, label, execution),
+    alertLevel: decisionAlertLevel(receipt.decision),
     ...(outcome ? { outcome } : {}),
   });
 

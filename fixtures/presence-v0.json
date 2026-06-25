@@ -244,6 +244,7 @@
     "receiptId": "action:hermes:receipt_review:t0",
     "requestId": "req-1",
     "summary": "Opening the receipt ledger.",
+    "alertLevel": "ready",
     "outcome": {
       "executed": true,
       "executionReceiptId": "exec:hermes:receipt_review:t0",
@@ -252,6 +253,29 @@
         "locality": "cloud",
         "downgraded": false
       }
+    }
+  },
+  "surface_request": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "surface_request",
+    "buddy": "hermes",
+    "ts": 1020,
+    "surface": "private_local_chat"
+  },
+  "surface_active": {
+    "protocol": "presence",
+    "v": 0,
+    "kind": "surface_active",
+    "buddy": "hermes",
+    "ts": 1021,
+    "surface": "private_local_chat",
+    "posture": "private",
+    "label": "Private local chat",
+    "providerLabel": "LM Studio",
+    "route": {
+      "label": "LM Studio",
+      "locality": "local"
     }
   }
 }

@@ -166,6 +166,35 @@ fn clamp_figure_margins(
     (margin_left.clamp(min_left, max_left), margin_top.clamp(min_top, max_top))
 }
 
+/// Pure tuck-edge selector: returns the nearest screen edge whose gap to the figure bbox is
+/// below `threshold`, or `None`. Symmetric across all four edges because it measures to the
+/// figure bbox (which the drag clamp keeps on-screen), not the head — so the right/top/bottom
+/// edges tuck just as eagerly as the left always did. Extracted from
+/// `App::nearest_edge_within_threshold` for unit testing without a live `App`.
+fn nearest_tuck_edge(
+    margin_left: f64,
+    margin_top: f64,
+    fig: render::Rect,
+    (sw, sh): (f64, f64),
+    threshold: f64,
+) -> Option<presence::Edge> {
+    let left = margin_left + fig.x as f64;
+    let top = margin_top + fig.y as f64;
+    let right = sw - (margin_left + (fig.x + fig.w) as f64);
+    let bottom = sh - (margin_top + (fig.y + fig.h) as f64);
+    let candidates = [
+        (presence::Edge::Left, left),
+        (presence::Edge::Right, right),
+        (presence::Edge::Top, top),
+        (presence::Edge::Bottom, bottom),
+    ];
+    candidates
+        .into_iter()
+        .filter(|(_, d)| *d < threshold)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(edge, _)| edge)
+}
+
 fn copy_to_clipboard(text: &str) -> Result<(), String> {
     let trimmed = text.trim_end();
     if trimmed.is_empty() {
@@ -2108,27 +2137,22 @@ impl App {
 
     // --- tuck / summon -------------------------------------------------------
 
-    /// If the head currently sits within `TUCK_THRESHOLD` of a screen edge, which edge
-    /// (the nearest). Needs known screen bounds; without them, never tucks.
+    /// If the figure currently sits within `TUCK_THRESHOLD` of a screen edge, which edge
+    /// (the nearest). Measured to the FIGURE BBOX, not the head — the drag clamp keeps the
+    /// whole figure on-screen, so the head never reaches the right/top/bottom edges on its
+    /// own (the body extends past it on those sides). Using the bbox is what makes tucking
+    /// symmetric: every edge tucks as soon as the figure meets it, the way the left edge
+    /// always did. Needs known screen bounds; without them, never tucks.
     fn nearest_edge_within_threshold(&self) -> Option<presence::Edge> {
         let (sw, sh) = self.screen?;
-        let head = render::head_rect();
-        let left = self.margin_left + head.x as f64;
-        let top = self.margin_top + head.y as f64;
-        let right = sw - (self.margin_left + (head.x + head.w) as f64);
-        let bottom = sh - (self.margin_top + (head.y + head.h) as f64);
-
-        let candidates = [
-            (presence::Edge::Left, left),
-            (presence::Edge::Right, right),
-            (presence::Edge::Top, top),
-            (presence::Edge::Bottom, bottom),
-        ];
-        candidates
-            .into_iter()
-            .filter(|(_, d)| *d < TUCK_THRESHOLD)
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(edge, _)| edge)
+        let fig = render::figure_bbox(self.body_len);
+        nearest_tuck_edge(
+            self.margin_left,
+            self.margin_top,
+            fig,
+            (sw, sh),
+            TUCK_THRESHOLD,
+        )
     }
 
     /// The along-edge coordinate (screen px) of the head's centre — what we report and
@@ -2734,6 +2758,43 @@ mod tests {
         let (left, top) = clamp_figure_margins(10_000.0, 10_000.0, fig, tiny, render::DRAG_KEEP_VISIBLE as f64);
         // min == max on a too-small screen, so the clamp pins the margin to that single value.
         assert!(left.is_finite() && top.is_finite());
+    }
+
+    #[test]
+    fn tuck_fires_symmetrically_on_every_edge_via_figure_bbox() {
+        // The left edge always tucked because dragging left puts the head (and the figure) at
+        // the edge first. The right/top/bottom edges only tuck if proximity is measured to the
+        // FIGURE BBOX — the drag clamp keeps the whole figure on-screen, so the head never
+        // reaches those edges on its own. This pins that symmetry: when the figure bbox is
+        // within TUCK_THRESHOLD of any one edge, that edge is selected.
+        let fig = render::figure_bbox(render::BODY_LEN_DEFAULT);
+        let sw = 1920.0;
+        let sh = 1080.0;
+        let threshold = TUCK_THRESHOLD;
+        let keep = render::DRAG_KEEP_VISIBLE as f64;
+
+        // Clamp the figure hard against each edge (the clamp pins it at `keep` px from the
+        // edge), then assert that edge is the tuck pick. keep (36) < threshold (40), so a
+        // clamped drag is always within the tuck zone on release.
+        assert!(keep < threshold, "clamp sliver must sit inside the tuck threshold for symmetry");
+
+        let (left, _) = clamp_figure_margins(10_000.0, 0.0, fig, (sw, sh), keep);
+        assert_eq!(nearest_tuck_edge(left, 0.0, fig, (sw, sh), threshold), Some(presence::Edge::Right));
+        let (left, _) = clamp_figure_margins(-10_000.0, 0.0, fig, (sw, sh), keep);
+        assert_eq!(nearest_tuck_edge(left, 0.0, fig, (sw, sh), threshold), Some(presence::Edge::Left));
+        let (_, top) = clamp_figure_margins(0.0, 10_000.0, fig, (sw, sh), keep);
+        assert_eq!(nearest_tuck_edge(0.0, top, fig, (sw, sh), threshold), Some(presence::Edge::Bottom));
+        let (_, top) = clamp_figure_margins(0.0, -10_000.0, fig, (sw, sh), keep);
+        assert_eq!(nearest_tuck_edge(0.0, top, fig, (sw, sh), threshold), Some(presence::Edge::Top));
+    }
+
+    #[test]
+    fn tuck_yields_none_when_figure_is_well_clear_of_every_edge() {
+        let fig = render::figure_bbox(render::BODY_LEN_DEFAULT);
+        // Centered on a 1920x1080 screen — every edge gap is hundreds of px.
+        let left = (1920.0 - fig.w as f64) / 2.0;
+        let top = (1080.0 - fig.h as f64) / 2.0;
+        assert_eq!(nearest_tuck_edge(left, top, fig, (1920.0, 1080.0), TUCK_THRESHOLD), None);
     }
 }
 

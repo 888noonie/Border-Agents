@@ -23,6 +23,7 @@ mod presence;
 mod render;
 
 use std::{
+    collections::VecDeque,
     io::Write,
     process::{Command, Stdio},
     time::{Duration, Instant},
@@ -74,6 +75,7 @@ const INPUT_PASTE_MAX_CHARS: usize = 8_000;
 /// Kept so the perimeter still cycles on a fresh body before the first hydrate lands.
 const SURFACE_ORDER: &[&str] = &["session", "private_local_chat", "claude_code", "live_hermes", "agent_zero", "customize"];
 const SURFACE_QUICK: &[&str] = &["session", "private_local_chat", "claude_code", "agent_zero"];
+const RECEIPT_RAIL_CAP: usize = 20;
 
 /// Drop the buddy with its head within this many pixels of a screen edge and it tucks
 /// against that edge.
@@ -271,6 +273,64 @@ enum TorsoSurfaceSnapshot {
     },
 }
 
+#[derive(Clone, Debug, PartialEq)]
+struct ReceiptRailEntry {
+    effector: String,
+    decision: String,
+    ts: u64,
+    summary: Option<String>,
+    route_label: Option<String>,
+    executed: Option<bool>,
+    receipt_id: String,
+}
+
+impl ReceiptRailEntry {
+    fn glyph(&self) -> &'static str {
+        receipt_status_glyph(&self.decision, self.executed)
+    }
+
+    fn time_hms(&self) -> String {
+        format_ts_hms(self.ts)
+    }
+
+    fn detail_text(&self) -> String {
+        let time = self.time_hms();
+        let mut parts = Vec::new();
+        if let Some(summary) = self.summary.as_deref().filter(|s| !s.trim().is_empty()) {
+            parts.push(summary.trim().to_string());
+        }
+        parts.push(format!("{} {} at {time}.", self.decision, self.effector));
+        parts.push(format!("receiptId: {}", self.receipt_id));
+        parts.join(" ")
+    }
+}
+
+fn receipt_status_glyph(decision: &str, executed: Option<bool>) -> &'static str {
+    match decision {
+        "allow" if executed == Some(false) => "☑",
+        "allow" => "✅",
+        "needs_confirmation" => "⏳",
+        _ => "❌",
+    }
+}
+
+/// Deterministic seconds-of-day marker from the cue timestamp. It is not localized wall time.
+fn format_ts_hms(ts: u64) -> String {
+    let seconds = if ts > 10_000_000_000 { ts / 1000 } else { ts };
+    let seconds = seconds % 86_400;
+    let h = seconds / 3600;
+    let m = (seconds % 3600) / 60;
+    let s = seconds % 60;
+    format!("{h:02}:{m:02}:{s:02}")
+}
+
+fn push_receipt_rail_entry(entries: &mut VecDeque<ReceiptRailEntry>, entry: ReceiptRailEntry) {
+    entries.push_front(entry);
+    while entries.len() > RECEIPT_RAIL_CAP {
+        entries.pop_back();
+    }
+}
+
 impl TorsoSurfaceSnapshot {
     fn as_render<'a>(
         &'a self,
@@ -437,6 +497,7 @@ fn main() {
         input_text: String::new(),
         input_focused: false,
         pending_effector: None,
+        receipt_rail: VecDeque::new(),
         active_surface: "session".to_string(),
         surfaces: Vec::new(),
         surface_bloom_open: false,
@@ -563,6 +624,7 @@ enum PressTarget {
     /// The on-body Edit / Confirm governance button — emits a typed `repo_edit` intent.
     Edit,
     Perimeter(PerimeterId),
+    ReceiptRail(usize),
     SurfaceBloom(usize),
     TorsoAction(TorsoAction),
     /// The legs/feet zone — dragging it vertically stretches the body.
@@ -684,6 +746,9 @@ struct App {
     /// Kept per-effector (not a bare bool) so one act's pending confirm never flips the other's
     /// button. Cleared on any allow/blocked result. `None` = nothing awaiting confirmation.
     pending_effector: Option<String>,
+    /// Last 20 action_result cues, newest first. This is display state only; the full
+    /// ActionReceipt stays soul-side.
+    receipt_rail: VecDeque<ReceiptRailEntry>,
     active_surface: String,
     /// Ordered surface list with per-surface availability, soul-pushed on `hydrate`. The body
     /// cycles and dims from this (Slice 2a) so it never imports the TS surface manifest. Empty
@@ -820,7 +885,37 @@ impl App {
                 return (render::PINNED_SURFACE_W as f64, render::PINNED_SURFACE_H as f64);
             }
         }
-        (render::SURFACE_W as f64, self.layout().surface_h() as f64)
+        (self.requested_surface_w() as f64, self.layout().surface_h() as f64)
+    }
+
+    fn receipt_rail_visible(&self) -> bool {
+        self.tucked.is_none()
+            && self.pinned_layout().is_none()
+            && render::receipt_rail_visible_for_body_len(self.body_len)
+    }
+
+    fn requested_surface_w(&self) -> u32 {
+        if self.receipt_rail_visible() {
+            render::SURFACE_W + render::RECEIPT_RAIL_W
+        } else {
+            render::SURFACE_W
+        }
+    }
+
+    fn body_hit_x(&self, x: f64) -> f64 {
+        if self.receipt_rail_visible() {
+            x - render::RECEIPT_RAIL_W as f64
+        } else {
+            x
+        }
+    }
+
+    fn offset_rect_for_body(&self, rect: render::Rect) -> render::Rect {
+        if self.receipt_rail_visible() {
+            render::Rect { x: rect.x + render::RECEIPT_RAIL_W as f32, ..rect }
+        } else {
+            rect
+        }
     }
 
     fn tucked_bump_rect(&self, edge: presence::Edge) -> render::Rect {
@@ -850,6 +945,19 @@ impl App {
         if !route_flash {
             self.route_flash_until = None;
         }
+        let receipt_time_labels: Vec<String> = self.receipt_rail.iter().map(ReceiptRailEntry::time_hms).collect();
+        let receipt_rail_items: Vec<render::ReceiptRailItem<'_>> = self
+            .receipt_rail
+            .iter()
+            .zip(receipt_time_labels.iter())
+            .map(|(entry, time)| render::ReceiptRailItem {
+                glyph: entry.glyph(),
+                effector: entry.effector.as_str(),
+                decision: entry.decision.as_str(),
+                route_label: entry.route_label.as_deref(),
+                time: time.as_str(),
+            })
+            .collect();
         // Fade each quick button whose surface the soul reported `unwired` (Slice 2a).
         let mut dim_quick = [false; 4];
         for (slot, id) in SURFACE_QUICK.iter().take(4).enumerate() {
@@ -892,6 +1000,7 @@ impl App {
             surface_bloom: &bloom_items,
             route_health: route_health.as_deref(),
             route_flash,
+            receipt_rail: &receipt_rail_items,
             layout,
             pinned,
             frame: None,
@@ -1090,7 +1199,7 @@ impl App {
             return;
         }
         if !self.pinned_to_target {
-            self.set_layer_size(render::SURFACE_W, self.layout().surface_h());
+            self.set_layer_size(self.requested_surface_w(), self.layout().surface_h());
             self.update_input_region();
             return;
         };
@@ -1175,24 +1284,29 @@ impl App {
             let layout = self.layout();
             // Head = move/dock handle; feet = stretch handle. The torso stays
             // mostly click-through — only the small torso action points catch input.
-            let mut rects = vec![render::head_rect().as_i32(), layout.feet_rect().as_i32()];
+            let mut rects = Vec::new();
+            if self.receipt_rail_visible() {
+                rects.push((0, 0, render::RECEIPT_RAIL_W as i32, self.height as i32));
+            }
+            rects.push(self.offset_rect_for_body(render::head_rect()).as_i32());
+            rects.push(self.offset_rect_for_body(layout.feet_rect()).as_i32());
             for (_, rect) in self.active_perimeter_controls(layout) {
-                rects.push(rect.as_i32());
+                rects.push(self.offset_rect_for_body(rect).as_i32());
             }
             if self.surface_bloom_open {
                 for rect in layout.surface_bloom_rects(self.surface_bloom_surfaces().len()) {
-                    rects.push(rect.as_i32());
+                    rects.push(self.offset_rect_for_body(rect).as_i32());
                 }
             }
             if self.speech.is_some() {
-                rects.push(layout.bubble_rect().as_i32());
+                rects.push(self.offset_rect_for_body(layout.bubble_rect()).as_i32());
             }
             if self.chat_open {
-                rects.push(layout.input_region_rect().as_i32());
+                rects.push(self.offset_rect_for_body(layout.input_region_rect()).as_i32());
             }
-            rects.push(layout.torso_action_rect(TorsoAction::Expand).as_i32());
-            rects.push(layout.torso_action_rect(TorsoAction::Copy).as_i32());
-            rects.push(layout.torso_action_rect(TorsoAction::Scroll).as_i32());
+            rects.push(self.offset_rect_for_body(layout.torso_action_rect(TorsoAction::Expand)).as_i32());
+            rects.push(self.offset_rect_for_body(layout.torso_action_rect(TorsoAction::Copy)).as_i32());
+            rects.push(self.offset_rect_for_body(layout.torso_action_rect(TorsoAction::Scroll)).as_i32());
             rects
         };
         for (x, y, w, h) in rects {
@@ -1215,6 +1329,7 @@ impl App {
         if debug_log_enabled() {
             eprintln!("[bb-presence] applying cue for {}: {:?}", msg.buddy, msg.cue);
         }
+        let cue_ts = msg.ts;
         match msg.cue {
             presence::Cue::Express { emotion } => {
                 if let Some(e) = Emotion::from_wire(&emotion) {
@@ -1241,12 +1356,26 @@ impl App {
             presence::Cue::Output { surface, text, caption, media_type, data_base64 } => {
                 self.apply_output(&surface, text, caption, media_type, data_base64);
             }
-            presence::Cue::ActionResult { effector, decision, summary, .. } => {
+            presence::Cue::ActionResult { effector, decision, receipt_id, summary, outcome, .. } => {
                 // Present the soul's authorization outcome — the body renders it, it never decides
                 // it (law 7). The face is the fastest read: each decision wears a DISTINCT, honest
                 // expression (allow→happy, needs_confirmation→curious, blocked→alert) so a glance
                 // conveys it before any prose. `needs_confirmation` also flips THIS effector's
                 // on-body button (Review or Edit) into Confirm until resolved.
+                let executed = outcome.as_ref().map(|o| o.executed);
+                let route_label = outcome
+                    .as_ref()
+                    .and_then(|o| o.route.as_ref())
+                    .map(|r| r.provider.clone());
+                push_receipt_rail_entry(&mut self.receipt_rail, ReceiptRailEntry {
+                    effector: effector.clone(),
+                    decision: decision.clone(),
+                    ts: cue_ts,
+                    summary: summary.clone(),
+                    route_label,
+                    executed,
+                    receipt_id,
+                });
                 self.pending_effector = (decision == "needs_confirmation").then_some(effector);
                 self.set_emotion(Emotion::for_decision(&decision));
                 if let Some(text) = summary {
@@ -1345,7 +1474,7 @@ impl App {
         self.margin_top = top;
         self.clamp_margins();
         if was_pinned {
-            self.set_layer_size(render::SURFACE_W, self.layout().surface_h());
+            self.set_layer_size(self.requested_surface_w(), self.layout().surface_h());
         }
         if was_tucked || was_pinned {
             self.update_input_region();
@@ -1391,7 +1520,7 @@ impl App {
             self.chat_open = false;
             self.input_focused = false;
             self.speech = Some("Unpinned.".to_string());
-            self.set_layer_size(render::SURFACE_W, self.layout().surface_h());
+            self.set_layer_size(self.requested_surface_w(), self.layout().surface_h());
             self.clamp_margins();
             self.reposition();
             self.update_input_region();
@@ -1483,7 +1612,19 @@ impl App {
     fn on_press(&mut self, x: f64, y: f64, button: u32) {
         let secondary = button == BTN_RIGHT;
         let primary = button == BTN_LEFT;
-        let bloom_hit = self.surface_bloom_open.then(|| self.surface_bloom_hit_index(x, y)).flatten();
+        if self.receipt_rail_visible() && x < render::RECEIPT_RAIL_W as f64 {
+            let target = if primary {
+                render::receipt_rail_card_index(x, y, self.receipt_rail.len())
+                    .map(PressTarget::ReceiptRail)
+                    .unwrap_or(PressTarget::Outside)
+            } else {
+                PressTarget::Outside
+            };
+            self.press = Some(PressState { target, secondary, started_at: Instant::now(), dist: 0.0, grabbed_sent: false, bloom_started: false });
+            return;
+        }
+        let body_x = self.body_hit_x(x);
+        let bloom_hit = self.surface_bloom_open.then(|| self.surface_bloom_hit_index(body_x, y)).flatten();
         if let Some(idx) = bloom_hit {
             self.press = Some(PressState { target: PressTarget::SurfaceBloom(idx), secondary, started_at: Instant::now(), dist: 0.0, grabbed_sent: false, bloom_started: false });
             return;
@@ -1513,12 +1654,12 @@ impl App {
             } else {
                 PressTarget::Outside
             }
-        } else if render::point_in_head(x, y) {
+        } else if render::point_in_head(body_x, y) {
             PressTarget::Head
         } else if let Some((id, _)) = self
             .active_perimeter_controls(layout)
             .into_iter()
-            .find(|(_, rect)| rect.contains(x, y))
+            .find(|(_, rect)| rect.contains(body_x, y))
         {
             match id {
                 PerimeterId::Paste => PressTarget::Paste,
@@ -1526,11 +1667,11 @@ impl App {
                 PerimeterId::Edit => PressTarget::Edit,
                 other => PressTarget::Perimeter(other),
             }
-        } else if self.chat_open && layout.input_region_rect().contains(x, y) {
+        } else if self.chat_open && layout.input_region_rect().contains(body_x, y) {
             PressTarget::Input
-        } else if let Some(action) = render::torso_action_at(&layout, x, y) {
+        } else if let Some(action) = render::torso_action_at(&layout, body_x, y) {
             PressTarget::TorsoAction(action)
-        } else if layout.feet_rect().contains(x, y) {
+        } else if layout.feet_rect().contains(body_x, y) {
             PressTarget::Feet
         } else {
             PressTarget::Outside
@@ -1598,7 +1739,7 @@ impl App {
         }
         self.body_len = len;
         if let Some(layer) = self.layer.as_ref() {
-            layer.set_size(render::SURFACE_W, self.layout().surface_h());
+            layer.set_size(self.requested_surface_w(), self.layout().surface_h());
             layer.commit();
         }
         self.update_input_region();
@@ -1607,6 +1748,7 @@ impl App {
     fn on_release(&mut self, x: f64, y: f64) {
         let Some(press) = self.press.take() else { return };
         self.drag = false;
+        let body_x = self.body_hit_x(x);
 
         if let PressTarget::SurfaceBloom(idx) = press.target {
             self.surface_bloom_open = false;
@@ -1622,7 +1764,7 @@ impl App {
         }
 
         if press.bloom_started {
-            if let Some(surface) = self.surface_bloom_hit(x, y) {
+            if let Some(surface) = self.surface_bloom_hit(body_x, y) {
                 self.surface_bloom_open = false;
                 self.input_focused = false;
                 self.request_surface(&surface);
@@ -1669,6 +1811,10 @@ impl App {
             PressTarget::Head => {
                 self.emit_clicked();
                 self.toggle_chat();
+            }
+            PressTarget::ReceiptRail(idx) => {
+                self.input_focused = false;
+                self.show_receipt_rail_entry(idx);
             }
             PressTarget::Input => self.input_focused = true,
             PressTarget::Paste => {
@@ -1738,6 +1884,13 @@ impl App {
             .find(|s| s.id == id)
             .map(|s| s.availability.as_str())
             .unwrap_or("available")
+    }
+
+    fn show_receipt_rail_entry(&mut self, idx: usize) {
+        if let Some(entry) = self.receipt_rail.get(idx) {
+            self.speech = Some(entry.detail_text());
+            self.update_input_region();
+        }
     }
 
     fn surface_index(&self) -> usize {
@@ -2310,6 +2463,63 @@ mod tests {
             label: id.to_string(),
             availability: availability.to_string(),
         }
+    }
+
+    fn receipt(idx: usize) -> ReceiptRailEntry {
+        ReceiptRailEntry {
+            effector: format!("effector_{idx}"),
+            decision: "allow".to_string(),
+            ts: 1_800_000 + idx as u64,
+            summary: Some(format!("summary {idx}")),
+            route_label: Some("claude".to_string()),
+            executed: Some(true),
+            receipt_id: format!("receipt-{idx}"),
+        }
+    }
+
+    #[test]
+    fn receipt_rail_ring_buffer_keeps_last_twenty() {
+        let mut entries = VecDeque::new();
+        for idx in 0..25 {
+            push_receipt_rail_entry(&mut entries, receipt(idx));
+        }
+        assert_eq!(entries.len(), RECEIPT_RAIL_CAP);
+        assert_eq!(entries.front().unwrap().receipt_id, "receipt-24");
+        assert_eq!(entries.back().unwrap().receipt_id, "receipt-5");
+    }
+
+    #[test]
+    fn receipt_status_glyph_is_closed_and_fails_loud() {
+        assert_eq!(receipt_status_glyph("allow", Some(true)), "✅");
+        assert_eq!(receipt_status_glyph("allow", None), "✅");
+        assert_eq!(receipt_status_glyph("allow", Some(false)), "☑");
+        assert_eq!(receipt_status_glyph("needs_confirmation", None), "⏳");
+        assert_eq!(receipt_status_glyph("blocked", None), "❌");
+        assert_eq!(receipt_status_glyph("maybe", Some(true)), "❌");
+        assert_ne!(receipt_status_glyph("allow", None), receipt_status_glyph("blocked", None));
+        assert_ne!(receipt_status_glyph("allow", Some(false)), receipt_status_glyph("blocked", None));
+    }
+
+    #[test]
+    fn receipt_detail_reuses_summary_without_derivation() {
+        let entry = ReceiptRailEntry {
+            effector: "repo_edit".to_string(),
+            decision: "allow".to_string(),
+            ts: 3_723,
+            summary: Some("Applied the patch.".to_string()),
+            route_label: None,
+            executed: Some(true),
+            receipt_id: "action:1".to_string(),
+        };
+        let detail = entry.detail_text();
+        assert!(detail.contains("Applied the patch."));
+        assert!(detail.contains("allow repo_edit at 01:02:03."));
+        assert!(detail.contains("receiptId: action:1"));
+
+        let no_summary = ReceiptRailEntry { summary: None, ..entry };
+        let detail = no_summary.detail_text();
+        assert!(!detail.contains("Applied the patch."));
+        assert!(detail.contains("allow repo_edit at 01:02:03."));
     }
 
     #[test]

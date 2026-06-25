@@ -44,7 +44,7 @@ import {
 } from "../src/presenceProtocol";
 import { createDefaultBuddySettings, BUDDY_PROFILES, type BuddyProfile } from "../src/buddyProfiles";
 import { ROUTE_PROVIDER_LABELS, resolveManifestId, type EffectorId } from "../src/buddyManifest";
-import { getSurface, type SurfaceId } from "../src/surfaceManifest";
+import { getSurface, surfaceHydrationList, type SurfaceId } from "../src/surfaceManifest";
 import type { ActionIntent, ActionReceipt, ActionRoute, UserPosture } from "../src/core";
 import type { SessionChatLine } from "../src/liveGovernance";
 import { appendExecutionReceiptToLedger } from "../src/receiptLedger";
@@ -416,7 +416,9 @@ wss.on("connection", (socket, request) => {
     switch (message.kind) {
       case "attached": {
         // Handshake: acknowledge with a hydrate snapshot + a greeting so the body settles in.
-        socket.send(JSON.stringify(presence.hydrate(buddy, { emotion: "neutral" })));
+        socket.send(
+          JSON.stringify(presence.hydrate(buddy, { emotion: "neutral", surfaces: surfaceHydrationList() })),
+        );
         socket.send(JSON.stringify(presence.express(buddy, "happy")));
         socket.send(
           JSON.stringify(

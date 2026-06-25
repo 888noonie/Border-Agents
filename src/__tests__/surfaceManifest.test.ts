@@ -4,6 +4,7 @@ import {
   getSurface,
   isSurfaceId,
   surfaceAvailability,
+  surfaceHydrationList,
   SURFACE_ORDER,
   SURFACES,
   surfaceById,
@@ -58,5 +59,23 @@ describe("surface availability taxonomy", () => {
 
   it("degrades an unknown surface id to available rather than throwing", () => {
     expect(surfaceAvailability("not-a-surface")).toBe("available");
+  });
+});
+
+describe("surfaceHydrationList (the soul-pushed surface snapshot)", () => {
+  it("emits one descriptor per surface, in canonical SURFACE_ORDER", () => {
+    const list = surfaceHydrationList();
+    expect(list.map((s) => s.id)).toEqual([...SURFACE_ORDER]);
+  });
+
+  it("carries each surface's label and computed availability", () => {
+    const byId = Object.fromEntries(surfaceHydrationList().map((s) => [s.id, s]));
+    expect(byId.session).toEqual({ id: "session", label: "Session", availability: "available" });
+    expect(byId.private_local_chat.availability).toBe("gated");
+    expect(byId.claude_code.availability).toBe("unwired");
+    for (const entry of surfaceHydrationList()) {
+      expect(entry.label).toBe(surfaceById[entry.id].label);
+      expect(entry.availability).toBe(surfaceAvailability(entry.id));
+    }
   });
 });

@@ -25,7 +25,23 @@ export const PRESENCE_FIXTURES = {
   express: presence.express(BUDDY, "happy", { intensity: 0.8, ts: 1001 }),
   say: presence.say(BUDDY, "Hi — I'm your setup host.", { ts: 1002 }),
   attention: presence.attention(BUDDY, "user", { ts: 1003 }),
-  hydrate: presence.hydrate(BUDDY, { position: ANCHORED, emotion: "neutral", speech: "ready", platform: PLATFORM }, { ts: 1004 }),
+  hydrate: presence.hydrate(
+    BUDDY,
+    {
+      position: ANCHORED,
+      emotion: "neutral",
+      speech: "ready",
+      platform: PLATFORM,
+      // One descriptor per availability state so the cross-language parse parity test
+      // exercises the full closed set (available | gated | unwired).
+      surfaces: [
+        { id: "session", label: "Session", availability: "available" },
+        { id: "private_local_chat", label: "Private local chat", availability: "gated" },
+        { id: "claude_code", label: "Claude Code", availability: "unwired" },
+      ],
+    },
+    { ts: 1004 },
+  ),
   attached: presence.attached(BUDDY, { at: ANCHORED, capabilities: ["drag", "menu", "say"], ts: 1005 }),
   clicked: presence.clicked(BUDDY, { button: "primary", at: FREE, ts: 1006 }),
   grabbed: presence.grabbed(BUDDY, FREE, { ts: 1007 }),

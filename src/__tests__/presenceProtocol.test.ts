@@ -62,6 +62,17 @@ describe("presence protocol round-trips", () => {
     presence.attention("hermes", "user", { ts: 5 }),
     presence.attention("hermes", { point: { x: 10, y: 20 }, space: "screen" }, { ts: 6 }),
     presence.hydrate("hermes", { position: ANCHORED, emotion: "neutral", speech: "hi" }, { ts: 7 }),
+    presence.hydrate(
+      "hermes",
+      {
+        emotion: "neutral",
+        surfaces: [
+          { id: "session", label: "Session", availability: "available" },
+          { id: "claude_code", label: "Claude Code", availability: "unwired" },
+        ],
+      },
+      { ts: 71 },
+    ),
     presence.attached("hermes", { at: ANCHORED, capabilities: ["drag", "menu"], ts: 8 }),
     presence.clicked("hermes", { button: "primary", at: FREE, ts: 9 }),
     presence.grabbed("hermes", FREE, { ts: 10 }),
@@ -120,6 +131,12 @@ describe("presence protocol parsing rejects malformed input", () => {
     expect(parsePresenceMessage({ protocol: PRESENCE_PROTOCOL, v: 0, kind: "output", buddy: "h", ts: 1, surface: "hologram" })).toBeNull();
     // output text with a non-string body
     expect(parsePresenceMessage({ protocol: PRESENCE_PROTOCOL, v: 0, kind: "output", buddy: "h", ts: 1, surface: "text", text: 42 })).toBeNull();
+    // hydrate surfaces with an availability outside the closed set
+    expect(parsePresenceMessage({ protocol: PRESENCE_PROTOCOL, v: 0, kind: "hydrate", buddy: "h", ts: 1, surfaces: [{ id: "x", label: "X", availability: "bogus" }] })).toBeNull();
+    // hydrate surfaces with an empty id
+    expect(parsePresenceMessage({ protocol: PRESENCE_PROTOCOL, v: 0, kind: "hydrate", buddy: "h", ts: 1, surfaces: [{ id: "", label: "X", availability: "gated" }] })).toBeNull();
+    // hydrate surfaces that is not an array
+    expect(parsePresenceMessage({ protocol: PRESENCE_PROTOCOL, v: 0, kind: "hydrate", buddy: "h", ts: 1, surfaces: "session" })).toBeNull();
   });
 
   test("accepts valid optional fields and minimal payloads", () => {

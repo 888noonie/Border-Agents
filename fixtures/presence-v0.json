@@ -60,7 +60,24 @@
       "canTrackGeometry": true,
       "canInjectInput": false,
       "canClickThrough": true
-    }
+    },
+    "surfaces": [
+      {
+        "id": "session",
+        "label": "Session",
+        "availability": "available"
+      },
+      {
+        "id": "private_local_chat",
+        "label": "Private local chat",
+        "availability": "gated"
+      },
+      {
+        "id": "claude_code",
+        "label": "Claude Code",
+        "availability": "unwired"
+      }
+    ]
   },
   "attached": {
     "protocol": "presence",

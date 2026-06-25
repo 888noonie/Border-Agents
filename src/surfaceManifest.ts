@@ -72,3 +72,22 @@ export function surfaceAvailability(value: string): SurfaceAvailability {
   }
   return "gated";
 }
+
+export interface SurfaceDescriptor {
+  id: SurfaceId;
+  label: string;
+  availability: SurfaceAvailability;
+}
+
+/**
+ * The ordered surface list (canonical SURFACE_ORDER) with each surface's availability —
+ * what the soul ships on `hydrate` so a manifest-free body can cycle and dim surfaces
+ * without importing this module.
+ */
+export function surfaceHydrationList(): SurfaceDescriptor[] {
+  return SURFACES.map((surface) => ({
+    id: surface.id,
+    label: surface.label,
+    availability: surfaceAvailability(surface.id),
+  }));
+}

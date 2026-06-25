@@ -181,7 +181,36 @@ export type PresenceAttention = PresenceEnvelope<
   { focus: PresenceFocus }
 >;
 
-/** Full snapshot so a late-joining or reconnecting body can hydrate at once. */
+/**
+ * How a surface stands relative to its backing effector, as the body should present it:
+ * `available` (no effector needed) and `gated` (wired, authorized at act time) render
+ * normally; `unwired` (names an effector not yet wired) renders dimmed. This is the wire
+ * twin of the soul-side `SurfaceAvailability` (src/surfaceManifest.ts) — the native body
+ * NEVER imports that manifest, so availability must arrive soul-pushed here (Slice 2a).
+ */
+export type PresenceSurfaceAvailability = "available" | "unwired" | "gated";
+
+export const PRESENCE_SURFACE_AVAILABILITIES: readonly PresenceSurfaceAvailability[] = [
+  "available",
+  "unwired",
+  "gated",
+];
+
+/**
+ * One entry in the ordered surface list shipped on `hydrate`. The body cycles this list
+ * (so it no longer needs a hardcoded surface order) and dims entries by `availability`.
+ */
+export interface PresenceSurfaceDescriptor {
+  id: string;
+  label: string;
+  availability: PresenceSurfaceAvailability;
+}
+
+/**
+ * Full snapshot so a late-joining or reconnecting body can hydrate at once. `surfaces` is
+ * the ordered, soul-pushed surface list (canonical SURFACE_ORDER) with per-surface
+ * availability — the body cycles and dims from this instead of any local manifest.
+ */
 export type PresenceHydrate = PresenceEnvelope<
   "hydrate",
   {
@@ -189,6 +218,7 @@ export type PresenceHydrate = PresenceEnvelope<
     emotion?: PresenceEmotion;
     speech?: string;
     platform?: PresencePlatform;
+    surfaces?: PresenceSurfaceDescriptor[];
   }
 >;
 
@@ -595,6 +625,23 @@ function isTargetLostReason(value: unknown): value is TargetLostReason {
   );
 }
 
+function isSurfaceAvailability(value: unknown): value is PresenceSurfaceAvailability {
+  return (PRESENCE_SURFACE_AVAILABILITIES as readonly unknown[]).includes(value);
+}
+
+function isSurfaceDescriptorArray(value: unknown): value is PresenceSurfaceDescriptor[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (item) =>
+        isObject(item) &&
+        isNonEmptyString(item.id) &&
+        typeof item.label === "string" &&
+        isSurfaceAvailability(item.availability),
+    )
+  );
+}
+
 function isPlatform(value: unknown): value is PresencePlatform {
   return (
     isObject(value) &&
@@ -679,7 +726,8 @@ function isValidForKind(kind: PresenceKind, raw: Record<string, unknown>): boole
         (raw.position === undefined || isPosition(raw.position)) &&
         (raw.emotion === undefined || isEmotion(raw.emotion)) &&
         (raw.speech === undefined || typeof raw.speech === "string") &&
-        (raw.platform === undefined || isPlatform(raw.platform))
+        (raw.platform === undefined || isPlatform(raw.platform)) &&
+        (raw.surfaces === undefined || isSurfaceDescriptorArray(raw.surfaces))
       );
     case "output":
       return isValidOutputPayload(raw);
@@ -853,6 +901,7 @@ export const presence = {
       emotion?: PresenceEmotion;
       speech?: string;
       platform?: PresencePlatform;
+      surfaces?: PresenceSurfaceDescriptor[];
     },
     opts: EnvelopeOptions = {},
   ): PresenceHydrate {

@@ -76,6 +76,10 @@ const UI_GAP: f32 = 16.0;
 const PANEL_LABEL_PX: f32 = 10.0;
 const PERIMETER_SIZE: f32 = 20.0;
 const PERIMETER_GAP: f32 = 6.0;
+const SURFACE_BLOOM_W: f32 = 116.0;
+const SURFACE_BLOOM_H: f32 = 24.0;
+const SURFACE_BLOOM_R: f32 = 112.0;
+const SURFACE_BLOOM_MAX_ITEMS: usize = 6;
 
 /// Default clay colour — Morph terracotta. Override per-buddy with `BB_COLOR`.
 pub const CLAY_DEFAULT: [u8; 3] = [201, 109, 60];
@@ -220,6 +224,12 @@ impl Layout {
             .into_iter()
             .find_map(|(candidate, rect)| (candidate == id).then_some(rect))
             .unwrap_or_else(|| self.torso_rect())
+    }
+
+    pub fn surface_bloom_rects(&self, count: usize) -> Vec<Rect> {
+        debug_assert!(count <= SURFACE_BLOOM_MAX_ITEMS, "surface bloom supports six visible slots");
+        let torso = self.torso_rect();
+        surface_bloom_rects_from_center(torso.x + torso.w / 2.0, torso.y + torso.h / 2.0, count.min(SURFACE_BLOOM_MAX_ITEMS))
     }
 
     pub fn torso_action_rect(&self, action: TorsoAction) -> Rect {
@@ -683,6 +693,13 @@ pub struct PassportCard<'a> {
     pub output_preview: Option<&'a str>,
 }
 
+#[derive(Clone, Copy)]
+pub struct SurfaceDialItem<'a> {
+    pub label: &'a str,
+    pub availability: &'a str,
+    pub active: bool,
+}
+
 pub enum TorsoOutput<'a> {
     Session(SessionCard<'a>),
     Passport(PassportCard<'a>),
@@ -722,6 +739,11 @@ pub struct BodyView<'a> {
     /// asked for confirmation. Kept distinct from `review_pending` so each act's confirm is its own.
     pub edit_pending: bool,
     pub posture_badge: Option<&'a str>,
+    /// Per-quick-button dim flag (Quick0..3): true when that quick surface is `unwired`, so the
+    /// button renders faded. Availability is soul-pushed (Slice 2a) — the body never derives it.
+    pub dim_quick: [bool; 4],
+    /// Hold-to-bloom surface dial items, ordered active-at-12 by the body state machine.
+    pub surface_bloom: &'a [SurfaceDialItem<'a>],
     pub layout: Layout,
     pub pinned: Option<PinnedLayout>,
     pub frame: Option<FrameLayout>,
@@ -813,7 +835,8 @@ impl Sprite {
         draw_eyes(&mut pixmap, bob, eye_open, face.pupil_dy);
         draw_mouth(&mut pixmap, bob, &face.mouth);
         if let Some(font) = &self.font {
-            draw_perimeter_controls(&mut pixmap, font, &view.layout);
+            draw_perimeter_controls(&mut pixmap, font, &view.layout, view.dim_quick);
+            draw_surface_bloom(&mut pixmap, font, &view.layout, view.surface_bloom);
         }
 
         if let Some(text) = view.speech {
@@ -1274,14 +1297,31 @@ fn perimeter_label(id: PerimeterId) -> &'static str {
     }
 }
 
-fn draw_perimeter_controls(pixmap: &mut Pixmap, font: &Font, layout: &Layout) {
+/// Which quick-button slot (0..3) a perimeter id drives, if any — so the dim flag lines up
+/// with the surface that quick button activates.
+fn quick_slot(id: PerimeterId) -> Option<usize> {
+    match id {
+        PerimeterId::Quick0 => Some(0),
+        PerimeterId::Quick1 => Some(1),
+        PerimeterId::Quick2 => Some(2),
+        PerimeterId::Quick3 => Some(3),
+        _ => None,
+    }
+}
+
+fn draw_perimeter_controls(pixmap: &mut Pixmap, font: &Font, layout: &Layout, dim_quick: [bool; 4]) {
     for (id, rect) in layout.perimeter_controls() {
         if matches!(id, PerimeterId::Paste | PerimeterId::Review | PerimeterId::Edit) {
             continue;
         }
+        // A quick button for an `unwired` surface renders faded so the dim reads at a glance;
+        // a tap still lands and the body answers "not wired yet" (Slice 2a).
+        let dimmed = quick_slot(id).map(|slot| dim_quick[slot]).unwrap_or(false);
         let label = perimeter_label(id);
         let bg = if matches!(id, PerimeterId::Add) {
             Color::from_rgba8(56, 188, 214, 238)
+        } else if dimmed {
+            Color::from_rgba8(248, 250, 252, 96)
         } else {
             Color::from_rgba8(248, 250, 252, 232)
         };
@@ -1289,9 +1329,11 @@ fn draw_perimeter_controls(pixmap: &mut Pixmap, font: &Font, layout: &Layout) {
         if let Some(path) = round_rect_path(rect, 7.0) {
             let mut stroke = Stroke::default();
             stroke.width = 1.0;
-            pixmap.stroke_path(&path, &solid(Color::from_rgba8(0, 0, 0, 100)), &stroke, Transform::identity(), None);
+            let edge = if dimmed { 48 } else { 100 };
+            pixmap.stroke_path(&path, &solid(Color::from_rgba8(0, 0, 0, edge)), &stroke, Transform::identity(), None);
         }
         let tw = measure(font, label, PANEL_TEXT_PX);
+        let text = if dimmed { [120, 130, 146] } else { [18, 28, 46] };
         draw_line(
             pixmap,
             font,
@@ -1299,8 +1341,66 @@ fn draw_perimeter_controls(pixmap: &mut Pixmap, font: &Font, layout: &Layout) {
             rect.x + (rect.w - tw) / 2.0,
             rect.y + 13.0,
             PANEL_TEXT_PX,
-            [18, 28, 46],
+            text,
         );
+    }
+}
+
+fn surface_bloom_rects_from_center(cx: f32, cy: f32, count: usize) -> Vec<Rect> {
+    const ANGLES_DEG: [f32; SURFACE_BLOOM_MAX_ITEMS] = [-90.0, -30.0, 30.0, 90.0, 150.0, 210.0];
+    ANGLES_DEG
+        .iter()
+        .take(count.min(SURFACE_BLOOM_MAX_ITEMS))
+        .map(|deg| {
+            let rad = deg.to_radians();
+            Rect {
+                x: cx + rad.cos() * SURFACE_BLOOM_R - SURFACE_BLOOM_W / 2.0,
+                y: cy + rad.sin() * SURFACE_BLOOM_R - SURFACE_BLOOM_H / 2.0,
+                w: SURFACE_BLOOM_W,
+                h: SURFACE_BLOOM_H,
+            }
+        })
+        .collect()
+}
+
+pub fn surface_bloom_hit(layout: &Layout, count: usize, x: f64, y: f64) -> Option<usize> {
+    layout
+        .surface_bloom_rects(count)
+        .into_iter()
+        .enumerate()
+        .find_map(|(idx, rect)| rect.contains(x, y).then_some(idx))
+}
+
+fn draw_surface_bloom(pixmap: &mut Pixmap, font: &Font, layout: &Layout, items: &[SurfaceDialItem]) {
+    if items.is_empty() {
+        return;
+    }
+    for (item, rect) in items.iter().zip(layout.surface_bloom_rects(items.len())) {
+        let unwired = item.availability == "unwired";
+        let bg = if item.active {
+            Color::from_rgba8(28, 42, 58, 238)
+        } else if unwired {
+            Color::from_rgba8(248, 250, 252, 112)
+        } else {
+            Color::from_rgba8(248, 250, 252, 236)
+        };
+        draw_round_rect(pixmap, rect, bg);
+        if let Some(path) = round_rect_path(rect, 8.0) {
+            let mut stroke = Stroke::default();
+            stroke.width = if item.active { 2.0 } else { 1.0 };
+            let edge = if item.active { 190 } else if unwired { 54 } else { 118 };
+            pixmap.stroke_path(&path, &solid(Color::from_rgba8(0, 0, 0, edge)), &stroke, Transform::identity(), None);
+        }
+        let label = fit_line(font, item.label, 9.5, rect.w - 14.0);
+        let tw = measure(font, &label, 9.5);
+        let fg = if item.active {
+            [238, 246, 255]
+        } else if unwired {
+            [118, 126, 140]
+        } else {
+            [22, 30, 42]
+        };
+        draw_line(pixmap, font, &label, rect.x + (rect.w - tw) / 2.0, rect.y + 15.0, 9.5, fg);
     }
 }
 
@@ -2537,6 +2637,99 @@ mod tests {
     }
 
     #[test]
+    fn unwired_quick_button_renders_fainter_than_wired() {
+        let layout = Layout::initial();
+        let w = SURFACE_W;
+        let h = layout.surface_h();
+        let sprite = Sprite::new();
+
+        let paint = |dim: [bool; 4]| {
+            let mut canvas = vec![0_u8; (w * h * 4) as usize];
+            let view = BodyView {
+                t: 0.0,
+                emotion: Emotion::Neutral,
+                speech: None,
+                torso_output: TorsoOutput::Session(SessionCard {
+                    name: "B",
+                    provider: "echo",
+                    model: "m",
+                    gateway: "g",
+                    status: "s",
+                    note: "n",
+                }),
+                chat_open: false,
+                tucked: None,
+                input_text: "",
+                input_placeholder: "",
+                input_focused: false,
+                review_pending: false,
+                edit_pending: false,
+                posture_badge: None,
+                dim_quick: dim,
+                surface_bloom: &[],
+                layout,
+                pinned: None,
+                frame: None,
+                color: CLAY_DEFAULT,
+            };
+            sprite.paint(&mut canvas, w, h, &view);
+            canvas
+        };
+
+        let bright = paint([false; 4]);
+        let dimmed = paint([true, false, false, false]);
+
+        // Total alpha over the Quick0 button area: the dimmer fill paints lower coverage.
+        let rect = layout.perimeter_rect(PerimeterId::Quick0);
+        let alpha_sum = |canvas: &[u8]| -> u64 {
+            let mut acc = 0_u64;
+            for y in (rect.y as u32)..((rect.y + rect.h) as u32) {
+                for x in (rect.x as u32)..((rect.x + rect.w) as u32) {
+                    acc += canvas[((y * w + x) * 4 + 3) as usize] as u64;
+                }
+            }
+            acc
+        };
+        assert!(
+            alpha_sum(&dimmed) < alpha_sum(&bright),
+            "an unwired Quick0 button should paint fainter than a wired one",
+        );
+    }
+
+    #[test]
+    fn surface_bloom_slots_follow_clock_positions() {
+        let layout = Layout::initial();
+        let torso = layout.torso_rect();
+        let center = (torso.x + torso.w / 2.0, torso.y + torso.h / 2.0);
+        let rects = layout.surface_bloom_rects(6);
+
+        assert_eq!(rects.len(), 6);
+        let mid = |rect: Rect| (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
+        let slot0 = mid(rects[0]);
+        let slot1 = mid(rects[1]);
+        let slot3 = mid(rects[3]);
+        let slot5 = mid(rects[5]);
+
+        assert!((slot0.0 - center.0).abs() < 0.5, "active slot should be centered at 12");
+        assert!(slot0.1 < center.1, "active slot should sit above the torso center");
+        assert!(slot1.0 > center.0 && slot1.1 < center.1, "next slot should sit at 2 o'clock");
+        assert!(slot5.0 < center.0 && slot5.1 < center.1, "previous slot should sit at 10 o'clock");
+        assert!(slot3.1 > center.1, "opposite slot should sit at 6 o'clock");
+    }
+
+    #[test]
+    fn surface_bloom_hit_maps_each_pill_to_its_index() {
+        let layout = Layout::initial();
+        let rects = layout.surface_bloom_rects(6);
+        for (idx, rect) in rects.iter().enumerate() {
+            let x = (rect.x + rect.w / 2.0) as f64;
+            let y = (rect.y + rect.h / 2.0) as f64;
+            assert_eq!(surface_bloom_hit(&layout, 6, x, y), Some(idx));
+        }
+        assert_eq!(surface_bloom_hit(&layout, 6, 1.0, 1.0), None);
+    }
+
+    #[test]
     fn output_panel_lives_inside_stretchable_torso() {
         let short = Layout { facing: Facing::Right, body_len: BODY_LEN_MIN };
         let tall = Layout { facing: Facing::Right, body_len: BODY_LEN_MAX };
@@ -2698,6 +2891,8 @@ mod tests {
             review_pending: false,
             edit_pending: false,
             posture_badge: None,
+            dim_quick: [false; 4],
+            surface_bloom: &[],
             layout: Layout::initial(),
             pinned: None,
             frame: Some(frame),

@@ -236,6 +236,53 @@ impl Layout {
         surface_bloom_rects_from_center(torso.x + torso.w / 2.0, torso.y + torso.h / 2.0, count.min(SURFACE_BLOOM_MAX_ITEMS))
     }
 
+    /// The interior-view rows: the perimeter controls re-laid-out as a vertical list INSIDE
+    /// the torso panel, top-to-bottom in display order. The caller picks which controls to
+    /// fold in (surfaces always; Paste/Review/Edit only while chat is open) and passes the
+    /// count via `rows.len()` — each row is sized to fill the panel height evenly. Returns the
+    /// rows that fit (stretched bodies show all; a very short torso drops the last rows rather
+    /// than overlap). Order is fixed so muscle memory transfers from the perimeter ring.
+    pub fn interior_rows_for(&self, count: usize) -> Vec<Rect> {
+        let panel = self.output_panel_rect();
+        if count == 0 {
+            return Vec::new();
+        }
+        let gap = 3.0;
+        // Evenly size rows to fill the panel height; clamp so a short torso still shows whole rows.
+        let row_h = ((panel.h - gap * (count as f32 - 1.0)) / count as f32).max(0.0).min(20.0);
+        if row_h < 8.0 {
+            // Too short to legibly fit even one row — show nothing rather than a cramped list.
+            // 8px is the floor at which the glyph + label still read; the full chat-open set
+            // (10 rows) fits a default 140px torso at ~9.7px per row.
+            return Vec::new();
+        }
+        (0..count)
+            .map(|i| {
+                let y = panel.y + i as f32 * (row_h + gap);
+                Rect { x: panel.x, y, w: panel.w, h: row_h }
+            })
+            .collect()
+    }
+
+    /// Kept for the closed-chat case (surfaces only, 7 rows). Callers that need the chat
+    /// controls too should build their own list and call `interior_rows_for`.
+    pub fn interior_rows(&self) -> Vec<(PerimeterId, Rect)> {
+        let ids = [
+            PerimeterId::ArrowN,
+            PerimeterId::Quick0,
+            PerimeterId::Quick1,
+            PerimeterId::Quick2,
+            PerimeterId::Quick3,
+            PerimeterId::Add,
+            PerimeterId::ArrowS,
+        ];
+        self.interior_rows_for(ids.len())
+            .into_iter()
+            .zip(ids.iter())
+            .map(|(rect, id)| (*id, rect))
+            .collect()
+    }
+
     pub fn torso_action_rect(&self, action: TorsoAction) -> Rect {
         let panel = self.output_panel_rect();
         let size = 18.0_f32.min(panel.w.max(0.0)).min((panel.h / 2.0).max(0.0));
@@ -758,6 +805,18 @@ pub struct SurfaceDialItem<'a> {
     pub kind: &'a str,
 }
 
+/// One row of the interior (in-torso) control list. The perimeter controls fold into this list
+/// when the Torso scroll action toggles the interior view on. `id` is the original perimeter
+/// control (so a tap dispatches through the same `on_perimeter_control` path); `glyph` is the
+/// short perimeter label (N/S/1/2/3/4/+); `text` is the surface label the row shows beside it.
+#[derive(Clone, Copy)]
+pub struct InteriorRow<'a> {
+    pub id: PerimeterId,
+    pub glyph: &'a str,
+    pub text: &'a str,
+    pub dim: bool,
+}
+
 #[derive(Clone, Copy)]
 pub struct ReceiptRailItem<'a> {
     pub glyph: &'a str,
@@ -806,9 +865,6 @@ pub struct BodyView<'a> {
     /// asked for confirmation. Kept distinct from `review_pending` so each act's confirm is its own.
     pub edit_pending: bool,
     pub posture_badge: Option<&'a str>,
-    /// Per-quick-button dim flag (Quick0..3): true when that quick surface is `unwired`, so the
-    /// button renders faded. Availability is soul-pushed (Slice 2a) — the body never derives it.
-    pub dim_quick: [bool; 4],
     /// Hold-to-bloom surface dial items, ordered active-at-12 by the body state machine.
     pub surface_bloom: &'a [SurfaceDialItem<'a>],
     /// Soul-derived route health from `surface_active.route.health`; absent means no ring.
@@ -817,6 +873,11 @@ pub struct BodyView<'a> {
     pub route_flash: bool,
     /// Expanded-mode receipt rail items, newest first. Empty still draws the rail panel.
     pub receipt_rail: &'a [ReceiptRailItem<'a>],
+    /// The interior view: perimeter controls folded into a labeled list inside the torso,
+    /// toggled by the Torso scroll action. When non-empty, the torso output is hidden and a
+    /// press inside the torso hits a row instead of the body-drag handle. Each item carries
+    /// the control's glyph + its surface label + the dim flag (for unwired quick surfaces).
+    pub interior_rows: &'a [InteriorRow<'a>],
     pub layout: Layout,
     pub pinned: Option<PinnedLayout>,
     pub frame: Option<FrameLayout>,
@@ -955,7 +1016,11 @@ fn draw_body_content(
 ) {
     draw_figure(pixmap, &view.layout, view.color, bob, pose, view.route_health, view.route_flash);
     if let Some(font) = font {
-        draw_torso_output(pixmap, font, &view.layout, &view.torso_output);
+        if view.interior_rows.is_empty() {
+            draw_torso_output(pixmap, font, &view.layout, &view.torso_output);
+        } else {
+            draw_interior_view(pixmap, font, &view.layout, view.interior_rows, view.color);
+        }
         if let Some(label) = view.posture_badge {
             draw_posture_badge(pixmap, font, &view.layout, label);
         }
@@ -963,7 +1028,9 @@ fn draw_body_content(
     draw_eyes(pixmap, bob, eye_open, pupil_dy);
     draw_mouth(pixmap, bob, mouth);
     if let Some(font) = font {
-        draw_perimeter_controls(pixmap, font, &view.layout, view.dim_quick);
+        // The external perimeter ring is retired — every perimeter control now lives inside
+        // the torso as a labeled interior row (drawn above, in place of the torso output).
+        // Only the surface bloom dial still paints around the torso, on a long-press.
         draw_surface_bloom(pixmap, font, &view.layout, view.surface_bloom);
     }
 
@@ -984,9 +1051,14 @@ fn draw_body_content(
                 view.input_focused,
                 view.t,
             );
-            draw_paste_button(pixmap, font, &view.layout);
-            draw_governance_button(pixmap, font, view.layout.review_button_rect(), view.review_pending, "Review");
-            draw_governance_button(pixmap, font, view.layout.edit_button_rect(), view.edit_pending, "Edit");
+            // When the interior view is open, Paste/Review/Edit live as labeled rows inside the
+            // torso — don't also draw the standalone perimeter buttons (they'd duplicate and
+            // float outside, exactly what the interior view exists to retire).
+            if view.interior_rows.is_empty() {
+                draw_paste_button(pixmap, font, &view.layout);
+                draw_governance_button(pixmap, font, view.layout.review_button_rect(), view.review_pending, "Review");
+                draw_governance_button(pixmap, font, view.layout.edit_button_rect(), view.edit_pending, "Edit");
+            }
         }
     }
 }
@@ -995,6 +1067,10 @@ fn draw_body_content(
 
 fn rgb(c: [u8; 3]) -> Color {
     Color::from_rgba8(c[0], c[1], c[2], 255)
+}
+
+fn rgba(c: [u8; 3], a: u8) -> Color {
+    Color::from_rgba8(c[0], c[1], c[2], a)
 }
 
 /// Multiply toward black (f < 1.0 darkens).
@@ -1459,67 +1535,124 @@ fn draw_paste_button(pixmap: &mut Pixmap, font: &Font, layout: &Layout) {
     draw_line(pixmap, font, label, x, y, PANEL_TEXT_PX, fg);
 }
 
-fn perimeter_label(id: PerimeterId) -> &'static str {
+/// How an interior row reads in the list — drives the glyph-chip colour and the
+/// group separators, so the chat actions, surface switches, and system rows look
+/// like distinct bands instead of one undifferentiated stack.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RowKind {
+    Action,
+    Nav,
+    Surface,
+    System,
+}
+
+fn row_kind(id: PerimeterId) -> RowKind {
     match id {
-        PerimeterId::ArrowN => "N",
-        PerimeterId::ArrowE => "E",
-        PerimeterId::ArrowS => "S",
-        PerimeterId::ArrowW => "W",
-        PerimeterId::Quick0 => "1",
-        PerimeterId::Quick1 => "2",
-        PerimeterId::Quick2 => "3",
-        PerimeterId::Quick3 => "4",
-        PerimeterId::Add => "+",
-        PerimeterId::Paste | PerimeterId::Review | PerimeterId::Edit => "",
+        PerimeterId::Paste | PerimeterId::Review | PerimeterId::Edit => RowKind::Action,
+        PerimeterId::ArrowN | PerimeterId::ArrowS | PerimeterId::ArrowE | PerimeterId::ArrowW => RowKind::Nav,
+        PerimeterId::Quick0 | PerimeterId::Quick1 | PerimeterId::Quick2 | PerimeterId::Quick3 => RowKind::Surface,
+        PerimeterId::Add => RowKind::System,
     }
 }
 
-/// Which quick-button slot (0..3) a perimeter id drives, if any — so the dim flag lines up
-/// with the surface that quick button activates.
-fn quick_slot(id: PerimeterId) -> Option<usize> {
-    match id {
-        PerimeterId::Quick0 => Some(0),
-        PerimeterId::Quick1 => Some(1),
-        PerimeterId::Quick2 => Some(2),
-        PerimeterId::Quick3 => Some(3),
-        _ => None,
+/// Glyph-chip fill + ink for a row, all derived from the buddy's clay colour so the
+/// panel reads as part of the figure. Dim (unwired) rows get a faint chip that lets
+/// the dark screen show through.
+fn chip_palette(kind: RowKind, color: [u8; 3], dim: bool) -> (Color, [u8; 3]) {
+    if dim {
+        return (rgba(lighten(color, 0.82), 70), lighten(color, 0.45));
+    }
+    match kind {
+        // The "+ Customize" action gets the same cyan accent the governance confirm uses.
+        RowKind::System => (rgba([56, 188, 214], 240), [8, 30, 38]),
+        // Chat actions and surface switches share a bright pale-clay chip; nav sits a touch softer.
+        RowKind::Nav => (rgba(lighten(color, 0.62), 235), shade(color, 0.34)),
+        _ => (rgba(lighten(color, 0.82), 245), shade(color, 0.32)),
     }
 }
 
-fn draw_perimeter_controls(pixmap: &mut Pixmap, font: &Font, layout: &Layout, dim_quick: [bool; 4]) {
-    for (id, rect) in layout.perimeter_controls() {
-        if matches!(id, PerimeterId::Paste | PerimeterId::Review | PerimeterId::Edit) {
-            continue;
+fn draw_interior_view(
+    pixmap: &mut Pixmap,
+    font: &Font,
+    layout: &Layout,
+    rows: &[InteriorRow],
+    color: [u8; 3],
+) {
+    let row_rects = layout.interior_rows_for(rows.len());
+    if row_rects.is_empty() {
+        return;
+    }
+    // One cohesive "screen" recessed into the clay torso — the rows live inside it instead
+    // of floating as a stack of identical pills (which is what read as unfinished).
+    let first = row_rects[0];
+    let last = row_rects[row_rects.len() - 1];
+    let card = Rect {
+        x: first.x - 4.0,
+        y: first.y - 4.0,
+        w: first.w + 8.0,
+        h: (last.y + last.h) - first.y + 8.0,
+    };
+    draw_round_rect(pixmap, card, rgba(shade(color, 0.28), 240));
+    if let Some(path) = round_rect_path(card, 9.0) {
+        let mut stroke = Stroke::default();
+        stroke.width = 1.0;
+        pixmap.stroke_path(&path, &solid(rgba(shade(color, 0.5), 200)), &stroke, Transform::identity(), None);
+    }
+
+    let label_ink = lighten(color, 0.86);
+    let dim_ink = lighten(color, 0.5);
+
+    for (i, (row, rect)) in rows.iter().zip(row_rects.iter()).enumerate() {
+        let rect = *rect;
+        let kind = row_kind(row.id);
+        // Hairline between rows; a touch stronger where the category changes so the
+        // action / surface / system groups read as separate bands.
+        if i > 0 {
+            let stronger = row_kind(rows[i - 1].id) != kind;
+            let sep_a = if stronger { 95 } else { 38 };
+            fill_round_rect(
+                pixmap,
+                Rect { x: rect.x + 5.0, y: rect.y - 1.0, w: rect.w - 10.0, h: 1.0 },
+                0.5,
+                &solid(rgba(shade(color, 0.55), sep_a)),
+            );
         }
-        // A quick button for an `unwired` surface renders faded so the dim reads at a glance;
-        // a tap still lands and the body answers "not wired yet" (Slice 2a).
-        let dimmed = quick_slot(id).map(|slot| dim_quick[slot]).unwrap_or(false);
-        let label = perimeter_label(id);
-        let bg = if matches!(id, PerimeterId::Add) {
-            Color::from_rgba8(56, 188, 214, 238)
-        } else if dimmed {
-            Color::from_rgba8(248, 250, 252, 96)
-        } else {
-            Color::from_rgba8(248, 250, 252, 232)
-        };
-        draw_round_rect(pixmap, rect, bg);
-        if let Some(path) = round_rect_path(rect, 7.0) {
-            let mut stroke = Stroke::default();
-            stroke.width = 1.0;
-            let edge = if dimmed { 48 } else { 100 };
-            pixmap.stroke_path(&path, &solid(Color::from_rgba8(0, 0, 0, edge)), &stroke, Transform::identity(), None);
-        }
-        let tw = measure(font, label, PANEL_TEXT_PX);
-        let text = if dimmed { [120, 130, 146] } else { [18, 28, 46] };
+
+        // Leading glyph chip — the perimeter glyph muscle memory came from, now a real tile.
+        let inset = (rect.h * 0.16).clamp(1.5, 4.0);
+        let chip_h = (rect.h - inset * 2.0).max(0.0);
+        let chip = Rect { x: rect.x + 3.0, y: rect.y + inset, w: chip_h + 4.0, h: chip_h };
+        let (chip_bg, chip_ink) = chip_palette(kind, color, row.dim);
+        draw_round_rect(pixmap, chip, chip_bg);
+        let glyph_px = (chip.h * 0.72).clamp(7.0, 12.0);
+        let gw = measure(font, row.glyph, glyph_px);
         draw_line(
             pixmap,
             font,
-            label,
-            rect.x + (rect.w - tw) / 2.0,
-            rect.y + 13.0,
-            PANEL_TEXT_PX,
-            text,
+            row.glyph,
+            chip.x + (chip.w - gw) / 2.0,
+            rect.y + rect.h / 2.0 + glyph_px * 0.34,
+            glyph_px,
+            chip_ink,
         );
+
+        // Label, scaled to the row so big type never overruns a short torso's rows.
+        let text_px = (rect.h * 0.55).clamp(8.0, 12.0);
+        let text_x = chip.x + chip.w + 7.0;
+        let baseline = rect.y + rect.h / 2.0 + text_px * 0.34;
+        let mut right = rect.x + rect.w - 5.0;
+        // Unwired rows say so plainly with a right-aligned "soon" tag, not just a fade.
+        if row.dim {
+            let tag = "soon";
+            let tag_px = (text_px - 1.0).clamp(7.0, 10.0);
+            let tw = measure(font, tag, tag_px);
+            draw_line(pixmap, font, tag, right - tw, baseline, tag_px, lighten(color, 0.42));
+            right -= tw + 6.0;
+        }
+        let ink = if row.dim { dim_ink } else { label_ink };
+        let max_w = (right - text_x).max(0.0);
+        let text = truncate_to_width(font, row.text, text_px, max_w);
+        draw_line(pixmap, font, &text, text_x, baseline, text_px, ink);
     }
 }
 
@@ -2733,6 +2866,26 @@ fn measure(font: &Font, text: &str, px: f32) -> f32 {
     text.chars().map(|ch| font.metrics(ch, px).advance_width).sum()
 }
 
+/// Longest prefix of `text` (with an ellipsis) that fits in `max_w` at `px`. Returns the input
+/// unchanged if it already fits, or `""` if even one char + ellipsis won't fit.
+fn truncate_to_width(font: &Font, text: &str, px: f32, max_w: f32) -> String {
+    if measure(font, text, px) <= max_w {
+        return text.to_string();
+    }
+    let mut out = String::new();
+    for ch in text.chars() {
+        let candidate = format!("{out}{ch}…");
+        if measure(font, &candidate, px) > max_w {
+            break;
+        }
+        out.push(ch);
+    }
+    if !out.is_empty() {
+        out.push('…');
+    }
+    out
+}
+
 fn draw_line(pixmap: &mut Pixmap, font: &Font, text: &str, x: f32, baseline: f32, px: f32, color: [u8; 3]) {
     let w = pixmap.width() as i32;
     let h = pixmap.height() as i32;
@@ -2977,14 +3130,176 @@ mod tests {
     }
 
     #[test]
-    fn unwired_quick_button_renders_fainter_than_wired() {
+    fn interior_rows_fit_inside_the_torso_panel_and_stack_in_order() {
+        let l = Layout { facing: Facing::Right, body_len: BODY_LEN_DEFAULT };
+        let panel = l.output_panel_rect();
+        let rows = l.interior_rows();
+        // Seven perimeter controls fold into the interior list.
+        assert_eq!(rows.len(), 7, "ArrowN, Quick0..3, Add, ArrowS");
+        let mut prev_bottom = -f32::INFINITY;
+        for (_id, rect) in &rows {
+            // Every row lives inside the output panel.
+            assert!(rect.x >= panel.x - 0.5 && rect.x + rect.w <= panel.x + panel.w + 0.5,
+                "row x span {}..{} outside panel {}..{}", rect.x, rect.x + rect.w, panel.x, panel.x + panel.w);
+            assert!(rect.y >= panel.y - 0.5 && rect.y + rect.h <= panel.y + panel.h + 0.5,
+                "row y span {}..{} outside panel {}..{}", rect.y, rect.y + rect.h, panel.y, panel.y + panel.h);
+            // Rows stack top-to-bottom without overlap.
+            assert!(rect.y >= prev_bottom - 0.5, "row at y={} overlaps previous bottom {}", rect.y, prev_bottom);
+            prev_bottom = rect.y + rect.h;
+        }
+        // Order is the muscle-memory order from the perimeter ring.
+        let ids: Vec<_> = rows.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, vec![
+            PerimeterId::ArrowN,
+            PerimeterId::Quick0,
+            PerimeterId::Quick1,
+            PerimeterId::Quick2,
+            PerimeterId::Quick3,
+            PerimeterId::Add,
+            PerimeterId::ArrowS,
+        ]);
+    }
+
+    #[test]
+    fn interior_rows_empty_when_torso_too_short_to_fit_a_row() {
+        // A near-zero body length can't legibly fit even one row — fail closed rather than draw
+        // a cramped, unreadable list.
+        let l = Layout { facing: Facing::Right, body_len: BODY_LEN_MIN };
+        let rows = l.interior_rows();
+        // BODY_LEN_MIN is small enough that row_h clamps below the 10px legibility floor.
+        assert!(rows.is_empty(), "expected no interior rows at BODY_LEN_MIN, got {}", rows.len());
+    }
+
+    #[test]
+    fn interior_rows_for_fills_the_panel_evenly_and_caps_row_height() {
+        let l = Layout { facing: Facing::Right, body_len: BODY_LEN_DEFAULT };
+        let panel = l.output_panel_rect();
+        // 10 rows (the full chat-open set) should still fit a default torso and stay in-panel.
+        let rects = l.interior_rows_for(10);
+        assert_eq!(rects.len(), 10);
+        for r in &rects {
+            assert!(r.x >= panel.x - 0.5 && r.x + r.w <= panel.x + panel.w + 0.5);
+            assert!(r.y >= panel.y - 0.5 && r.y + r.h <= panel.y + panel.h + 0.5);
+            assert!(r.h <= 20.5, "row height should cap at 20px, got {}", r.h);
+        }
+        // Rows are evenly spaced (equal height + equal gaps).
+        let heights: Vec<f32> = rects.iter().map(|r| r.h).collect();
+        assert!(heights.iter().all(|h| (h - heights[0]).abs() < 0.01));
+    }
+
+    #[test]
+    fn interior_rows_for_zero_count_returns_empty() {
+        let l = Layout { facing: Facing::Right, body_len: BODY_LEN_DEFAULT };
+        assert!(l.interior_rows_for(0).is_empty());
+    }
+
+    #[test]
+    fn interior_view_replaces_torso_output_and_hides_the_perimeter_ring() {
+        // The whole point of the interior view: outside buttons come inside, so the outside
+        // ring must not render, and the interior rows must paint into the torso panel.
         let layout = Layout::initial();
         let w = SURFACE_W;
         let h = layout.surface_h();
         let sprite = Sprite::new();
 
-        let paint = |dim: [bool; 4]| {
+        let paint = |interior: &[InteriorRow]| -> Vec<u8> {
             let mut canvas = vec![0_u8; (w * h * 4) as usize];
+            let view = BodyView {
+                t: 0.0,
+                emotion: Emotion::Neutral,
+                speech: None,
+                torso_output: TorsoOutput::Session(SessionCard {
+                    name: "B",
+                    provider: "echo",
+                    model: "m",
+                    gateway: "g",
+                    status: "s",
+                    note: "should not appear",
+                }),
+                chat_open: false,
+                tucked: None,
+                input_text: "",
+                input_placeholder: "",
+                input_focused: false,
+                review_pending: false,
+                edit_pending: false,
+                posture_badge: None,
+                surface_bloom: &[],
+                route_health: None,
+                route_flash: false,
+                receipt_rail: &[],
+                interior_rows: interior,
+                layout,
+                pinned: None,
+                frame: None,
+                color: [255, 107, 107],
+            };
+            sprite.paint(&mut canvas, w, h, &view);
+            canvas
+        };
+
+        let closed = paint(&[]);
+        let open_rows: Vec<InteriorRow> = layout.interior_rows().into_iter().map(|(id, _)| InteriorRow {
+            id,
+            glyph: "X",
+            text: "Row label",
+            dim: false,
+        }).collect();
+        let open = paint(&open_rows);
+
+        // The external perimeter ring is RETIRED — both the closed and open views must leave
+        // the space just outside the torso transparent. (Previously the ring painted there.)
+        let torso = layout.torso_rect();
+        let sample = |canvas: &[u8], x: f32, y: f32| {
+            let xi = x as usize;
+            let yi = y as usize;
+            let i = (yi * (w as usize) + xi) * 4;
+            (canvas[i], canvas[i + 1], canvas[i + 2], canvas[i + 3])
+        };
+        let perimeter_pt = (torso.x - PERIMETER_SIZE - PERIMETER_GAP + 2.0, torso.y - PERIMETER_SIZE - PERIMETER_GAP + 2.0);
+        assert_eq!(sample(&closed, perimeter_pt.0, perimeter_pt.1), (0, 0, 0, 0),
+            "closed view must NOT render the retired perimeter ring");
+        assert_eq!(sample(&open, perimeter_pt.0, perimeter_pt.1), (0, 0, 0, 0),
+            "open view must NOT render the retired perimeter ring");
+
+        // An interior row paints opaque ink inside the torso panel.
+        let first_row = layout.interior_rows()[0].1;
+        let ink_pt = (first_row.x + 8.0, first_row.y + first_row.h / 2.0);
+        let open_ink = sample(&open, ink_pt.0, ink_pt.1);
+        assert!(open_ink.3 > 0, "interior row should paint ink inside the torso");
+    }
+
+    #[test]
+    fn unwired_interior_row_renders_fainter_than_wired() {
+        // The external perimeter ring is gone; the unwired-wired dim contrast now lives in the
+        // interior list. An unwired quick-surface row paints lower alpha than a wired one.
+        let layout = Layout::initial();
+        let w = SURFACE_W;
+        let h = layout.surface_h();
+        let sprite = Sprite::new();
+
+        let paint = |dim_q0: bool| -> Vec<u8> {
+            let mut canvas = vec![0_u8; (w * h * 4) as usize];
+            // Build the full 7-row interior so Quick0 lands in its real slot (row index 1).
+            let interior: Vec<InteriorRow> = layout
+                .interior_rows()
+                .iter()
+                .map(|(id, _)| InteriorRow {
+                    id: *id,
+                    glyph: match *id {
+                        PerimeterId::Quick0 => "1",
+                        PerimeterId::Quick1 => "2",
+                        PerimeterId::Quick2 => "3",
+                        PerimeterId::Quick3 => "4",
+                        PerimeterId::Add => "+",
+                        PerimeterId::ArrowN => "<",
+                        PerimeterId::ArrowS => ">",
+                        _ => "",
+                    },
+                    text: "Session",
+                    dim: *id == PerimeterId::Quick0 && dim_q0,
+                })
+                .collect();
             let view = BodyView {
                 t: 0.0,
                 emotion: Emotion::Neutral,
@@ -3005,11 +3320,11 @@ mod tests {
                 review_pending: false,
                 edit_pending: false,
                 posture_badge: None,
-                dim_quick: dim,
                 surface_bloom: &[],
                 route_health: None,
                 route_flash: false,
                 receipt_rail: &[],
+                interior_rows: &interior,
                 layout,
                 pinned: None,
                 frame: None,
@@ -3019,23 +3334,29 @@ mod tests {
             canvas
         };
 
-        let bright = paint([false; 4]);
-        let dimmed = paint([true, false, false, false]);
+        let bright = paint(false);
+        let dimmed = paint(true);
 
-        // Total alpha over the Quick0 button area: the dimmer fill paints lower coverage.
-        let rect = layout.perimeter_rect(PerimeterId::Quick0);
-        let alpha_sum = |canvas: &[u8]| -> u64 {
-            let mut acc = 0_u64;
-            for y in (rect.y as u32)..((rect.y + rect.h) as u32) {
-                for x in (rect.x as u32)..((rect.x + rect.w) as u32) {
-                    acc += canvas[((y * w + x) * 4 + 3) as usize] as u64;
-                }
-            }
-            acc
+        let rect = layout
+            .interior_rows()
+            .into_iter()
+            .find(|(id, _)| *id == PerimeterId::Quick0)
+            .unwrap()
+            .1;
+        // The contrast now lives in the leading glyph chip: a wired row paints a bright
+        // pale-clay chip (high R) while an unwired row paints it at low alpha so the dark
+        // recessed screen shows through (lower R). Sample the chip, just inside its left edge
+        // at the row's vertical center.
+        let mid_y = (rect.y + rect.h / 2.0) as u32;
+        let chip_x = (rect.x + 6.0) as u32;
+        let red_at = |canvas: &[u8]| -> u32 {
+            canvas[((mid_y * w as u32 + chip_x) * 4) as usize] as u32
         };
+        let bright_red = red_at(&bright);
+        let dimmed_red = red_at(&dimmed);
         assert!(
-            alpha_sum(&dimmed) < alpha_sum(&bright),
-            "an unwired Quick0 button should paint fainter than a wired one",
+            dimmed_red < bright_red,
+            "an unwired interior Quick0 row should paint a fainter chip (lower R) than a wired one (bright={bright_red}, dimmed={dimmed_red})",
         );
     }
 
@@ -3317,11 +3638,11 @@ mod tests {
             review_pending: false,
             edit_pending: false,
             posture_badge: None,
-            dim_quick: [false; 4],
             surface_bloom: &[],
             route_health: None,
             route_flash: false,
             receipt_rail: &[],
+            interior_rows: &[],
             layout: Layout::initial(),
             pinned: None,
             frame: Some(frame),

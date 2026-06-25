@@ -551,6 +551,10 @@ fn main() {
         active_surface: "session".to_string(),
         surfaces: Vec::new(),
         surface_bloom_open: false,
+        // The interior control list is the primary surface for perimeter controls now — the
+        // external ring is gone, so the labeled in-torso list shows by default. Torso scroll
+        // toggles it away to reveal the torso output panel.
+        interior_open: true,
         active_posture: "work".to_string(),
         active_provider: None,
         active_locality: None,
@@ -672,12 +676,10 @@ enum PressTarget {
     /// the head, a tap here does NOT toggle chat (only a drag moves the buddy).
     Body,
     Input,
-    Paste,
-    /// The on-body Review / Confirm governance button (visible while chat is open).
-    Review,
-    /// The on-body Edit / Confirm governance button — emits a typed `repo_edit` intent.
-    Edit,
-    Perimeter(PerimeterId),
+    /// A row of the interior (in-torso) control list — toggled by the Torso scroll action.
+    /// Every perimeter control now lives here: surfaces always, Paste/Review/Edit when chat is
+    /// open. Dispatches through `on_perimeter_control` (surfaces) or the chat-control handlers.
+    Interior(PerimeterId),
     ReceiptRail(usize),
     SurfaceBloom(usize),
     TorsoAction(TorsoAction),
@@ -688,13 +690,14 @@ enum PressTarget {
 }
 
 fn is_surface_bloom_press(target: PressTarget) -> bool {
+    // The hold-to-bloom surface dial opens from a surface control press. The external perimeter
+    // ring is retired, so the trigger fires from the same controls living inside the torso as
+    // interior rows.
     matches!(
         target,
-        PressTarget::Perimeter(
+        PressTarget::Interior(
             PerimeterId::ArrowN
-                | PerimeterId::ArrowE
                 | PerimeterId::ArrowS
-                | PerimeterId::ArrowW
                 | PerimeterId::Quick0
                 | PerimeterId::Quick1
                 | PerimeterId::Quick2
@@ -766,6 +769,10 @@ struct App {
     session_note: String,
     awaiting_reply: bool,
     chat_open: bool,
+    /// The "interior" view: perimeter controls re-laid-out as a labeled list INSIDE the torso
+    /// panel, toggled by the Torso scroll action. While open, the torso output is hidden and a
+    /// press inside the torso hits a labeled row instead of the body-drag handle.
+    interior_open: bool,
     configured: bool,
     press: Option<PressState>,
     drag: bool,
@@ -839,14 +846,6 @@ fn edge_to_bump(edge: presence::Edge) -> BumpEdge {
         presence::Edge::Bottom => BumpEdge::Bottom,
         presence::Edge::Left => BumpEdge::Left,
     }
-}
-
-fn active_perimeter_controls_for(chat_open: bool, layout: render::Layout) -> Vec<(PerimeterId, render::Rect)> {
-    layout
-        .perimeter_controls()
-        .into_iter()
-        .filter(|(id, _)| chat_open || !matches!(id, PerimeterId::Paste | PerimeterId::Review | PerimeterId::Edit))
-        .collect()
 }
 
 fn pick_output(app: &App) -> Option<wl_output::WlOutput> {
@@ -1017,6 +1016,63 @@ impl App {
         for (slot, id) in SURFACE_QUICK.iter().take(4).enumerate() {
             dim_quick[slot] = self.surface_availability(id) == "unwired";
         }
+        // The interior list mirrors the perimeter ring: each row is a perimeter control plus
+        // a label. Built only when the interior view is toggled on. When chat is open, the
+        // chat-only controls (Paste/Review/Edit) are prepended so they come inside too — the
+        // whole perimeter ring lives in the torso, never stranded outside. Label strings are
+        // owned in `interior_texts` and borrowed by `interior_rows` for the render view's
+        // lifetime.
+        let interior_texts: Vec<String> = if self.interior_open {
+            let surfaces = self.ordered_surfaces();
+            let specs = Self::interior_row_specs(self.chat_open);
+            specs
+                .iter()
+                .map(|(id, _)| match *id {
+                    PerimeterId::Paste => "Paste".to_string(),
+                    PerimeterId::Review => "Review".to_string(),
+                    PerimeterId::Edit => "Edit".to_string(),
+                    PerimeterId::ArrowN => "Surfaces".to_string(),
+                    PerimeterId::ArrowS => "Surfaces".to_string(),
+                    PerimeterId::Add => "Customize".to_string(),
+                    PerimeterId::Quick0 | PerimeterId::Quick1 | PerimeterId::Quick2 | PerimeterId::Quick3 => {
+                        let idx = match id {
+                            PerimeterId::Quick0 => 0,
+                            PerimeterId::Quick1 => 1,
+                            PerimeterId::Quick2 => 2,
+                            PerimeterId::Quick3 => 3,
+                            _ => 0,
+                        };
+                        SURFACE_QUICK
+                            .get(idx)
+                            .and_then(|sid| surfaces.iter().find(|s| s.id == *sid))
+                            .map(|s| s.label.clone())
+                            .unwrap_or_else(|| (*SURFACE_QUICK.get(idx).unwrap_or(&"")).to_string())
+                    }
+                    _ => String::new(),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let interior_rows: Vec<render::InteriorRow<'_>> = if self.interior_open {
+            let specs = Self::interior_row_specs(self.chat_open);
+            specs
+                .iter()
+                .zip(interior_texts.iter())
+                .map(|((id, glyph), text)| {
+                    let dim = match *id {
+                        PerimeterId::Quick0 => dim_quick[0],
+                        PerimeterId::Quick1 => dim_quick[1],
+                        PerimeterId::Quick2 => dim_quick[2],
+                        PerimeterId::Quick3 => dim_quick[3],
+                        _ => false,
+                    };
+                    render::InteriorRow { id: *id, glyph, text: text.as_str(), dim }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let bloom_order = self.surface_bloom_surfaces();
         let bloom_items: Vec<render::SurfaceDialItem<'_>> = if self.surface_bloom_open {
             bloom_order
@@ -1051,11 +1107,11 @@ impl App {
             review_pending: self.pending_effector.as_deref() == Some("receipt_review"),
             edit_pending: self.pending_effector.as_deref() == Some("repo_edit"),
             posture_badge,
-            dim_quick,
             surface_bloom: &bloom_items,
             route_health: route_health.as_deref(),
             route_flash,
             receipt_rail: &receipt_rail_items,
+            interior_rows: &interior_rows,
             layout,
             pinned,
             frame: None,
@@ -1317,10 +1373,6 @@ impl App {
         self.margin_top = top;
     }
 
-    fn active_perimeter_controls(&self, layout: render::Layout) -> Vec<(PerimeterId, render::Rect)> {
-        active_perimeter_controls_for(self.chat_open, layout)
-    }
-
     /// Input region = only the parts that should catch the pointer; everywhere else
     /// is transparent AND click-through. Recomputed whenever the menu/bubble toggles.
     fn update_input_region(&mut self) {
@@ -1350,9 +1402,8 @@ impl App {
             }
             rects.push(self.offset_rect_for_body(render::head_rect()).as_i32());
             rects.push(self.offset_rect_for_body(layout.feet_rect()).as_i32());
-            for (_, rect) in self.active_perimeter_controls(layout) {
-                rects.push(self.offset_rect_for_body(rect).as_i32());
-            }
+            // The external perimeter ring is retired — its controls live inside the torso as
+            // interior rows (added below when the interior view is open). No perimeter rects.
             if self.surface_bloom_open {
                 for rect in layout.surface_bloom_rects(self.surface_bloom_surfaces().len()) {
                     rects.push(self.offset_rect_for_body(rect).as_i32());
@@ -1363,6 +1414,11 @@ impl App {
             }
             if self.chat_open {
                 rects.push(self.offset_rect_for_body(layout.input_region_rect()).as_i32());
+            }
+            if self.interior_open {
+                for (_, rect) in layout.interior_rows() {
+                    rects.push(self.offset_rect_for_body(rect).as_i32());
+                }
             }
             rects.push(self.offset_rect_for_body(layout.torso_action_rect(TorsoAction::Expand)).as_i32());
             rects.push(self.offset_rect_for_body(layout.torso_action_rect(TorsoAction::Copy)).as_i32());
@@ -1716,17 +1772,19 @@ impl App {
             }
         } else if render::point_in_head(body_x, y) {
             PressTarget::Head
-        } else if let Some((id, _)) = self
-            .active_perimeter_controls(layout)
-            .into_iter()
-            .find(|(_, rect)| rect.contains(body_x, y))
+        } else if self.interior_open
+            && layout.output_panel_rect().contains(body_x, y)
+            && render::torso_action_at(&layout, body_x, y).is_none()
         {
-            match id {
-                PerimeterId::Paste => PressTarget::Paste,
-                PerimeterId::Review => PressTarget::Review,
-                PerimeterId::Edit => PressTarget::Edit,
-                other => PressTarget::Perimeter(other),
-            }
+            // Interior view owns the torso panel: a press inside hits a labeled row. The
+            // Torso scroll/expand/copy buttons stay hit-testable so the view can be closed
+            // again; a press on empty panel space falls through to the body-drag handle.
+            layout
+                .interior_rows()
+                .into_iter()
+                .find(|(_, rect)| rect.contains(body_x, y))
+                .map(|(id, _)| PressTarget::Interior(id))
+                .unwrap_or(PressTarget::Body)
         } else if self.chat_open && layout.input_region_rect().contains(body_x, y) {
             PressTarget::Input
         } else if let Some(action) = render::torso_action_at(&layout, body_x, y) {
@@ -1881,21 +1939,14 @@ impl App {
                 self.show_receipt_rail_entry(idx);
             }
             PressTarget::Input => self.input_focused = true,
-            PressTarget::Paste => {
-                self.input_focused = true;
-                self.paste_clipboard_into_input();
-            }
-            PressTarget::Review => {
+            PressTarget::Interior(id) => {
                 self.input_focused = false;
-                self.request_review();
-            }
-            PressTarget::Edit => {
-                self.input_focused = false;
-                self.request_repo_edit();
-            }
-            PressTarget::Perimeter(id) => {
-                self.input_focused = false;
-                self.on_perimeter_control(id);
+                match id {
+                    PerimeterId::Paste => self.paste_clipboard_into_input(),
+                    PerimeterId::Review => self.request_review(),
+                    PerimeterId::Edit => self.request_repo_edit(),
+                    other => self.on_perimeter_control(other),
+                }
             }
             PressTarget::TorsoAction(action) => {
                 self.input_focused = false;
@@ -1979,6 +2030,18 @@ impl App {
     }
 
     fn request_surface(&mut self, surface: &str) {
+        // A launcher surface opens an external tool instead of becoming the active surface —
+        // route it through the same reach `action_request` path the bloom dial uses. (Cycling
+        // already skips launchers, so this only fires on a direct quick-row tap.)
+        if let Some(desc) = self.surfaces.iter().find(|s| s.id == surface) {
+            if desc.is_launcher() {
+                if let Some(effector) = desc.effector.clone() {
+                    let label = desc.label.clone();
+                    self.request_launch(&effector, &label);
+                    return;
+                }
+            }
+        }
         // An `unwired` surface names an effector not yet wired: explain rather than ask the
         // soul to switch (it would no-op anyway). The body only reports availability the soul
         // pushed; it never decides wiring itself (AGENTS.md law 7).
@@ -2007,6 +2070,23 @@ impl App {
             let id = order[idx].id.clone();
             self.request_surface(&id);
         }
+    }
+
+    fn interior_row_specs(chat_open: bool) -> Vec<(PerimeterId, &'static str)> {
+        let mut specs: Vec<(PerimeterId, &'static str)> = Vec::new();
+        if chat_open {
+            specs.push((PerimeterId::Paste, "P"));
+            specs.push((PerimeterId::Review, "R"));
+            specs.push((PerimeterId::Edit, "E"));
+        }
+        specs.push((PerimeterId::ArrowN, "◀"));
+        specs.push((PerimeterId::Quick0, "1"));
+        specs.push((PerimeterId::Quick1, "2"));
+        specs.push((PerimeterId::Quick2, "3"));
+        specs.push((PerimeterId::Quick3, "4"));
+        specs.push((PerimeterId::Add, "+"));
+        specs.push((PerimeterId::ArrowS, "▶"));
+        specs
     }
 
     fn on_perimeter_control(&mut self, id: PerimeterId) {
@@ -2114,17 +2194,26 @@ impl App {
     }
 
     fn on_torso_action(&mut self, action: TorsoAction) {
-        self.speech = Some(match action {
-            TorsoAction::Expand => "Fullscreen image open will land here.".to_string(),
+        match action {
+            TorsoAction::Expand => {
+                self.speech = Some("Fullscreen image open will land here.".to_string());
+            }
             TorsoAction::Copy => match self.current_text_output() {
                 Some(text) => match copy_to_clipboard(text) {
-                    Ok(()) => "Copied text output.".to_string(),
-                    Err(err) => format!("Copy failed: {err}"),
+                    Ok(()) => self.speech = Some("Copied text output.".to_string()),
+                    Err(err) => self.speech = Some(format!("Copy failed: {err}")),
                 },
-                None => "No text output to copy.".to_string(),
+                None => self.speech = Some("No text output to copy.".to_string()),
             },
-            TorsoAction::Scroll => "Torso scroll controls will land here.".to_string(),
-        });
+            TorsoAction::Scroll => {
+                // Toggle the interior view — the perimeter controls fold into a labeled list
+                // inside the torso. Reset the speech bubble so it doesn't overlap the list.
+                self.interior_open = !self.interior_open;
+                if self.interior_open {
+                    self.speech = None;
+                }
+            }
+        }
         self.update_input_region();
     }
 
@@ -2179,6 +2268,7 @@ impl App {
         self.chat_open = false;
         self.input_focused = false;
         self.speech = None;
+        self.interior_open = false;
         self.tucked = Some(edge);
         let (sw, sh) = self.screen.unwrap_or((f64::MAX, f64::MAX));
         let (surface_w, surface_h) = self.requested_surface_size();
@@ -2544,16 +2634,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn perimeter_controls_filter_chat_buttons_with_chat_state() {
-        let layout = render::Layout::initial();
-        let closed = active_perimeter_controls_for(false, layout);
-        let open = active_perimeter_controls_for(true, layout);
-
+    fn interior_row_specs_include_chat_controls_only_when_chat_is_open() {
+        // The retired perimeter ring's chat-button filtering now lives in the interior specs:
+        // Paste/Review/Edit appear only when chat is open.
+        let closed = App::interior_row_specs(false);
+        let open = App::interior_row_specs(true);
         assert!(!closed.iter().any(|(id, _)| matches!(id, PerimeterId::Paste | PerimeterId::Review | PerimeterId::Edit)));
         assert!(open.iter().any(|(id, _)| *id == PerimeterId::Paste));
         assert!(open.iter().any(|(id, _)| *id == PerimeterId::Review));
         assert!(open.iter().any(|(id, _)| *id == PerimeterId::Edit));
-        assert_eq!(open.len(), layout.perimeter_controls().len());
     }
 
     fn surf(id: &str, availability: &str) -> presence::SurfaceDescriptor {
@@ -2692,7 +2781,7 @@ mod tests {
         let old_enough = now.checked_sub(SURFACE_BLOOM_HOLD + Duration::from_millis(1)).unwrap();
         let fresh = now.checked_sub(SURFACE_BLOOM_HOLD - Duration::from_millis(1)).unwrap();
         let base = PressState {
-            target: PressTarget::Perimeter(PerimeterId::ArrowN),
+            target: PressTarget::Interior(PerimeterId::ArrowN),
             secondary: false,
             started_at: old_enough,
             dist: 0.0,
@@ -2705,19 +2794,24 @@ mod tests {
         assert!(!should_open_surface_bloom(&PressState { dist: CLICK_SLOP + 0.1, ..base }, now));
         assert!(!should_open_surface_bloom(&PressState { secondary: true, ..base }, now));
         assert!(!should_open_surface_bloom(&PressState { target: PressTarget::Head, ..base }, now));
-        assert!(!should_open_surface_bloom(&PressState { target: PressTarget::Perimeter(PerimeterId::Add), ..base }, now));
-        assert!(!should_open_surface_bloom(&PressState { target: PressTarget::Paste, ..base }, now));
-        assert!(!should_open_surface_bloom(&PressState { target: PressTarget::Review, ..base }, now));
-        assert!(!should_open_surface_bloom(&PressState { target: PressTarget::Edit, ..base }, now));
+        assert!(!should_open_surface_bloom(&PressState { target: PressTarget::Interior(PerimeterId::Add), ..base }, now));
+        assert!(!should_open_surface_bloom(&PressState { target: PressTarget::Interior(PerimeterId::Paste), ..base }, now));
+        assert!(!should_open_surface_bloom(&PressState { target: PressTarget::Interior(PerimeterId::Review), ..base }, now));
+        assert!(!should_open_surface_bloom(&PressState { target: PressTarget::Interior(PerimeterId::Edit), ..base }, now));
         assert!(!should_open_surface_bloom(&PressState { bloom_started: true, ..base }, now));
     }
 
     #[test]
-    fn perimeter_surface_controls_have_clickable_rects() {
+    fn interior_surface_controls_have_clickable_rects() {
+        // The retired perimeter ring's controls now live as interior rows — each gets a
+        // non-zero rect inside the torso panel.
         let layout = render::Layout::initial();
-        let controls = active_perimeter_controls_for(false, layout);
-        for id in [PerimeterId::ArrowN, PerimeterId::ArrowE, PerimeterId::ArrowS, PerimeterId::ArrowW, PerimeterId::Quick0, PerimeterId::Add] {
-            let rect = controls.iter().find_map(|(candidate, rect)| (*candidate == id).then_some(*rect)).expect("control exists");
+        let controls = layout.interior_rows();
+        for id in [PerimeterId::ArrowN, PerimeterId::Quick0, PerimeterId::Quick1, PerimeterId::Quick2, PerimeterId::Quick3, PerimeterId::Add, PerimeterId::ArrowS] {
+            let rect = controls
+                .iter()
+                .find_map(|(candidate, rect)| (*candidate == id).then_some(*rect))
+                .expect("interior row exists");
             assert!(rect.w > 0.0 && rect.h > 0.0, "{id:?} should have area");
         }
     }
@@ -2795,6 +2889,38 @@ mod tests {
         let left = (1920.0 - fig.w as f64) / 2.0;
         let top = (1080.0 - fig.h as f64) / 2.0;
         assert_eq!(nearest_tuck_edge(left, top, fig, (1920.0, 1080.0), TUCK_THRESHOLD), None);
+    }
+
+    #[test]
+    fn interior_row_specs_fold_every_perimeter_control_into_the_torso() {
+        // Closed chat: the surface controls only (the ring's navigable set). 7 rows.
+        let closed = App::interior_row_specs(false);
+        assert_eq!(
+            closed.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![
+                PerimeterId::ArrowN,
+                PerimeterId::Quick0,
+                PerimeterId::Quick1,
+                PerimeterId::Quick2,
+                PerimeterId::Quick3,
+                PerimeterId::Add,
+                PerimeterId::ArrowS,
+            ]
+        );
+        // Open chat: Paste/Review/Edit are prepended so the chat controls come inside too. 10 rows.
+        let open = App::interior_row_specs(true);
+        assert_eq!(open.len(), 10);
+        assert_eq!(
+            open.iter().map(|(id, _)| *id).take(3).collect::<Vec<_>>(),
+            vec![PerimeterId::Paste, PerimeterId::Review, PerimeterId::Edit]
+        );
+        // The two arrow directions collapse to a single back/fwd pair (no redundant N/S/E/W).
+        assert_eq!(closed[0].1, "◀");
+        assert_eq!(closed[6].1, "▶");
+        // Chat-control glyphs keep their perimeter letters so muscle memory transfers.
+        assert_eq!(open[0].1, "P");
+        assert_eq!(open[1].1, "R");
+        assert_eq!(open[2].1, "E");
     }
 }
 

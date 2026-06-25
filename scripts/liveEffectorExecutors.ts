@@ -144,9 +144,14 @@ export function commandOnPath(command: string): boolean {
 export function createLiveLauncherExecutor(opts: {
   command: string;
   isTerminal?: boolean;
+  // A CLI agent (e.g. `a0`, `claude`) that takes no path argument: spawn it bare with the
+  // workspace as its cwd, rather than passing the location as an `arg`. Like `isTerminal` in
+  // that it appends no path, but it isn't the terminal app itself.
+  bareCommand?: boolean;
   workspaceRoot?: string;
 }): EffectorExecutor {
   const workspaceRoot = opts.workspaceRoot ?? process.env.BB_WORKSPACE ?? process.cwd();
+  const noPathArg = opts.isTerminal || opts.bareCommand;
 
   return (ctx) => {
     const { target } = ctx.intent;
@@ -161,8 +166,8 @@ export function createLiveLauncherExecutor(opts: {
     }
 
     try {
-      const child = spawn(opts.command, opts.isTerminal ? [] : [where], {
-        cwd: opts.isTerminal ? where : workspaceRoot,
+      const child = spawn(opts.command, noPathArg ? [] : [where], {
+        cwd: noPathArg ? where : workspaceRoot,
         detached: true,
         stdio: "ignore",
       });
@@ -172,7 +177,7 @@ export function createLiveLauncherExecutor(opts: {
       child.unref();
       return {
         outcome: "ok",
-        detail: opts.isTerminal ? `opened ${opts.command} (cwd ${where})` : `opened ${where} in ${opts.command}`,
+        detail: noPathArg ? `opened ${opts.command} (cwd ${where})` : `opened ${where} in ${opts.command}`,
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

@@ -1,4 +1,4 @@
-import { EFFECTOR_SPECS, type EffectorId, type RouteProvider } from "./buddyManifest";
+import { EFFECTOR_SPECS, LAUNCHER_REACH_EFFECTORS, type EffectorId, type RouteProvider } from "./buddyManifest";
 import type { UserPosture } from "./core";
 
 export type SurfaceId =
@@ -26,9 +26,9 @@ export const SURFACES: readonly SurfaceSpec[] = [
     provider: "lm_studio",
     posture: "private",
   },
-  { id: "claude_code", label: "Claude Code", effectorId: "summarize_long", provider: "codex", posture: "work" },
+  { id: "claude_code", label: "Claude Code", effectorId: "open_claude_code", provider: "claude", posture: "work" },
   { id: "live_hermes", label: "Live Hermes", effectorId: "voice_out", provider: "grok", posture: "play" },
-  { id: "agent_zero", label: "Agent Zero", effectorId: "summarize_long", provider: "custom", posture: "work" },
+  { id: "agent_zero", label: "Agent Zero", effectorId: "open_agent_zero", provider: "custom", posture: "work" },
   { id: "customize", label: "Customize", posture: "work" },
 ];
 
@@ -77,17 +77,38 @@ export interface SurfaceDescriptor {
   id: SurfaceId;
   label: string;
   availability: SurfaceAvailability;
+  /**
+   * `surface` (default) cycles/switches the active surface; `launcher` opens an external tool
+   * via a reach `action_request` for `effector`. A canonical surface backed by a launcher reach
+   * effector (e.g. claude_code → open_claude_code) hydrates as a launcher so a tap spawns the
+   * tool instead of switching surface. Absent `kind` means `surface` (older snapshots stay valid).
+   */
+  kind?: "surface" | "launcher";
+  effector?: EffectorId;
+}
+
+/** True when a surface's backing effector is a launcher reach effector (opens a real tool). */
+export function isLauncherSurface(surface: SurfaceSpec): boolean {
+  return surface.effectorId !== undefined && LAUNCHER_REACH_EFFECTORS.has(surface.effectorId);
 }
 
 /**
  * The ordered surface list (canonical SURFACE_ORDER) with each surface's availability —
  * what the soul ships on `hydrate` so a manifest-free body can cycle and dim surfaces
- * without importing this module.
+ * without importing this module. A launcher-backed surface additionally carries
+ * `kind:"launcher"` + its `effector`, so the body opens the tool rather than switching to it.
  */
 export function surfaceHydrationList(): SurfaceDescriptor[] {
-  return SURFACES.map((surface) => ({
-    id: surface.id,
-    label: surface.label,
-    availability: surfaceAvailability(surface.id),
-  }));
+  return SURFACES.map((surface) => {
+    const descriptor: SurfaceDescriptor = {
+      id: surface.id,
+      label: surface.label,
+      availability: surfaceAvailability(surface.id),
+    };
+    if (isLauncherSurface(surface)) {
+      descriptor.kind = "launcher";
+      descriptor.effector = surface.effectorId;
+    }
+    return descriptor;
+  });
 }

@@ -43,7 +43,7 @@ describe("buddy manifest", () => {
     expect(EFFECTOR_SPECS.local_chat.requiresGrant).toBe(true);
     expect(isWired("local_chat")).toBe(true);
     // Launchers — open a tool the user already has, detached. Reach lane only.
-    for (const id of ["open_vscode", "open_cursor", "open_terminal"] as const) {
+    for (const id of ["open_vscode", "open_cursor", "open_claude_code", "open_agent_zero", "open_terminal"] as const) {
       expect(EFFECTOR_SPECS[id].wired, `${id} must be wired live`).toBe(true);
       expect(EFFECTOR_SPECS[id].kind, `${id} must be a reach effector`).toBe("reach");
       expect(isWired(id)).toBe(true);
@@ -53,6 +53,8 @@ describe("buddy manifest", () => {
       "local_chat",
       "open_vscode",
       "open_cursor",
+      "open_claude_code",
+      "open_agent_zero",
       "open_terminal",
     ]);
     // The reach lane never acts in place of the tool — an act effector can never enter it.
@@ -79,7 +81,7 @@ describe("buddy manifest", () => {
     const wired = Object.values(EFFECTOR_SPECS).filter((s) => s.wired).map((s) => s.id).sort();
     expect([...GATED_WIRED_EFFECTORS].sort()).toEqual(wired);
     expect([...GATED_WIRED_EFFECTORS].sort()).toEqual(
-      ["local_chat", "receipt_review", "repo_edit", "open_vscode", "open_cursor", "open_terminal"].sort(),
+      ["local_chat", "receipt_review", "repo_edit", "open_vscode", "open_cursor", "open_claude_code", "open_agent_zero", "open_terminal"].sort(),
     );
   });
 

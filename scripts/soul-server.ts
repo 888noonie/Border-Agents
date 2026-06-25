@@ -45,7 +45,7 @@ import {
   type PresenceSurfaceDescriptor,
 } from "../src/presenceProtocol";
 import { createDefaultBuddySettings, BUDDY_PROFILES, type BuddyProfile } from "../src/buddyProfiles";
-import { EFFECTOR_SPECS, manifestEntry, ROUTE_PROVIDER_LABELS, resolveManifestId, type EffectorId } from "../src/buddyManifest";
+import { EFFECTOR_SPECS, LAUNCHER_REACH_EFFECTORS, manifestEntry, ROUTE_PROVIDER_LABELS, resolveManifestId, type EffectorId } from "../src/buddyManifest";
 import { getSurface, surfaceAvailability, surfaceHydrationList, type SurfaceId } from "../src/surfaceManifest";
 import type { ActionIntent, ActionReceipt, ActionRoute, UserPosture } from "../src/core";
 import type { SessionChatLine } from "../src/liveGovernance";
@@ -115,10 +115,16 @@ const EXECUTORS = {
   open_vscode: createLiveLauncherExecutor({ command: "code" }),
   open_cursor: createLiveLauncherExecutor({ command: "cursor" }),
   open_terminal: createLiveLauncherExecutor({ command: process.env.BB_TERMINAL ?? "cosmic-term", isTerminal: true }),
+  // CLI coding agents — spawned bare at the workspace (no path arg). BB_CLAUDE_CODE / BB_AGENT_ZERO
+  // override the command. `claude` may be absent on this machine; the executor then returns a clear
+  // "install the command" receipt rather than failing silently.
+  open_claude_code: createLiveLauncherExecutor({ command: process.env.BB_CLAUDE_CODE ?? "claude", bareCommand: true }),
+  open_agent_zero: createLiveLauncherExecutor({ command: process.env.BB_AGENT_ZERO ?? "a0", bareCommand: true }),
 };
 
 // Launcher reach effectors that participate in confirm-once-per-session (see sessionConfirmed).
-const LAUNCHER_EFFECTORS: ReadonlySet<EffectorId> = new Set<EffectorId>(["open_vscode", "open_cursor", "open_terminal"]);
+// Single source: the manifest's LAUNCHER_REACH_EFFECTORS.
+const LAUNCHER_EFFECTORS: ReadonlySet<EffectorId> = LAUNCHER_REACH_EFFECTORS;
 const localChat = createLiveLocalChatConnector();
 // Per-buddy pending effector, set when the gate returns needs_confirmation so a later
 // `/confirm` knows what it is confirming. Mirrors the browser composer's pendingEffector.
@@ -198,8 +204,12 @@ function launcherIntent(effectorId: EffectorId): ActionIntent {
  * body opens them via action_request instead of switching the active surface. */
 function hydrationSurfacesFor(buddy: string): PresenceSurfaceDescriptor[] {
   const entry = manifestEntry(resolveManifestId(buddy));
+  const canonical = surfaceHydrationList();
+  // A launcher reach effector already exposed as a canonical surface (e.g. claude_code →
+  // open_claude_code) must not be appended a second time as a free-standing launcher entry.
+  const canonicalLauncherEffectors = new Set(canonical.map((s) => s.effector).filter(Boolean));
   const launchers: PresenceSurfaceDescriptor[] = (entry?.effectors ?? [])
-    .filter((id) => LAUNCHER_EFFECTORS.has(id))
+    .filter((id) => LAUNCHER_EFFECTORS.has(id) && !canonicalLauncherEffectors.has(id))
     .map((id) => ({
       id,
       label: EFFECTOR_SPECS[id].label,
@@ -207,7 +217,7 @@ function hydrationSurfacesFor(buddy: string): PresenceSurfaceDescriptor[] {
       kind: "launcher" as const,
       effector: id,
     }));
-  return [...surfaceHydrationList(), ...launchers];
+  return [...canonical, ...launchers];
 }
 
 /**
@@ -229,10 +239,15 @@ function authorizeAndReply(
   // genuinely thinks for seconds lights up automatically: the body shows `thinking`, then the
   // honest outcome face below. Mood belongs to the soul (law 7), so it announces both.
   socket.send(JSON.stringify(presence.express(buddy, "thinking")));
-  // Confirm-once-per-session for launchers: a tool the user already approved this session is
-  // auto-confirmed so it opens without a second tap. The gate still sees a confirmed action and
-  // records it the same way — this only spares the repeat prompt, never widens authorization.
-  const effectiveConfirmed = confirmed || isSessionConfirmed(buddy, effectorId);
+  // Launchers self-confirm: tapping a specific launcher (Claude Code, Agent Zero, VS Code, …)
+  // IS the explicit user action — it only opens a tool the user already has and applies no
+  // effect, so a second "/confirm" tap is redundant friction for the safest category. The gate
+  // still authorizes the grant + intent, runs every hard block, and records a confirmed receipt
+  // the same way; this only sets the confirmation CADENCE for launchers to zero (interaction
+  // layer, never a widening of authorization). `act`/high-risk effectors are untouched and still
+  // confirm. `isSessionConfirmed` remains for any other reach effector confirmed earlier.
+  const isLauncher = LAUNCHER_EFFECTORS.has(effectorId as EffectorId);
+  const effectiveConfirmed = confirmed || isLauncher || isSessionConfirmed(buddy, effectorId);
   const { receipt, result, execution } = handleActionRequest({
     buddy,
     effectorId,

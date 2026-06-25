@@ -37,7 +37,7 @@ export const PRESENCE_FIXTURES = {
       surfaces: [
         { id: "session", label: "Session", availability: "available" },
         { id: "private_local_chat", label: "Private local chat", availability: "gated" },
-        { id: "claude_code", label: "Claude Code", availability: "unwired" },
+        { id: "live_hermes", label: "Live Hermes", availability: "unwired" },
       ],
     },
     { ts: 1004 },

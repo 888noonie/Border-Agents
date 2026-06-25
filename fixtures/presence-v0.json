@@ -73,8 +73,8 @@
         "availability": "gated"
       },
       {
-        "id": "claude_code",
-        "label": "Claude Code",
+        "id": "live_hermes",
+        "label": "Live Hermes",
         "availability": "unwired"
       }
     ]

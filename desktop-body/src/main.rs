@@ -17,7 +17,7 @@
 //!       BB_OUTPUT_INDEX=1 cargo run     # second monitor
 //!       BB_MARGIN_LEFT=400 BB_MARGIN_TOP=200 cargo run
 //!       BB_COLOR="#7c5cff" cargo run    # recolour the clay
-//! Drag the head to move/dock; click the head to chat; drag the feet to stretch.
+//! Drag the body to move/dock; click the head to chat; drag the feet to stretch.
 
 mod presence;
 mod render;
@@ -575,7 +575,7 @@ fn main() {
     app.layer = Some(layer);
 
     eprintln!(
-        "[bb-desktop-body] clay figure up: {}x{} @ margin(L={}, T={}){} — drag the head to move; click to chat; drag the feet to stretch",
+        "[bb-desktop-body] clay figure up: {}x{} @ margin(L={}, T={}){} — drag the body to move/dock; click the head to chat; drag the feet to stretch",
         app.width,
         app.height,
         app.margin_left as i32,

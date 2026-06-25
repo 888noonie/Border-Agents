@@ -491,13 +491,14 @@ pub fn head_rect() -> Rect {
     Rect { x: FIG_CX - HEAD_R, y: HEAD_CY - HEAD_R, w: HEAD_R * 2.0, h: HEAD_R * 2.0 }
 }
 
-/// The bounding box of the whole clay figure (head ∪ torso ∪ arms-at-reach ∪ legs ∪ feet)
-/// in surface-local coordinates, for a given torso stretch. This is what `clamp_margins`
+/// The bounding box of the whole clay figure (head ∪ torso ∪ arms-at-full-reach ∪ legs ∪
+/// feet) in surface-local coordinates, for a given torso stretch. This is what `clamp_margins`
 /// keeps on-screen so the buddy can never be dragged fully off — the head alone is too
-/// small a guarantee now that the whole body is a drag handle.
+/// small a guarantee now that the whole body is a drag handle. Matches the reach used by
+/// `point_in_draggable_body` so the clamp protects every grabbable limb.
 pub fn figure_bbox(body_len: f32) -> Rect {
-    let arm_reach = ARM_UPPER + ARM_FORE; // how far an arm can swing out from the torso
-    let half_w = HEAD_R.max(TORSO_W / 2.0 + arm_reach);
+    let shoulder_x = TORSO_W / 2.0 - 4.0;
+    let half_w = HEAD_R.max(shoulder_x + ARM_UPPER + ARM_FORE + HAND_R + 6.0);
     let top = HEAD_CY - HEAD_R;
     let bottom = TORSO_TOP + body_len + LEG_H + FOOT_H;
     Rect { x: FIG_CX - half_w, y: top, w: half_w * 2.0, h: (bottom - top).max(0.0) }
@@ -517,20 +518,29 @@ pub fn point_in_head(px: f64, py: f64) -> bool {
 /// True if the point is on the clay figure itself — head, torso, arms, or legs. The WHOLE
 /// body is a move handle, not just the head, so a buddy whose head was dragged off-screen can
 /// still be grabbed by a visible arm/torso and pulled back. Spans the torso plus an arm-reach
-/// flank on each side, from the shoulders down past the feet. Callers check the specific
-/// controls (perimeter buttons, torso actions, input, feet-stretch) FIRST, so this only claims
-/// the figure's non-interactive body and the immediate flanks where the arms swing.
+/// flank on each side (arm upper + forearm + hand radius + a comfort margin, so the hand
+/// circles at the swing extremes stay grabbable), from above the shoulders (a raised arm sits
+/// above the torso top) down past the feet. Callers check the specific controls (perimeter
+/// buttons, torso actions, input, feet-stretch) FIRST, so this only claims the figure's
+/// non-interactive body and the flanks where the arms swing.
 pub fn point_in_draggable_body(layout: &Layout, px: f64, py: f64) -> bool {
     if point_in_head(px, py) {
         return true;
     }
     let torso = layout.torso_rect();
-    let reach = ARM_UPPER + ARM_FORE; // how far an arm can swing out from the torso
+    // Full reach of a swung arm: shoulder offset + upper + fore + hand circle + a few px of
+    // grab comfort so the hand tips never fall outside the move handle.
+    let shoulder_x = TORSO_W / 2.0 - 4.0;
+    let reach = shoulder_x + ARM_UPPER + ARM_FORE + HAND_R + 6.0;
+    // The shoulder sits 14px below the torso top; a raised arm can reach above it, so start
+    // the grab rect at the torso top minus the upper-arm length (clamped so it never goes
+    // above the head, which `point_in_head` already owns).
+    let top = (torso.y - ARM_UPPER).max(HEAD_CY - HEAD_R);
     let body = Rect {
-        x: torso.x - reach,
-        y: torso.y,
-        w: torso.w + reach * 2.0,
-        h: torso.h + LEG_H + FOOT_H,
+        x: FIG_CX - reach,
+        y: top,
+        w: reach * 2.0,
+        h: (torso.y + torso.h + LEG_H + FOOT_H - top).max(0.0),
     };
     body.contains(px, py)
 }
@@ -2883,6 +2893,31 @@ mod tests {
             "figure bbox must fit in the SURFACE_W half so the rail never clips it");
         assert_eq!(SURFACE_W + RECEIPT_RAIL_W, 560 + 160,
             "requested surface width at max stretch is SURFACE_W + RECEIPT_RAIL_W");
+    }
+
+    #[test]
+    fn draggable_body_covers_the_hand_circles_at_full_arm_reach() {
+        // The hands are the part a user actually tries to grab to pull a buddy back on-screen,
+        // so the move handle must cover the hand circle at the arm's full swing — not just the
+        // upper+fore limb length. Compute the worst-case hand position the renderer can draw
+        // (shoulder 90°, elbow 0°) and assert the hand center AND its outer edge are grabbable.
+        let layout = Layout::initial();
+        let shoulder_x = TORSO_W / 2.0 - 4.0;
+        let max_hand_offset = shoulder_x + ARM_UPPER + ARM_FORE; // shoulder out, arm straight
+        let hand_right = FIG_CX + max_hand_offset;
+        let hand_left = FIG_CX - max_hand_offset;
+        let shoulder_y = TORSO_TOP + 14.0;
+        // Hand center at full extension (shoulder 90° → arm horizontal): same y as the shoulder.
+        assert!(point_in_draggable_body(&layout, hand_right as f64, shoulder_y as f64),
+            "right hand center at full reach must be grabbable");
+        assert!(point_in_draggable_body(&layout, hand_left as f64, shoulder_y as f64),
+            "left hand center at full reach must be grabbable");
+        // The outer edge of the hand circle (HAND_R past the center) must also be inside the
+        // handle — this is the "grab area on the hands is too small" regression guard.
+        assert!(point_in_draggable_body(&layout, (hand_right + HAND_R) as f64, shoulder_y as f64),
+            "right hand outer edge must be grabbable");
+        assert!(point_in_draggable_body(&layout, (hand_left - HAND_R) as f64, shoulder_y as f64),
+            "left hand outer edge must be grabbable");
     }
 
     #[test]

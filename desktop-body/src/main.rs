@@ -147,6 +147,59 @@ fn buddy_env(buddy: &str, suffix: &str) -> Option<String> {
     std::env::var(buddy_env_key(buddy, suffix)).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
 }
 
+/// Body-local clay palette the settings panel cycles. Pure presentation (AGENTS.md law 7) — the
+/// soul has no say in the buddy's colour. The first entry is the Morph terracotta default.
+const COLOR_SWATCHES: &[([u8; 3], &str)] = &[
+    ([201, 109, 60], "Terracotta"),
+    ([96, 140, 180], "Slate"),
+    ([120, 168, 110], "Sage"),
+    ([176, 116, 180], "Plum"),
+    ([214, 168, 78], "Amber"),
+    ([196, 92, 92], "Rust"),
+];
+
+/// Body-local size presets the settings panel cycles (body_len in px). Mirrors what feet-drag does,
+/// just as discrete steps. Values stay within `render::BODY_LEN_MIN..=BODY_LEN_MAX`.
+const SIZE_PRESETS: &[(f32, &str)] = &[(90.0, "Compact"), (140.0, "Default"), (220.0, "Tall")];
+
+/// Name of the swatch matching `color`, or "Custom" when it came from `BB_COLOR` off-palette.
+fn color_swatch_name(color: [u8; 3]) -> &'static str {
+    COLOR_SWATCHES.iter().find(|(c, _)| *c == color).map(|(_, n)| *n).unwrap_or("Custom")
+}
+
+/// The next swatch after `color` (wrapping); an off-palette colour jumps to the first swatch.
+fn next_color(color: [u8; 3]) -> [u8; 3] {
+    let next = match COLOR_SWATCHES.iter().position(|(c, _)| *c == color) {
+        Some(i) => (i + 1) % COLOR_SWATCHES.len(),
+        None => 0,
+    };
+    COLOR_SWATCHES[next].0
+}
+
+/// Name of the size preset matching `body_len`, or "Custom" (e.g. a feet-drag length).
+fn size_preset_name(body_len: f32) -> &'static str {
+    SIZE_PRESETS.iter().find(|(v, _)| (*v - body_len).abs() < 0.5).map(|(_, n)| *n).unwrap_or("Custom")
+}
+
+/// The next size preset after the one nearest `body_len` (wrapping), so cycling from a custom
+/// feet-drag length lands on a sensible step rather than jumping arbitrarily.
+fn next_size(body_len: f32) -> f32 {
+    let nearest = SIZE_PRESETS
+        .iter()
+        .enumerate()
+        .min_by(|a, b| {
+            (a.1 .0 - body_len).abs().partial_cmp(&(b.1 .0 - body_len).abs()).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    SIZE_PRESETS[(nearest + 1) % SIZE_PRESETS.len()].0
+}
+
+/// Title-cased posture label for display ("work" → "Work").
+fn posture_label(posture: &str) -> String {
+    render::title_case(posture)
+}
+
 /// Pure margin clamp for the figure bounding box: returns the (left, top) margins that keep at
 /// least `keep` pixels of `fig` visible inside a screen of size `(sw, sh)`. Margins may go
 /// negative to reach the left/top edges. When the screen is smaller than `keep`, the valid
@@ -551,6 +604,9 @@ fn main() {
         active_surface: "session".to_string(),
         surfaces: Vec::new(),
         surface_bloom_open: false,
+        picker: None,
+        available_targets: Vec::new(),
+        settings_open: false,
         // The interior control list is the primary surface for perimeter controls now — the
         // external ring is gone, so the labeled in-torso list shows by default. Torso scroll
         // toggles it away to reveal the torso output panel.
@@ -680,6 +736,8 @@ enum PressTarget {
     /// Every perimeter control now lives here: surfaces always, Paste/Review/Edit when chat is
     /// open. Dispatches through `on_perimeter_control` (surfaces) or the chat-control handlers.
     Interior(PerimeterId),
+    /// A row of the body-local settings panel (colour/size editable; posture/buddy read-only).
+    SettingsRow(usize),
     ReceiptRail(usize),
     SurfaceBloom(usize),
     TorsoAction(TorsoAction),
@@ -687,6 +745,85 @@ enum PressTarget {
     Feet,
     Bump,
     Outside,
+}
+
+/// The right-click commandeer picker, reusing the surface-bloom dial wholesale (zero render
+/// changes): only the descriptor list and the selection routing differ. Two phases — first pick
+/// WHICH window (from the driver's `targets_available`), then pick WHAT to do with it (P/M/C).
+/// Held in `App::picker`; `None` means the dial (if open) is the surface switcher instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PickerPhase {
+    /// Choose a window to act on, one pill per `available_targets` entry.
+    Windows,
+    /// Choose Pin / Monitor / Control for the already-chosen `target_id`.
+    Modes { target_id: String, name: String },
+}
+
+/// What selecting a P/M/C entry does. The law-7 boundary in one testable place: `LocalPin` is
+/// pure presentation (unpinning the currently-pinned window — no soul, no gate), while every
+/// other mode (`pin`/`monitor`/`control`) is a screen *action* (retarget / raise / type) that
+/// MUST be requested as the soul-gated `commandeer` effector — the body never touches the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommandeerRoute {
+    /// Local presentation toggle — only used to UNPIN the currently-pinned window.
+    LocalUnpin,
+    /// Soul-gated `commandeer` effector request, carrying the mode the driver will carry out.
+    Gated(&'static str),
+}
+
+/// Classify a P/M/C menu choice for a chosen window. `pin` on the window we are CURRENTLY pinned
+/// to is a local unpin (the driver has no unpin verb); every other choice — including pinning a
+/// different window — routes through the soul-gated `commandeer` effector. Unknown modes route
+/// nowhere (defensive — the menu only ever emits these three ids).
+fn commandeer_route(mode: &str, is_currently_pinned_target: bool) -> Option<CommandeerRoute> {
+    match mode {
+        "pin" if is_currently_pinned_target => Some(CommandeerRoute::LocalUnpin),
+        "pin" => Some(CommandeerRoute::Gated("pin")),
+        "monitor" => Some(CommandeerRoute::Gated("monitor")),
+        "control" => Some(CommandeerRoute::Gated("control")),
+        _ => None,
+    }
+}
+
+/// The picker's first phase as bloom descriptors: one pill per enumerable window. Synthetic
+/// `window:<targetId>` ids the selection handler advances on; label is the title (falling back to
+/// the app id for untitled windows). All `available` — they are all actionable. NOTE: the dial
+/// caps at `SURFACE_BLOOM_MAX_ITEMS` (10 — five per side) pills, so only the first ten windows
+/// show; this is the accepted cost of reusing the dial wholesale (paging is a later refinement).
+fn window_picker_descriptors(targets: &[presence::TargetEntry]) -> Vec<presence::SurfaceDescriptor> {
+    targets
+        .iter()
+        .map(|t| presence::SurfaceDescriptor {
+            id: format!("window:{}", t.target_id),
+            label: if t.title.trim().is_empty() { t.app_id.clone() } else { t.title.clone() },
+            availability: "available".to_string(),
+            kind: "surface".to_string(),
+            effector: None,
+        })
+        .collect()
+}
+
+/// The picker's second phase as bloom descriptors: P/M/C for the chosen window. Synthetic
+/// `commandeer:<mode>` ids the selection handler routes on. Pin reads as a surface-switch pill;
+/// Monitor/Control wear the launcher styling (the "reach / act" affordance), matching that they
+/// hand a gated effect to the soul. The Pin entry shows "Unpin" only when the chosen window is
+/// the one currently pinned.
+fn commandeer_mode_descriptors(chosen_is_pinned: bool) -> Vec<presence::SurfaceDescriptor> {
+    let pin_label = if chosen_is_pinned { "Unpin" } else { "Pin" };
+    [
+        ("commandeer:pin", pin_label, "surface"),
+        ("commandeer:monitor", "Monitor", "launcher"),
+        ("commandeer:control", "Control", "launcher"),
+    ]
+    .into_iter()
+    .map(|(id, label, kind)| presence::SurfaceDescriptor {
+        id: id.to_string(),
+        label: label.to_string(),
+        availability: "available".to_string(),
+        kind: kind.to_string(),
+        effector: None,
+    })
+    .collect()
 }
 
 fn is_surface_bloom_press(target: PressTarget) -> bool {
@@ -818,6 +955,15 @@ struct App {
     surfaces: Vec<presence::SurfaceDescriptor>,
     /// Local hold-to-bloom dial state; selection still emits `surface_request`.
     surface_bloom_open: bool,
+    /// When the open dial is the right-click commandeer picker (not the surface switcher), which
+    /// phase it is in. `None` → the dial shows surfaces. Reuses the bloom render/hit-test path.
+    picker: Option<PickerPhase>,
+    /// Body-local settings panel open over the torso (colour/size editable; posture/buddy shown
+    /// read-only). Reached from the dial's Customize entry. Pure presentation state (law 7).
+    settings_open: bool,
+    /// The full enumerable window list pushed by the driver's `targets_available`, the data behind
+    /// the picker's first phase. The body only renders these as choices (AGENTS.md law 7).
+    available_targets: Vec<presence::TargetEntry>,
     active_posture: String,
     active_provider: Option<String>,
     /// `local | cloud` from the last `surface_active.route.locality`, drives the passport
@@ -1073,7 +1219,23 @@ impl App {
         } else {
             Vec::new()
         };
-        let bloom_order = self.surface_bloom_surfaces();
+        // Body-local settings panel rows (owned values, then borrowed into SettingsRow like the
+        // interior texts above). Editable: colour + size; read-only: posture + buddy (law 7).
+        let settings_data: Vec<(&'static str, String, bool)> = if self.settings_open {
+            vec![
+                ("Colour", color_swatch_name(self.color).to_string(), true),
+                ("Size", size_preset_name(self.body_len).to_string(), true),
+                ("Posture", posture_label(&self.active_posture), false),
+                ("Buddy", self.name_label.clone(), false),
+            ]
+        } else {
+            Vec::new()
+        };
+        let settings_rows: Vec<render::SettingsRow<'_>> = settings_data
+            .iter()
+            .map(|(label, value, editable)| render::SettingsRow { label, value: value.as_str(), editable: *editable })
+            .collect();
+        let bloom_order = self.bloom_descriptors();
         let bloom_items: Vec<render::SurfaceDialItem<'_>> = if self.surface_bloom_open {
             bloom_order
                 .iter()
@@ -1112,6 +1274,7 @@ impl App {
             route_flash,
             receipt_rail: &receipt_rail_items,
             interior_rows: &interior_rows,
+            settings: &settings_rows,
             layout,
             pinned,
             frame: None,
@@ -1405,7 +1568,7 @@ impl App {
             // The external perimeter ring is retired — its controls live inside the torso as
             // interior rows (added below when the interior view is open). No perimeter rects.
             if self.surface_bloom_open {
-                for rect in layout.surface_bloom_rects(self.surface_bloom_surfaces().len()) {
+                for rect in layout.surface_bloom_rects(self.bloom_descriptors().len()) {
                     rects.push(self.offset_rect_for_body(rect).as_i32());
                 }
             }
@@ -1553,6 +1716,16 @@ impl App {
                     self.pinned_offset = None;
                     self.speech = Some("Released the window.".to_string());
                     self.sync_pinned_surface();
+                }
+            }
+            presence::Cue::TargetsAvailable { targets } => {
+                // The driver's enumerated window list — the commandeer picker's first-phase data.
+                // Stored only; the body shows it as choices when the user right-clicks (law 7).
+                self.available_targets = targets;
+                // A window vanishing mid-pick would leave the Windows phase showing a stale list;
+                // the selection handler already cancels cleanly on an unknown id, so just refresh.
+                if matches!(self.picker, Some(PickerPhase::Windows)) {
+                    self.update_input_region();
                 }
             }
         }
@@ -1747,6 +1920,7 @@ impl App {
         }
         if self.surface_bloom_open {
             self.surface_bloom_open = false;
+            self.picker = None;
             self.update_input_region();
         }
         // While tucked, the only live target is the bump; a click on it summons the
@@ -1772,6 +1946,15 @@ impl App {
             }
         } else if render::point_in_head(body_x, y) {
             PressTarget::Head
+        } else if self.settings_open
+            && layout.output_panel_rect().contains(body_x, y)
+            && render::torso_action_at(&layout, body_x, y).is_none()
+        {
+            // The settings panel owns the torso while open: a press hits a settings row, else the
+            // body-drag handle (so the buddy is still movable behind the panel).
+            self.settings_row_at(body_x, y)
+                .map(PressTarget::SettingsRow)
+                .unwrap_or(PressTarget::Body)
         } else if self.interior_open
             && layout.output_panel_rect().contains(body_x, y)
             && render::torso_action_at(&layout, body_x, y).is_none()
@@ -1811,6 +1994,7 @@ impl App {
         let close_bloom = press.dist > CLICK_SLOP && self.surface_bloom_open && !press.bloom_started;
         if close_bloom {
             self.surface_bloom_open = false;
+            self.picker = None;
             press.bloom_started = false;
         }
         if self.pinned_to_target && press.target == PressTarget::Head {
@@ -1875,10 +2059,13 @@ impl App {
             if press.dist <= CLICK_SLOP {
                 if let Some(desc) = self.surface_bloom_descriptor_at(idx) {
                     self.input_focused = false;
+                    // A window pick reopens the dial (Modes phase); everything else closes it.
                     self.activate_bloom_descriptor(&desc);
                     return;
                 }
             }
+            // Closed without a selection — drop any commandeer picker too.
+            self.picker = None;
             self.update_input_region();
             return;
         }
@@ -1906,8 +2093,13 @@ impl App {
         }
 
         if press.secondary {
-            if press.dist <= CLICK_SLOP && matches!(press.target, PressTarget::Head | PressTarget::Outside) {
-                self.toggle_pin();
+            // Right-click opens the commandeer picker: first the window list, then P/M/C for the
+            // chosen window (unpin is local; pin/monitor/control are soul-gated). The dial reuses
+            // the bloom path. With no windows enumerated it falls back to the local pin toggle.
+            if press.dist <= CLICK_SLOP
+                && matches!(press.target, PressTarget::Head | PressTarget::Body | PressTarget::Outside)
+            {
+                self.open_commandeer_picker();
             }
             return;
         }
@@ -1948,6 +2140,10 @@ impl App {
                     other => self.on_perimeter_control(other),
                 }
             }
+            PressTarget::SettingsRow(idx) => {
+                self.input_focused = false;
+                self.on_settings_row(idx);
+            }
             PressTarget::TorsoAction(action) => {
                 self.input_focused = false;
                 self.on_torso_action(action);
@@ -1986,18 +2182,44 @@ impl App {
         rotate_surfaces_for_bloom(self.ordered_surfaces(), &self.active_surface)
     }
 
+    /// The descriptors the open dial currently shows — surfaces, or one of the two commandeer
+    /// picker phases. All the dial machinery (render, rects, hit-test, selection) reads through
+    /// here, so switching menus is just a different list (the reuse-wholesale seam).
+    fn bloom_descriptors(&self) -> Vec<presence::SurfaceDescriptor> {
+        match &self.picker {
+            None => self.surface_bloom_surfaces(),
+            Some(PickerPhase::Windows) => window_picker_descriptors(&self.available_targets),
+            Some(PickerPhase::Modes { target_id, .. }) => {
+                let chosen_is_pinned = self.pinned_to_target
+                    && self.frame_target.as_ref().is_some_and(|f| &f.id == target_id);
+                commandeer_mode_descriptors(chosen_is_pinned)
+            }
+        }
+    }
+
     fn surface_bloom_hit_index(&self, x: f64, y: f64) -> Option<usize> {
-        render::surface_bloom_hit(&self.layout(), self.surface_bloom_surfaces().len(), x, y)
+        render::surface_bloom_hit(&self.layout(), self.bloom_descriptors().len(), x, y)
     }
 
     fn surface_bloom_descriptor_at(&self, idx: usize) -> Option<presence::SurfaceDescriptor> {
-        self.surface_bloom_surfaces().get(idx).cloned()
+        self.bloom_descriptors().get(idx).cloned()
     }
 
     /// Act on a bloom-dial selection: a launcher opens its external tool through the gate; a
     /// plain surface switches the active surface. Centralises the kind-branch both selection
     /// paths (tap-on-pill and drag-release-on-pill) share.
     fn activate_bloom_descriptor(&mut self, desc: &presence::SurfaceDescriptor) {
+        // Picker entries are checked first. A `window:` pick advances the picker to its second
+        // phase (reopening the dial on the same window); a `commandeer:` pick routes the mode
+        // (Monitor/Control wear launcher styling but are gated effector requests, not launches).
+        if let Some(target_id) = desc.id.strip_prefix("window:") {
+            self.enter_commandeer_modes(target_id);
+            return;
+        }
+        if let Some(mode) = desc.id.strip_prefix("commandeer:") {
+            self.on_commandeer_choice(mode);
+            return;
+        }
         if desc.is_launcher() {
             if let Some(effector) = desc.effector.as_deref() {
                 self.request_launch(effector, &desc.label);
@@ -2030,6 +2252,14 @@ impl App {
     }
 
     fn request_surface(&mut self, surface: &str) {
+        // "Customize" is the body-local settings panel, not a soul surface — open it here and never
+        // ask the soul to switch. Reached from the dial's Customize pill and the "+" interior row.
+        if surface == "customize" {
+            self.toggle_settings();
+            return;
+        }
+        // Any other surface switch leaves the settings panel.
+        self.settings_open = false;
         // A launcher surface opens an external tool instead of becoming the active surface —
         // route it through the same reach `action_request` path the bloom dial uses. (Cycling
         // already skips launchers, so this only fires on a direct quick-row tap.)
@@ -2121,6 +2351,8 @@ impl App {
         if let Some(press) = self.press.as_mut() {
             press.bloom_started = true;
         }
+        // Hold-to-bloom always shows the surface switcher, never a leftover commandeer picker.
+        self.picker = None;
         self.surface_bloom_open = true;
         self.speech = None;
         self.update_input_region();
@@ -2193,6 +2425,150 @@ impl App {
         self.update_input_region();
     }
 
+    /// Open the right-click commandeer picker, reusing the bloom dial. First phase lists the
+    /// enumerable windows (`available_targets`). With none enumerated yet, fall back to the local
+    /// pin toggle on the auto-tracked frame (the pre-picker behaviour) so right-click is never a
+    /// dead gesture.
+    fn open_commandeer_picker(&mut self) {
+        if self.available_targets.is_empty() {
+            self.toggle_pin();
+            return;
+        }
+        self.picker = Some(PickerPhase::Windows);
+        self.surface_bloom_open = true;
+        self.input_focused = false;
+        self.speech = None;
+        self.update_input_region();
+    }
+
+    /// Advance the picker from window choice to mode choice for `target_id`, reopening the dial on
+    /// the same window. An unknown id (the list changed mid-pick) cancels cleanly.
+    fn enter_commandeer_modes(&mut self, target_id: &str) {
+        let Some(entry) = self.available_targets.iter().find(|t| t.target_id == target_id) else {
+            self.close_picker();
+            return;
+        };
+        let name = if entry.title.trim().is_empty() { entry.app_id.clone() } else { entry.title.clone() };
+        self.picker = Some(PickerPhase::Modes { target_id: target_id.to_string(), name });
+        self.surface_bloom_open = true;
+        self.input_focused = false;
+        self.update_input_region();
+    }
+
+    /// Route a P/M/C selection across the law-7 boundary for the window chosen in the Modes phase:
+    /// unpinning the currently-pinned window is local; every other mode is requested as the
+    /// soul-gated `commandeer` effector. The dial is already closed by the caller; this clears the
+    /// picker before acting.
+    fn on_commandeer_choice(&mut self, mode: &str) {
+        let Some(PickerPhase::Modes { target_id, name }) = self.picker.take() else {
+            return;
+        };
+        let is_pinned_target = self.pinned_to_target
+            && self.frame_target.as_ref().is_some_and(|f| f.id == target_id);
+        match commandeer_route(mode, is_pinned_target) {
+            Some(CommandeerRoute::LocalUnpin) => self.toggle_pin(),
+            Some(CommandeerRoute::Gated(m)) => self.request_commandeer(&target_id, &name, m),
+            None => {}
+        }
+    }
+
+    /// Ask the soul to run the act-floored `commandeer` effector on the chosen window. The body
+    /// only names the target + mode; the soul authorizes through the action gate and, on `allow`,
+    /// dispatches the world-effect (retarget / raise / type) to the frame driver — the body never
+    /// raises or types into the window itself (AGENTS.md law 7). First press proposes; the soul
+    /// replies `needs_confirmation` (the act floor), cleared by a `/confirm` (or re-selecting).
+    fn request_commandeer(&mut self, target_id: &str, name: &str, mode: &str) {
+        let confirmed = self.pending_effector.as_deref() == Some("commandeer");
+        self.send_to_soul(presence::commandeer_request_json(
+            &self.buddy,
+            mode,
+            target_id,
+            name,
+            confirmed,
+        ));
+        self.speech = Some(if confirmed {
+            format!("Confirming {mode} on {name}…")
+        } else {
+            format!("{mode} {name}?")
+        });
+        self.update_input_region();
+    }
+
+    /// Close the commandeer picker and the dial together.
+    fn close_picker(&mut self) {
+        self.picker = None;
+        self.surface_bloom_open = false;
+        self.update_input_region();
+    }
+
+    // --- body-local settings panel ------------------------------------------------
+
+    /// The settings rows are a fixed set: Colour, Size, Posture, Buddy.
+    fn settings_row_count(&self) -> usize {
+        4
+    }
+
+    /// Which settings row (if any) a torso-panel press lands on, using the shared interior-row
+    /// layout so the panel's hit-test matches exactly what `draw_settings_view` rendered.
+    fn settings_row_at(&self, x: f64, y: f64) -> Option<usize> {
+        self.layout()
+            .interior_rows_for(self.settings_row_count())
+            .into_iter()
+            .enumerate()
+            .find_map(|(i, rect)| rect.contains(x, y).then_some(i))
+    }
+
+    /// Open/close the body-local settings panel (reached from the dial's Customize entry). Opening
+    /// takes the torso over the interior list; closing returns to the interior list.
+    fn toggle_settings(&mut self) {
+        self.settings_open = !self.settings_open;
+        if self.settings_open {
+            self.interior_open = false;
+            self.surface_bloom_open = false;
+            self.picker = None;
+            self.chat_open = false;
+            self.input_focused = false;
+            self.speech = Some("Settings".to_string());
+        } else {
+            // Back to the interior control list (the body's default torso view).
+            self.interior_open = true;
+        }
+        self.update_input_region();
+    }
+
+    /// Act on a settings row tap. Colour and size are genuinely body-local (changed here, now);
+    /// posture and buddy are governance/identity the body only reflects — tapping explains where
+    /// they are actually set, never mutating them locally (AGENTS.md law 7).
+    fn on_settings_row(&mut self, idx: usize) {
+        match idx {
+            0 => self.cycle_color(),
+            1 => self.cycle_size(),
+            2 => {
+                self.speech = Some("Posture is set with the soul (Work / Play / Private).".to_string());
+                self.update_input_region();
+            }
+            3 => {
+                self.speech = Some(format!("Buddy \"{}\" is chosen at launch (BB_BUDDY).", self.name_label));
+                self.update_input_region();
+            }
+            _ => {}
+        }
+    }
+
+    /// Cycle the buddy's clay colour through the local palette. Pure presentation (law 7).
+    fn cycle_color(&mut self) {
+        self.color = next_color(self.color);
+        self.speech = Some(format!("Colour: {}", color_swatch_name(self.color)));
+        self.update_input_region();
+    }
+
+    /// Cycle the body size through the local presets (reuses the feet-drag resize path).
+    fn cycle_size(&mut self) {
+        self.set_body_len(next_size(self.body_len));
+        self.speech = Some(format!("Size: {}", size_preset_name(self.body_len)));
+        self.update_input_region();
+    }
+
     fn on_torso_action(&mut self, action: TorsoAction) {
         match action {
             TorsoAction::Expand => {
@@ -2207,7 +2583,9 @@ impl App {
             },
             TorsoAction::Scroll => {
                 // Toggle the interior view — the perimeter controls fold into a labeled list
-                // inside the torso. Reset the speech bubble so it doesn't overlap the list.
+                // inside the torso. Reset the speech bubble so it doesn't overlap the list. Also
+                // leaves the settings panel, since it shares the torso.
+                self.settings_open = false;
                 self.interior_open = !self.interior_open;
                 if self.interior_open {
                     self.speech = None;
@@ -2269,6 +2647,7 @@ impl App {
         self.input_focused = false;
         self.speech = None;
         self.interior_open = false;
+        self.settings_open = false;
         self.tucked = Some(edge);
         let (sw, sh) = self.screen.unwrap_or((f64::MAX, f64::MAX));
         let (surface_w, surface_h) = self.requested_surface_size();
@@ -2645,6 +3024,42 @@ mod tests {
         assert!(open.iter().any(|(id, _)| *id == PerimeterId::Edit));
     }
 
+    #[test]
+    fn color_cycle_wraps_the_palette_and_names_each_swatch() {
+        // Cycling from the last swatch wraps to the first; every palette entry round-trips through
+        // its name, and the default terracotta is the head of the list.
+        assert_eq!(color_swatch_name(COLOR_SWATCHES[0].0), "Terracotta");
+        let mut c = COLOR_SWATCHES[0].0;
+        for step in 1..=COLOR_SWATCHES.len() {
+            c = next_color(c);
+            let expected = COLOR_SWATCHES[step % COLOR_SWATCHES.len()].0;
+            assert_eq!(c, expected, "cycle step {step} should land on the next swatch");
+        }
+        // A full loop returns to the start.
+        assert_eq!(c, COLOR_SWATCHES[0].0);
+    }
+
+    #[test]
+    fn off_palette_color_reads_as_custom_and_cycles_to_the_first_swatch() {
+        let off = [1, 2, 3];
+        assert_eq!(color_swatch_name(off), "Custom");
+        assert_eq!(next_color(off), COLOR_SWATCHES[0].0);
+    }
+
+    #[test]
+    fn size_cycle_steps_presets_and_snaps_a_custom_length_to_the_next_step() {
+        // From an exact preset, cycling advances to the next preset (wrapping).
+        let mut len = SIZE_PRESETS[0].0;
+        for step in 1..=SIZE_PRESETS.len() {
+            len = next_size(len);
+            assert_eq!(len, SIZE_PRESETS[step % SIZE_PRESETS.len()].0);
+        }
+        // A custom (feet-drag) length names as Custom but cycles off its NEAREST preset, not an
+        // arbitrary jump: 145 is nearest Default(140) → next is Tall(220).
+        assert_eq!(size_preset_name(145.0), "Custom");
+        assert_eq!(next_size(145.0), 220.0);
+    }
+
     fn surf(id: &str, availability: &str) -> presence::SurfaceDescriptor {
         presence::SurfaceDescriptor {
             id: id.to_string(),
@@ -2761,7 +3176,7 @@ mod tests {
     }
 
     #[test]
-    fn bloom_order_rotates_active_surface_to_twelve_oclock() {
+    fn bloom_order_rotates_active_surface_to_the_first_slot() {
         let order = vec![
             surf("session", "available"),
             surf("private_local_chat", "gated"),
@@ -2799,6 +3214,53 @@ mod tests {
         assert!(!should_open_surface_bloom(&PressState { target: PressTarget::Interior(PerimeterId::Review), ..base }, now));
         assert!(!should_open_surface_bloom(&PressState { target: PressTarget::Interior(PerimeterId::Edit), ..base }, now));
         assert!(!should_open_surface_bloom(&PressState { bloom_started: true, ..base }, now));
+    }
+
+    #[test]
+    fn commandeer_route_keeps_unpin_local_and_gates_screen_action() {
+        // The law-7 boundary: unpinning the currently-pinned window is local presentation; every
+        // other choice routes through the soul-gated `commandeer` effector with the driver's mode.
+        assert_eq!(commandeer_route("pin", true), Some(CommandeerRoute::LocalUnpin));
+        // Pin on a window we are NOT currently pinned to retargets — that is a gated driver action.
+        assert_eq!(commandeer_route("pin", false), Some(CommandeerRoute::Gated("pin")));
+        assert_eq!(commandeer_route("monitor", false), Some(CommandeerRoute::Gated("monitor")));
+        assert_eq!(commandeer_route("control", false), Some(CommandeerRoute::Gated("control")));
+        // Monitor/Control are gated regardless of pin state (a screen action is never local).
+        assert_eq!(commandeer_route("control", true), Some(CommandeerRoute::Gated("control")));
+        // An unknown mode routes nowhere (never silently treated as a local or gated effect).
+        assert_eq!(commandeer_route("delete", false), None);
+    }
+
+    #[test]
+    fn window_picker_lists_each_target_with_a_routable_id() {
+        let targets = vec![
+            presence::TargetEntry { target_id: "win-1".into(), title: "Firefox".into(), app_id: "org.mozilla.firefox".into() },
+            // An untitled window falls back to its app id for the label.
+            presence::TargetEntry { target_id: "win-2".into(), title: "  ".into(), app_id: "com.system76.CosmicTerm".into() },
+        ];
+        let pills = window_picker_descriptors(&targets);
+        let ids: Vec<&str> = pills.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(ids, vec!["window:win-1", "window:win-2"]);
+        assert_eq!(pills[0].label, "Firefox");
+        assert_eq!(pills[1].label, "com.system76.CosmicTerm");
+        assert!(pills.iter().all(|d| d.availability == "available" && !d.is_launcher()));
+        // An empty target list yields no pills (right-click falls back to the local pin toggle).
+        assert!(window_picker_descriptors(&[]).is_empty());
+    }
+
+    #[test]
+    fn commandeer_mode_descriptors_list_pmc_and_flip_pin_to_unpin() {
+        // Second phase: P/M/C for the chosen window. Pin reads as a surface pill; Monitor/Control
+        // wear launcher styling (the reach/act affordance). All carry the synthetic routing ids.
+        let modes = commandeer_mode_descriptors(false);
+        let ids: Vec<&str> = modes.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(ids, vec!["commandeer:pin", "commandeer:monitor", "commandeer:control"]);
+        assert_eq!(modes[0].label, "Pin");
+        assert_eq!(modes[0].kind, "surface");
+        assert!(modes[1].is_launcher() && modes[2].is_launcher());
+        assert!(modes.iter().all(|d| d.availability == "available"));
+        // When the chosen window is the one currently pinned, Pin flips to Unpin.
+        assert_eq!(commandeer_mode_descriptors(true)[0].label, "Unpin");
     }
 
     #[test]

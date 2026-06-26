@@ -209,6 +209,82 @@ describe("handleActionRequest", () => {
     expect(receipt.rules.some((r) => r.policy_rule === "action.confirm.risk_floor")).toBe(true);
   });
 
+  // Commandeer is the first window-driving act effector. Its governance is load-bearing:
+  // keystroke injection has no OS consent, so the gate is the only safety boundary. These
+  // lock the contract — granted to forge only, act-floored to confirm, allowed on confirm,
+  // and producing an execution receipt (the world-effect runs in the driver).
+  test("commandeer is granted to forge and confirms before it may run (act floor)", () => {
+    const storage = memoryStorage();
+    const intent = {
+      effectorId: "commandeer" as const,
+      operation: "control",
+      target: { kind: "command" as const, path: "win-42" },
+      summary: "control win-42",
+    };
+    const { receipt } = handleActionRequest({
+      buddy: "crab", // forge's persona id — resolves to the governance grant
+      effectorId: "commandeer",
+      settings: { ...BASE_SETTINGS, allowAction: true },
+      posture: "work",
+      history: ACTION_HISTORY,
+      intent,
+      storage,
+      now: "2026-06-26T12:00:00Z",
+    });
+    expect(receipt.buddy).toBe("forge");
+    expect(receipt.decision).toBe("needs_confirmation");
+    expect(receipt.rules.some((r) => r.policy_rule === "action.blocked.ungranted")).toBe(false);
+    expect(receipt.rules.some((r) => r.policy_rule === "action.confirm.risk_floor")).toBe(true);
+  });
+
+  test("a confirmed commandeer allows and emits an execution receipt", () => {
+    const storage = memoryStorage();
+    const intent = {
+      effectorId: "commandeer" as const,
+      operation: "control",
+      target: { kind: "command" as const, path: "win-42" },
+      summary: "control win-42",
+    };
+    const { receipt, result, execution } = handleActionRequest({
+      buddy: "forge",
+      effectorId: "commandeer",
+      settings: { ...BASE_SETTINGS, allowAction: true },
+      posture: "work",
+      history: ACTION_HISTORY,
+      intent,
+      confirmed: true,
+      executors: { commandeer: () => ({ outcome: "ok", detail: "cue dispatched" }) },
+      storage,
+      now: "2026-06-26T12:00:05Z",
+    });
+    expect(receipt.decision).toBe("allow");
+    expect(execution?.outcome).toBe("ok");
+    expect(result.outcome?.executed).toBe(true);
+    // Authorization receipt + execution receipt both land in the ledger.
+    expect(readReceiptLedger(storage)).toHaveLength(2);
+  });
+
+  test("commandeer is blocked for a buddy that wasn't granted it", () => {
+    const storage = memoryStorage();
+    const { receipt } = handleActionRequest({
+      buddy: "aether", // not granted commandeer
+      effectorId: "commandeer",
+      settings: { ...BASE_SETTINGS, allowAction: true },
+      posture: "work",
+      history: ACTION_HISTORY,
+      intent: {
+        effectorId: "commandeer",
+        operation: "pin",
+        target: { kind: "command", path: "win-1" },
+        summary: "pin win-1",
+      },
+      storage,
+      now: "2026-06-26T12:00:00Z",
+    });
+    expect(receipt.decision).toBe("blocked");
+    expect(receipt.rules.some((r) => r.policy_rule === "action.blocked.ungranted")).toBe(true);
+  });
+
   test("aether placeholder surfaces can block as known-but-unwired effectors", () => {
     const storage = memoryStorage();
     const { receipt } = handleActionRequest({

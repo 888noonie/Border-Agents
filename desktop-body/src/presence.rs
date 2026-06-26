@@ -324,6 +324,32 @@ pub fn action_request_intent_json(
     to_soul("action_request", buddy, fields)
 }
 
+/// The body's right-click P/M/C menu asking the soul to run the act-floored `commandeer`
+/// effector on a tracked native window. AGENTS.md law 7: the body only NAMES the target and
+/// the mode — it never raises or types into the window itself. The soul authorizes through the
+/// action gate and, on `allow`, dispatches the world-effect (activate / type) to the frame
+/// driver. `mode` is `monitor` | `control`; `pin` is a local presentation toggle and is never
+/// routed here. The window rides as a `command` target so the soul lifts it to
+/// `intent.target.path`, which `dispatchCommandeer` reads as the `targetId`. `confirmed` is the
+/// follow-up after the act-floor's `needs_confirmation`.
+pub fn commandeer_request_json(
+    buddy: &str,
+    mode: &str,
+    target_id: &str,
+    name: &str,
+    confirmed: bool,
+) -> String {
+    let summary = format!("{mode} {name}");
+    let intent = ActionIntent {
+        operation: mode,
+        target_kind: "command",
+        target_value: Some(target_id),
+        summary: Some(&summary),
+        payload_digest: None,
+    };
+    action_request_intent_json(buddy, "commandeer", &intent, confirmed, None)
+}
+
 /// The user asked to enter/switch to a governed surface. The body only names the desired
 /// surface; the soul decides whether it is known, granted, wired, and confirmed.
 pub fn surface_request_json(buddy: &str, surface: &str) -> String {
@@ -463,6 +489,22 @@ pub enum Cue {
     TargetAcquired { target_id: String, title: String, app_id: String, bounds: TargetBounds },
     TargetMoved { target_id: String, bounds: TargetBounds },
     TargetLost { target_id: String, reason: TargetLostReason },
+    /// The full enumerated window list the platform driver can act on — the data behind the
+    /// right-click commandeer picker's first phase. Unlike the `Target*` lifecycle (which tracks
+    /// the ONE pinned window), this is the menu of everything available to pin/monitor/control.
+    /// The body only renders it as choices; selecting one emits a soul-gated `commandeer` request
+    /// (AGENTS.md law 7 — the body never raises or types into any of these itself).
+    TargetsAvailable { targets: Vec<TargetEntry> },
+}
+
+/// One selectable window in the commandeer picker, mirroring the driver's `targets_available`
+/// entries. Carries only identity + labels — never geometry or content; the body shows it as a
+/// choice and reports the user's pick, nothing more.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetEntry {
+    pub target_id: String,
+    pub title: String,
+    pub app_id: String,
 }
 
 /// One entry in the `hydrate` surface list. Mirrors the TS `PresenceSurfaceDescriptor`:
@@ -667,6 +709,22 @@ fn parse_bounds(value: &Value) -> Option<TargetBounds> {
     })
 }
 
+/// Parse the `targets_available` window list. Each entry needs a non-empty `targetId` and string
+/// `title`/`appId` (which may be empty — an untitled window still picks). A present-but-malformed
+/// list drops the whole cue (`?`), mirroring the strict-guard discipline of the other parsers.
+fn parse_target_entries(value: &Value) -> Option<Vec<TargetEntry>> {
+    let arr = value.as_array()?;
+    let mut out = Vec::with_capacity(arr.len());
+    for item in arr {
+        out.push(TargetEntry {
+            target_id: nonempty(item.get("targetId"))?,
+            title: item.get("title")?.as_str()?.to_string(),
+            app_id: item.get("appId")?.as_str()?.to_string(),
+        });
+    }
+    Some(out)
+}
+
 fn parse_lost_reason(value: &str) -> Option<TargetLostReason> {
     match value {
         "closed" => Some(TargetLostReason::Closed),
@@ -770,6 +828,9 @@ pub fn parse_to_body(text: &str) -> Option<ToBody> {
         "target_lost" => Cue::TargetLost {
             target_id: nonempty(v.get("targetId"))?,
             reason: parse_lost_reason(v.get("reason")?.as_str()?)?,
+        },
+        "targets_available" => Cue::TargetsAvailable {
+            targets: parse_target_entries(v.get("targets")?)?,
         },
         // attention (reserved) and all to-soul kinds are not body cues.
         _ => return None,
@@ -938,6 +999,33 @@ mod tests {
             lost.cue,
             Cue::TargetLost { target_id: "win-42".into(), reason: TargetLostReason::Closed }
         );
+    }
+
+    #[test]
+    fn parses_targets_available_window_list() {
+        // The driver's enumerated window list (the picker's first-phase data). Matches the wire
+        // shape emitted by frame_driver's emit_targets_available.
+        let raw = r#"{"protocol":"presence","v":0,"kind":"targets_available","buddy":"forge","ts":7,"targets":[{"targetId":"win-1","title":"Firefox","appId":"org.mozilla.firefox"},{"targetId":"win-2","title":"","appId":"com.system76.CosmicTerm"}]}"#;
+        match parse_to_body(raw).unwrap().cue {
+            Cue::TargetsAvailable { targets } => {
+                assert_eq!(targets.len(), 2);
+                assert_eq!(targets[0], TargetEntry {
+                    target_id: "win-1".into(),
+                    title: "Firefox".into(),
+                    app_id: "org.mozilla.firefox".into(),
+                });
+                // An untitled window is still a valid pick (empty title allowed).
+                assert_eq!(targets[1].target_id, "win-2");
+                assert_eq!(targets[1].title, "");
+            }
+            other => panic!("expected targets_available, got {other:?}"),
+        }
+        // An empty list is valid (no windows to act on yet).
+        let empty = r#"{"protocol":"presence","v":0,"kind":"targets_available","buddy":"forge","ts":7,"targets":[]}"#;
+        assert!(matches!(parse_to_body(empty).unwrap().cue, Cue::TargetsAvailable { targets } if targets.is_empty()));
+        // A missing targetId drops the whole cue (strict guard).
+        let bad = r#"{"protocol":"presence","v":0,"kind":"targets_available","buddy":"forge","ts":7,"targets":[{"targetId":"","title":"x","appId":"y"}]}"#;
+        assert!(parse_to_body(bad).is_none());
     }
 
     #[test]
@@ -1136,6 +1224,34 @@ mod tests {
         assert!(g["intent"]["target"].get("value").is_none(), "value omitted when None");
         assert_eq!(g["intent"]["payloadDigest"], "sha256:abc");
         assert!(g["intent"].get("summary").is_none());
+    }
+
+    #[test]
+    fn commandeer_request_builder_emits_gated_command_intent() {
+        // Monitor: a `commandeer` action_request carrying the window as a `command` target and the
+        // mode as the operation — exactly what the soul lifts to intent.target.path + operation
+        // for dispatchCommandeer. No `text`: control-text is the soul's to add, never the body's.
+        let m: Value =
+            serde_json::from_str(&commandeer_request_json("forge", "monitor", "win-42", "Firefox", false))
+                .unwrap();
+        assert_eq!(m["protocol"], "presence");
+        assert_eq!(m["kind"], "action_request");
+        assert_eq!(m["buddy"], "forge");
+        assert_eq!(m["effector"], "commandeer");
+        assert_eq!(m["intent"]["operation"], "monitor");
+        assert_eq!(m["intent"]["target"]["kind"], "command");
+        assert_eq!(m["intent"]["target"]["value"], "win-42");
+        assert_eq!(m["intent"]["summary"], "monitor Firefox");
+        assert!(m.get("confirmed").is_none(), "confirmed omitted when false");
+        assert!(m["intent"].get("payloadDigest").is_none());
+
+        // Control confirm follow-up carries confirmed:true and the same command target.
+        let c: Value =
+            serde_json::from_str(&commandeer_request_json("forge", "control", "win-7", "Editor", true))
+                .unwrap();
+        assert_eq!(c["confirmed"], true);
+        assert_eq!(c["intent"]["operation"], "control");
+        assert_eq!(c["intent"]["target"]["value"], "win-7");
     }
 
     #[test]

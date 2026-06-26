@@ -66,7 +66,9 @@ describe("buddy manifest", () => {
   it("gates repo_edit on the stricter act lane, never the reach lane", () => {
     expect(EFFECTOR_SPECS.repo_edit.wired).toBe(true);
     expect(isWired("repo_edit")).toBe(true);
-    expect(GATED_WIRED_ACT_EFFECTORS.map((e) => e.id)).toEqual(["repo_edit"]);
+    expect(EFFECTOR_SPECS.commandeer.wired).toBe(true);
+    expect(EFFECTOR_SPECS.commandeer.kind).toBe("act");
+    expect(GATED_WIRED_ACT_EFFECTORS.map((e) => e.id)).toEqual(["repo_edit", "commandeer"]);
     // Every act-lane entry is an act effector declaring the stricter membrane guarantees,
     // and never also sits in the reach lane.
     for (const entry of GATED_WIRED_ACT_EFFECTORS) {
@@ -81,7 +83,7 @@ describe("buddy manifest", () => {
     const wired = Object.values(EFFECTOR_SPECS).filter((s) => s.wired).map((s) => s.id).sort();
     expect([...GATED_WIRED_EFFECTORS].sort()).toEqual(wired);
     expect([...GATED_WIRED_EFFECTORS].sort()).toEqual(
-      ["local_chat", "receipt_review", "repo_edit", "open_vscode", "open_cursor", "open_claude_code", "open_agent_zero", "open_terminal"].sort(),
+      ["local_chat", "receipt_review", "repo_edit", "commandeer", "open_vscode", "open_cursor", "open_claude_code", "open_agent_zero", "open_terminal"].sort(),
     );
   });
 

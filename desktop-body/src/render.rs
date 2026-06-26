@@ -79,8 +79,13 @@ const PERIMETER_SIZE: f32 = 20.0;
 const PERIMETER_GAP: f32 = 6.0;
 const SURFACE_BLOOM_W: f32 = 116.0;
 const SURFACE_BLOOM_H: f32 = 24.0;
-const SURFACE_BLOOM_R: f32 = 112.0;
-const SURFACE_BLOOM_MAX_ITEMS: usize = 6;
+/// Vertical gap between stacked pills within a column.
+const SURFACE_BLOOM_GAP: f32 = 8.0;
+/// Horizontal gap between the torso edge and a pill column — keeps the dial OUTSIDE the torso.
+const SURFACE_BLOOM_SIDE_GAP: f32 = 12.0;
+/// The dial blooms into two vertical columns flanking the torso, up to five pills a side.
+const SURFACE_BLOOM_PER_SIDE: usize = 5;
+const SURFACE_BLOOM_MAX_ITEMS: usize = SURFACE_BLOOM_PER_SIDE * 2;
 const RECEIPT_RAIL_PAD: f32 = 8.0;
 const RECEIPT_RAIL_CARD_H: f32 = 28.0;
 const RECEIPT_RAIL_CARD_GAP: f32 = 5.0;
@@ -231,9 +236,8 @@ impl Layout {
     }
 
     pub fn surface_bloom_rects(&self, count: usize) -> Vec<Rect> {
-        debug_assert!(count <= SURFACE_BLOOM_MAX_ITEMS, "surface bloom supports six visible slots");
-        let torso = self.torso_rect();
-        surface_bloom_rects_from_center(torso.x + torso.w / 2.0, torso.y + torso.h / 2.0, count.min(SURFACE_BLOOM_MAX_ITEMS))
+        debug_assert!(count <= SURFACE_BLOOM_MAX_ITEMS, "surface bloom supports ten visible slots (five per side)");
+        surface_bloom_rects_two_columns(self.torso_rect(), count.min(SURFACE_BLOOM_MAX_ITEMS))
     }
 
     /// The interior-view rows: the perimeter controls re-laid-out as a vertical list INSIDE
@@ -817,6 +821,16 @@ pub struct InteriorRow<'a> {
     pub dim: bool,
 }
 
+/// One row of the body-local settings panel: a `label` and its current `value`. `editable` rows
+/// (colour, size — genuinely body-local presentation prefs) wear a tap-chip; read-only rows
+/// (posture, buddy — governance/identity the body only *reflects*, AGENTS.md law 7) render plainer
+/// so the user can see at a glance what they can change here versus only view.
+pub struct SettingsRow<'a> {
+    pub label: &'a str,
+    pub value: &'a str,
+    pub editable: bool,
+}
+
 #[derive(Clone, Copy)]
 pub struct ReceiptRailItem<'a> {
     pub glyph: &'a str,
@@ -878,6 +892,9 @@ pub struct BodyView<'a> {
     /// press inside the torso hits a row instead of the body-drag handle. Each item carries
     /// the control's glyph + its surface label + the dim flag (for unwired quick surfaces).
     pub interior_rows: &'a [InteriorRow<'a>],
+    /// Body-local settings panel rows. Non-empty only while the settings panel is open, in which
+    /// case it takes the torso over the output/interior view.
+    pub settings: &'a [SettingsRow<'a>],
     pub layout: Layout,
     pub pinned: Option<PinnedLayout>,
     pub frame: Option<FrameLayout>,
@@ -1016,7 +1033,9 @@ fn draw_body_content(
 ) {
     draw_figure(pixmap, &view.layout, view.color, bob, pose, view.route_health, view.route_flash);
     if let Some(font) = font {
-        if view.interior_rows.is_empty() {
+        if !view.settings.is_empty() {
+            draw_settings_view(pixmap, font, &view.layout, view.settings, view.color);
+        } else if view.interior_rows.is_empty() {
             draw_torso_output(pixmap, font, &view.layout, &view.torso_output);
         } else {
             draw_interior_view(pixmap, font, &view.layout, view.interior_rows, view.color);
@@ -1656,19 +1675,104 @@ fn draw_interior_view(
     }
 }
 
-fn surface_bloom_rects_from_center(cx: f32, cy: f32, count: usize) -> Vec<Rect> {
-    const ANGLES_DEG: [f32; SURFACE_BLOOM_MAX_ITEMS] = [-90.0, -30.0, 30.0, 90.0, 150.0, 210.0];
-    ANGLES_DEG
-        .iter()
-        .take(count.min(SURFACE_BLOOM_MAX_ITEMS))
-        .map(|deg| {
-            let rad = deg.to_radians();
-            Rect {
-                x: cx + rad.cos() * SURFACE_BLOOM_R - SURFACE_BLOOM_W / 2.0,
-                y: cy + rad.sin() * SURFACE_BLOOM_R - SURFACE_BLOOM_H / 2.0,
-                w: SURFACE_BLOOM_W,
-                h: SURFACE_BLOOM_H,
-            }
+/// The body-local settings panel: the same recessed torso card as the interior view, but each row
+/// is `label …… value`. Editable rows (colour, size) wear a bright tap-chip around the value;
+/// read-only rows (posture, buddy) render the value dimmed and chip-less, so the user can tell at a
+/// glance what they can change here versus only see (AGENTS.md law 7 made visible).
+fn draw_settings_view(
+    pixmap: &mut Pixmap,
+    font: &Font,
+    layout: &Layout,
+    rows: &[SettingsRow],
+    color: [u8; 3],
+) {
+    let row_rects = layout.interior_rows_for(rows.len());
+    if row_rects.is_empty() {
+        return;
+    }
+    let first = row_rects[0];
+    let last = row_rects[row_rects.len() - 1];
+    let card = Rect {
+        x: first.x - 4.0,
+        y: first.y - 4.0,
+        w: first.w + 8.0,
+        h: (last.y + last.h) - first.y + 8.0,
+    };
+    draw_round_rect(pixmap, card, rgba(shade(color, 0.28), 240));
+    if let Some(path) = round_rect_path(card, 9.0) {
+        let mut stroke = Stroke::default();
+        stroke.width = 1.0;
+        pixmap.stroke_path(&path, &solid(rgba(shade(color, 0.5), 200)), &stroke, Transform::identity(), None);
+    }
+
+    let label_ink = lighten(color, 0.86);
+    let dim_ink = lighten(color, 0.5);
+    for (i, (row, rect)) in rows.iter().zip(row_rects.iter()).enumerate() {
+        let rect = *rect;
+        if i > 0 {
+            fill_round_rect(
+                pixmap,
+                Rect { x: rect.x + 5.0, y: rect.y - 1.0, w: rect.w - 10.0, h: 1.0 },
+                0.5,
+                &solid(rgba(shade(color, 0.55), 38)),
+            );
+        }
+        let text_px = (rect.h * 0.55).clamp(8.0, 12.0);
+        let baseline = rect.y + rect.h / 2.0 + text_px * 0.34;
+        // Label, left.
+        draw_line(pixmap, font, row.label, rect.x + 8.0, baseline, text_px, label_ink);
+        // Value, right — chipped + bright when editable, plain + dim when read-only.
+        let value = fit_line(font, row.value, text_px, rect.w * 0.6);
+        let vw = measure(font, &value, text_px);
+        if row.editable {
+            let chip_h = (text_px + 6.0).min(rect.h - 2.0);
+            let chip = Rect {
+                x: rect.x + rect.w - vw - 18.0,
+                y: rect.y + (rect.h - chip_h) / 2.0,
+                w: vw + 12.0,
+                h: chip_h,
+            };
+            draw_round_rect(pixmap, chip, rgba(lighten(color, 0.62), 235));
+            draw_line(pixmap, font, &value, chip.x + 6.0, baseline, text_px, shade(color, 0.34));
+        } else {
+            draw_line(pixmap, font, &value, rect.x + rect.w - vw - 8.0, baseline, text_px, dim_ink);
+        }
+    }
+}
+
+/// Lay the bloom pills out as two vertical columns flanking the torso — the dial renders
+/// ENTIRELY OUTSIDE the torso so it never overdraws the interior list. Items fill the left column
+/// top→bottom (the first ceil(count/2)) then the right column top→bottom; each column is centered
+/// on the torso's vertical midline so the two sides stay balanced. Up to five pills a side (ten
+/// total). Returned in item order, so the hit-test/selection index maps straight to a slot.
+fn surface_bloom_rects_two_columns(torso: Rect, count: usize) -> Vec<Rect> {
+    if count == 0 {
+        return Vec::new();
+    }
+    let left_n = (count + 1) / 2;
+    let right_n = count - left_n;
+    let cy = torso.y + torso.h / 2.0;
+    let left_x = torso.x - SURFACE_BLOOM_SIDE_GAP - SURFACE_BLOOM_W;
+    let right_x = torso.x + torso.w + SURFACE_BLOOM_SIDE_GAP;
+    let mut rects = Vec::with_capacity(count);
+    rects.extend(surface_bloom_column(left_x, cy, left_n));
+    rects.extend(surface_bloom_column(right_x, cy, right_n));
+    rects
+}
+
+/// One vertical column of `n` pills at `x`, stacked with `SURFACE_BLOOM_GAP` and centered on `cy`.
+fn surface_bloom_column(x: f32, cy: f32, n: usize) -> Vec<Rect> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let total_h = n as f32 * SURFACE_BLOOM_H + (n as f32 - 1.0) * SURFACE_BLOOM_GAP;
+    let top = cy - total_h / 2.0;
+    (0..n)
+        .map(|i| Rect {
+            x,
+            y: top + i as f32 * (SURFACE_BLOOM_H + SURFACE_BLOOM_GAP),
+            w: SURFACE_BLOOM_W,
+            h: SURFACE_BLOOM_H,
         })
         .collect()
 }
@@ -1691,7 +1795,9 @@ fn draw_surface_bloom(pixmap: &mut Pixmap, font: &Font, layout: &Layout, items: 
         let bg = if item.active {
             Color::from_rgba8(28, 42, 58, 238)
         } else if unwired {
-            Color::from_rgba8(248, 250, 252, 112)
+            // Opaque enough that the muted label + "soon" tag read clearly over the dark desktop —
+            // the faint near-transparent wash made the pill look like an empty grey slot.
+            Color::from_rgba8(232, 235, 240, 214)
         } else if launcher {
             // Launchers wear a faint warm wash so they read as "open a tool", not "switch surface".
             Color::from_rgba8(255, 244, 224, 236)
@@ -1702,27 +1808,45 @@ fn draw_surface_bloom(pixmap: &mut Pixmap, font: &Font, layout: &Layout, items: 
         if let Some(path) = round_rect_path(rect, 8.0) {
             let mut stroke = Stroke::default();
             stroke.width = if item.active { 2.0 } else { 1.0 };
-            let edge = if item.active { 190 } else if unwired { 54 } else if launcher { 150 } else { 118 };
+            let edge = if item.active { 190 } else if unwired { 96 } else if launcher { 150 } else { 118 };
             pixmap.stroke_path(&path, &solid(Color::from_rgba8(0, 0, 0, edge)), &stroke, Transform::identity(), None);
         }
         // Launcher pills lead with a `→` glyph (the reach metaphor: hand off to an external
         // tool). Surface-switch pills stay label-only, so the two kinds are distinct at a glance.
+        let baseline = rect.y + 15.0;
         let label_x;
         let label_text;
         if launcher {
             let glyph = "→";
             let gx = rect.x + 8.0;
-            draw_line(pixmap, font, glyph, gx, rect.y + 15.0, 9.5, fg_for_bloom(item.active, unwired));
+            draw_line(pixmap, font, glyph, gx, baseline, 9.5, fg_for_bloom(item.active, unwired));
             label_x = gx + measure(font, glyph, 9.5) + 3.0;
             label_text = item.label;
         } else {
             label_text = item.label;
             label_x = rect.x + 4.0;
         }
-        let label = fit_line(font, label_text, 9.5, rect.x + rect.w - label_x - 6.0);
+        // An unwired surface isn't actionable yet — say so with a right-aligned "soon" tag (mirrors
+        // the interior list) so the pill never reads as an empty grey slot, and reserve its width.
+        let mut right_budget = rect.x + rect.w - 6.0;
+        if unwired {
+            let tag = "soon";
+            let tag_px = 8.0;
+            let tw = measure(font, tag, tag_px);
+            draw_line(pixmap, font, tag, right_budget - tw, baseline, tag_px, [120, 128, 142]);
+            right_budget -= tw + 6.0;
+        }
+        let label = fit_line(font, label_text, 9.5, (right_budget - label_x).max(0.0));
         let tw = measure(font, &label, 9.5);
         let fg = fg_for_bloom(item.active, unwired);
-        draw_line(pixmap, font, &label, label_x + (rect.x + rect.w - 6.0 - label_x - tw).max(0.0) / 2.0, rect.y + 15.0, 9.5, fg);
+        // Left-align the label when a "soon" tag shares the row (so they can't collide); otherwise
+        // centre it in the remaining budget as before.
+        let label_draw_x = if unwired {
+            label_x
+        } else {
+            label_x + (right_budget - label_x - tw).max(0.0) / 2.0
+        };
+        draw_line(pixmap, font, &label, label_draw_x, baseline, 9.5, fg);
     }
 }
 
@@ -1730,7 +1854,8 @@ fn fg_for_bloom(active: bool, unwired: bool) -> [u8; 3] {
     if active {
         [238, 246, 255]
     } else if unwired {
-        [118, 126, 140]
+        // Muted slate — clearly legible on the opaque unwired pill, still visibly subdued.
+        [92, 100, 114]
     } else {
         [22, 30, 42]
     }
@@ -3229,6 +3354,7 @@ mod tests {
                 route_flash: false,
                 receipt_rail: &[],
                 interior_rows: interior,
+                settings: &[],
                 layout,
                 pinned: None,
                 frame: None,
@@ -3325,6 +3451,7 @@ mod tests {
                 route_flash: false,
                 receipt_rail: &[],
                 interior_rows: &interior,
+                settings: &[],
                 layout,
                 pinned: None,
                 frame: None,
@@ -3369,36 +3496,60 @@ mod tests {
     }
 
     #[test]
-    fn surface_bloom_slots_follow_clock_positions() {
+    fn surface_bloom_blooms_two_columns_outside_the_torso() {
         let layout = Layout::initial();
         let torso = layout.torso_rect();
-        let center = (torso.x + torso.w / 2.0, torso.y + torso.h / 2.0);
-        let rects = layout.surface_bloom_rects(6);
+        let center_y = torso.y + torso.h / 2.0;
 
-        assert_eq!(rects.len(), 6);
-        let mid = |rect: Rect| (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
-        let slot0 = mid(rects[0]);
-        let slot1 = mid(rects[1]);
-        let slot3 = mid(rects[3]);
-        let slot5 = mid(rects[5]);
+        // Ten items split five-a-side into two columns flanking the torso.
+        let rects = layout.surface_bloom_rects(10);
+        assert_eq!(rects.len(), 10);
+        let (left, right) = rects.split_at(5);
 
-        assert!((slot0.0 - center.0).abs() < 0.5, "active slot should be centered at 12");
-        assert!(slot0.1 < center.1, "active slot should sit above the torso center");
-        assert!(slot1.0 > center.0 && slot1.1 < center.1, "next slot should sit at 2 o'clock");
-        assert!(slot5.0 < center.0 && slot5.1 < center.1, "previous slot should sit at 10 o'clock");
-        assert!(slot3.1 > center.1, "opposite slot should sit at 6 o'clock");
+        // The left column sits entirely left of the torso; the right column entirely right of it —
+        // so the torso (and its interior list) stays readable while the dial is active.
+        for r in left {
+            assert!(r.x + r.w <= torso.x, "left column must render outside (left of) the torso");
+        }
+        for r in right {
+            assert!(r.x >= torso.x + torso.w, "right column must render outside (right of) the torso");
+        }
+
+        // Each column is evenly spaced (constant pitch) and vertically centered on the torso.
+        for col in [left, right] {
+            let pitch = col[1].y - col[0].y;
+            assert!((pitch - (SURFACE_BLOOM_H + SURFACE_BLOOM_GAP)).abs() < 0.01, "pills evenly spaced");
+            for win in col.windows(2) {
+                assert!((win[1].y - win[0].y - pitch).abs() < 0.01, "even spacing down the column");
+            }
+            let col_mid = (col.first().unwrap().y + col.last().unwrap().y + SURFACE_BLOOM_H) / 2.0;
+            assert!((col_mid - center_y).abs() < 0.5, "column centered on the torso midline");
+        }
+    }
+
+    #[test]
+    fn surface_bloom_balances_an_odd_count_across_the_two_columns() {
+        let layout = Layout::initial();
+        // Five items → three on the left (ceil), two on the right (floor).
+        let rects = layout.surface_bloom_rects(5);
+        assert_eq!(rects.len(), 5);
+        let torso = layout.torso_rect();
+        let left = rects.iter().filter(|r| r.x + r.w <= torso.x).count();
+        let right = rects.iter().filter(|r| r.x >= torso.x + torso.w).count();
+        assert_eq!((left, right), (3, 2));
     }
 
     #[test]
     fn surface_bloom_hit_maps_each_pill_to_its_index() {
         let layout = Layout::initial();
-        let rects = layout.surface_bloom_rects(6);
+        // Exercise the full two-column spread.
+        let rects = layout.surface_bloom_rects(10);
         for (idx, rect) in rects.iter().enumerate() {
             let x = (rect.x + rect.w / 2.0) as f64;
             let y = (rect.y + rect.h / 2.0) as f64;
-            assert_eq!(surface_bloom_hit(&layout, 6, x, y), Some(idx));
+            assert_eq!(surface_bloom_hit(&layout, 10, x, y), Some(idx));
         }
-        assert_eq!(surface_bloom_hit(&layout, 6, 1.0, 1.0), None);
+        assert_eq!(surface_bloom_hit(&layout, 10, 1.0, 1.0), None);
     }
 
     #[test]
@@ -3479,6 +3630,48 @@ mod tests {
         let lp = count_dark_in_rect(&launcher_px, (pill_rect.x + 6.0) as i32, (pill_rect.y + 3.0) as i32, 22, 18);
         let sp = count_dark_in_rect(&surface_px, (pill_rect.x + 6.0) as i32, (pill_rect.y + 3.0) as i32, 22, 18);
         assert!(lp > sp, "launcher pill should draw a leading glyph the surface pill lacks ({} vs {} dark px)", lp, sp);
+    }
+
+    #[test]
+    fn unwired_bloom_pill_renders_label_and_soon_tag_not_blank() {
+        // The regression guard for the empty-grey-slot bug: an unwired pill must draw its label
+        // AND a right-aligned "soon" tag, so it never reads as a blank pill. The unwired ink is
+        // muted slate (sum ≈ 306–390), well above count_dark's near-black threshold but clearly
+        // darker than the opaque pill fill (sum ≈ 707), so count pixels below a mid threshold.
+        let Some(font) = load_font() else { return };
+        let layout = Layout::initial();
+        let rect = layout.surface_bloom_rects(1)[0];
+
+        let item = SurfaceDialItem { label: "Live Hermes", availability: "unwired", active: false, kind: "surface" };
+        let mut px = Pixmap::new(SURFACE_W, layout.surface_h()).unwrap();
+        draw_surface_bloom(&mut px, &font, &layout, &[item]);
+
+        let count_ink = |x0: i32, w: i32| -> usize {
+            let pw = px.width() as i32;
+            let data = px.data();
+            let mut n = 0;
+            for dy in 0..18 {
+                for dx in 0..w {
+                    let (x, y) = (x0 + dx, rect.y as i32 + 3 + dy);
+                    if x < 0 || y < 0 || x >= pw || y >= px.height() as i32 {
+                        continue;
+                    }
+                    let i = ((y * pw + x) * 4) as usize;
+                    if data[i + 3] > 80
+                        && (data[i] as i32 + data[i + 1] as i32 + data[i + 2] as i32) < 560
+                    {
+                        n += 1;
+                    }
+                }
+            }
+            n
+        };
+        // Label ink on the left of the pill.
+        let label_ink = count_ink(rect.x as i32 + 4, 60);
+        assert!(label_ink > 0, "unwired pill must draw its label, not a blank slot ({label_ink} ink px)");
+        // "soon" tag ink in the right band of the pill.
+        let tag_ink = count_ink((rect.x + rect.w) as i32 - 34, 30);
+        assert!(tag_ink > 0, "unwired pill must draw a 'soon' tag ({tag_ink} ink px)");
     }
 
     fn sample_argb(p: &Pixmap, x: i32, y: i32) -> (u8, u8, u8, u8) {
@@ -3643,6 +3836,7 @@ mod tests {
             route_flash: false,
             receipt_rail: &[],
             interior_rows: &[],
+            settings: &[],
             layout: Layout::initial(),
             pinned: None,
             frame: Some(frame),

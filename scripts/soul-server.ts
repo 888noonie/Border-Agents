@@ -120,7 +120,17 @@ const EXECUTORS = {
   // "install the command" receipt rather than failing silently.
   open_claude_code: createLiveLauncherExecutor({ command: process.env.BB_CLAUDE_CODE ?? "claude", bareCommand: true }),
   open_agent_zero: createLiveLauncherExecutor({ command: process.env.BB_AGENT_ZERO ?? "a0", bareCommand: true }),
+  // Commandeer — an `act` effector whose world-effect (raise/type a native window) happens
+  // OUT of this process, in the frame driver. The gate authorizes it here; on `allow` the soul
+  // dispatches a `commandeer` cue to the driver (see dispatchCommandeer). The executor only
+  // records that the cue was sent — the driver is fire-and-forget (a future driver→soul ack
+  // would tighten this into a real success/failure outcome).
+  commandeer: () => ({ outcome: "ok" as const, detail: "commandeer cue dispatched to the frame driver" }),
 };
+
+// Control mode types this benign marker (NO trailing newline, so nothing executes) as the
+// proof-of-drive. The soul owns what is typed (law 7); free-text control is a later increment.
+const COMMANDEER_CONTROL_TEXT = "border-agents control ok";
 
 // Launcher reach effectors that participate in confirm-once-per-session (see sessionConfirmed).
 // Single source: the manifest's LAUNCHER_REACH_EFFECTORS.
@@ -169,7 +179,10 @@ const ACTION_BACKING: SessionChatLine[] = [{ role: "assistant", text: "Reviewed 
 /** Settings for the gate: the profile's defaults plus `allowAction` so a backed turn can carry
  * may_use_for_action. Per-call (not cached) so a future per-buddy posture stays straightforward. */
 function gateSettings(buddy: string, effectorId: string) {
-  return { ...createDefaultBuddySettings(profileFor(buddy)), allowAction: effectorId === "repo_edit" };
+  // `act` effectors need trusted action-backing in the frame before the gate will allow them.
+  // repo_edit and commandeer are the wired act effectors today.
+  const allowAction = effectorId === "repo_edit" || effectorId === "commandeer";
+  return { ...createDefaultBuddySettings(profileFor(buddy)), allowAction };
 }
 
 /** Build the typed intent for a `/review <effector> <target>` command. Defaults to a repo_path
@@ -281,6 +294,12 @@ function authorizeAndReply(
   // designed twin/fallback; they agree, so there is no flicker, never a smile that outruns a block.
   socket.send(JSON.stringify(presence.express(buddy, decisionEmotion(receipt.decision))));
   socket.send(JSON.stringify(result));
+  // On an authorized commandeer, the world-effect lives in the frame driver: dispatch the
+  // gated cue to it now. This is the only place a commandeer reaches the driver, so it covers
+  // both the direct action_request allow and the /confirm round-trip (both pass through here).
+  if (effectorId === "commandeer" && receipt.decision === "allow" && intent) {
+    dispatchCommandeer(socket, buddy, intent);
+  }
   log("authorized", {
     buddy,
     effector: effectorId,
@@ -290,6 +309,32 @@ function authorizeAndReply(
     execution: execution ? `${execution.outcome}${execution.executor_called ? "" : " (skipped)"}` : "none",
   });
   return receipt;
+}
+
+/**
+ * Send the gated `commandeer` cue to the frame driver. The gate has already authorized this
+ * effect (allow). The driver is another client, so we relay to everyone-but-the-requesting-body;
+ * the driver picks it up and carries out the mechanism (activate / type). The intent carries the
+ * window in `target.path` and the mode in `operation` (pin | monitor | control). AGENTS.md law 7:
+ * the soul decides + dispatches; the driver is only the mechanism, with no OS consent of its own.
+ */
+function dispatchCommandeer(socket: WebSocket, buddy: string, intent: ActionIntent) {
+  const targetId = intent.target.path;
+  const mode = intent.operation;
+  const cue: Record<string, unknown> = {
+    protocol: PRESENCE_PROTOCOL,
+    v: 0,
+    kind: "commandeer",
+    buddy,
+    ts: Date.now(),
+    targetId,
+    mode,
+  };
+  if (mode === "control") {
+    cue.text = COMMANDEER_CONTROL_TEXT;
+  }
+  relayPresenceCue(socket, cue);
+  log("commandeer dispatched to driver", { buddy, targetId, mode });
 }
 
 function providerLabel(provider: string | undefined): string | undefined {
@@ -465,7 +510,13 @@ const wss = new WebSocketServer({ server, path: PATH });
 const clients = new Set<WebSocket>();
 
 // Frame driver target lifecycle cues — relay to bodies, same as gateway-dev.mjs.
-const TO_BODY_RELAY_KINDS = new Set(["target_acquired", "target_moved", "target_lost"]);
+// `targets_available` is the enumerated window list the body's pin-picker renders.
+const TO_BODY_RELAY_KINDS = new Set([
+  "target_acquired",
+  "target_moved",
+  "target_lost",
+  "targets_available",
+]);
 
 function relayPresenceCue(sender: WebSocket, message: Record<string, unknown>) {
   const json = JSON.stringify(message);

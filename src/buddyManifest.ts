@@ -156,6 +156,8 @@ export type EffectorId =
   | "open_terminal"
   | "terminal"
   | "repo_edit"
+  // connectors/coding — act: drive a native window the user already has open (pin/monitor/control)
+  | "commandeer"
   // voice — reach/act split on the device
   | "voice_in"
   | "voice_out"
@@ -221,6 +223,11 @@ export const EFFECTOR_SPECS: Record<EffectorId, EffectorSpec> = {
   // The gate authorizes the EFFECT (typed intent + target), not just the grant; protected
   // targets (AGENTS.md, src/core, deps, .git) are hard-blocked even after confirmation.
   repo_edit: { ...act("repo_edit", "Edit repository", "Apply code changes via a typed ActionIntent; protected targets are hard-blocked; surface a reviewable diff before writing."), wired: true },
+  // Drive a native window the user already has open. The frame driver carries out the mechanism
+  // (raise via toplevel-manager; type via virtual-keyboard) — neither has an OS consent dialog,
+  // so this gate IS the only safety boundary. High-power: pin (follow) / monitor (raise+read) /
+  // control (raise+type). Authorized as a typed intent (operation = mode, target = the window).
+  commandeer: { ...act("commandeer", "Commandeer window", "Pin/monitor/control a native window via the frame driver; keystroke injection has no OS consent, so confirmation + posture + receipts are load-bearing here."), wired: true },
   voice_in: reach("voice_in", "Listen (voice)", "Capture microphone input on an explicit push-to-talk; no always-on listening.", true),
   voice_out: act("voice_out", "Speak (voice)", "Synthesize speech output. User controls volume and can mute instantly."),
   summarize_long: act("summarize_long", "Summarise long context", "Condense text the user already has; never invent content not in the source."),
@@ -262,7 +269,7 @@ export const BUDDY_MANIFEST: Record<string, BuddyManifestEntry> = {
     role: "Build & Code",
     capability: "coding",
     routes: { primary: ["claude", "codex"], fallback: ["gpt"], local: ["lm_studio"] },
-    effectors: [...UNIVERSAL_EFFECTORS, "open_github", "open_vscode", "open_cursor", "open_claude_code", "open_agent_zero", "open_terminal", "repo_edit", "terminal"],
+    effectors: [...UNIVERSAL_EFFECTORS, "open_github", "open_vscode", "open_cursor", "open_claude_code", "open_agent_zero", "open_terminal", "repo_edit", "terminal", "commandeer"],
     reachFirst: true,
     persona: "crab",
   },
@@ -360,6 +367,7 @@ export interface GatedActEffector {
 
 export const GATED_WIRED_ACT_EFFECTORS: readonly GatedActEffector[] = [
   { id: "repo_edit", requiresIntentSchema: true, requiresOutcomeReceipt: true },
+  { id: "commandeer", requiresIntentSchema: true, requiresOutcomeReceipt: true },
 ];
 
 // The union of both lanes — every effector allowed to ship `wired: true`.

@@ -260,8 +260,12 @@ function stripImageMarkup(text) {
 
 const PRESENCE_PROTOCOL = "presence";
 const PRESENCE_VERSION = 0;
-const TO_BODY_RELAY_KINDS = new Set(["target_acquired", "target_moved", "target_lost"]);
+const TO_BODY_RELAY_KINDS = new Set(["target_acquired", "target_moved", "target_lost", "targets_available"]);
 const TO_EFFECTOR_RELAY_KINDS = new Set(["target_drag_requested"]);
+// Soul→driver commands the gateway forwards to the frame driver (the other client). The dev
+// gateway does NOT mint these (the real soul-server gates + emits them); it only relays one
+// already on the wire so the dev path stays transport-compatible.
+const TO_DRIVER_RELAY_KINDS = new Set(["commandeer"]);
 
 function presenceEnvelope(kind, buddy, payload) {
   return JSON.stringify({
@@ -646,6 +650,10 @@ wss.on("connection", (socket, request) => {
 
     if (message?.protocol === PRESENCE_PROTOCOL && message?.kind && message?.buddy) {
       if (TO_BODY_RELAY_KINDS.has(message.kind)) {
+        relayPresenceCue(socket, message);
+        return;
+      }
+      if (TO_DRIVER_RELAY_KINDS.has(message.kind)) {
         relayPresenceCue(socket, message);
         return;
       }

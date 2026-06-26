@@ -45,6 +45,20 @@ import {
   type PresenceSurfaceDescriptor,
 } from "../src/presenceProtocol";
 import { createDefaultBuddySettings, BUDDY_PROFILES, type BuddyProfile } from "../src/buddyProfiles";
+import {
+  INITIAL_ONBOARDING_STATE,
+  currentAct,
+  entryMode,
+  type OnboardingCue,
+  type OnboardingEvent,
+  type OnboardingState,
+} from "../src/wizardOnboarding";
+import { actCues, onHostEvent } from "../src/wizardOnboardingHost";
+import {
+  lifecycleReceiptKinds,
+  readLifecycleReceipts,
+  recordLifecycleReceipt,
+} from "../src/lifecycleReceipts";
 import { EFFECTOR_SPECS, LAUNCHER_REACH_EFFECTORS, manifestEntry, ROUTE_PROVIDER_LABELS, resolveManifestId, type EffectorId } from "../src/buddyManifest";
 import { getSurface, surfaceAvailability, surfaceHydrationList, type SurfaceId } from "../src/surfaceManifest";
 import type { ActionIntent, ActionReceipt, ActionRoute, UserPosture } from "../src/core";
@@ -55,6 +69,9 @@ const PORT = Number(process.env.BB_PRESENCE_PORT ?? 17387);
 const PATH = process.env.BB_PRESENCE_PATH ?? "/border-buddies";
 const POSTURE = normalizePosture(process.env.BB_POSTURE);
 const LEDGER_PATH = process.env.BB_SOUL_LEDGER ?? join(tmpdir(), "bb-soul-ledger.json");
+// Which persona this soul runs. "echo" (default) is the governance gate; "wizard" runs the
+// scripted onboarding Host (Acts 0–5) instead. One soul per port — the Host owns the socket.
+const IS_WIZARD = process.env.BB_SOUL?.trim() === "wizard";
 
 function normalizePosture(value: string | undefined): UserPosture {
   return value === "play" || value === "private" ? value : "work";
@@ -231,6 +248,155 @@ function hydrationSurfacesFor(buddy: string): PresenceSurfaceDescriptor[] {
       effector: id,
     }));
   return [...canonical, ...launchers];
+}
+
+// --- Wizard onboarding Host -----------------------------------------------------
+//
+// Under BB_SOUL=wizard this soul runs the scripted Host (src/wizardOnboardingHost.ts)
+// instead of the governance gate: it greets the body at Act 0, advances the flow on the
+// raw events the body/panel report, records a durable lifecycle receipt for each act that
+// earns one, and hands off to the companion (hermes) when onboarding completes. Law 7
+// holds — the Host (soul) decides the acts and receipts; the body only presents cues.
+//
+// The opaque settings-panel WINDOW is deferred (its own spike): until it ships, the form
+// acts advance on injected `panel:*` clicks (an additive optional `clicked.panel` field).
+
+const HOST_BUDDY = "host";
+const HERMES_BUDDY = "hermes";
+// find_me (Act 4) has no form; it self-advances on a timeout the Host fires. Mirrors the
+// panel's IDLE_AUTO_ADVANCE_MS (src/onboardingPanelModel.ts) so both halves linger alike.
+const WIZARD_TIMEOUT_MS = 6000;
+// A state parked on the final act — what a re-entering (already-onboarded) body seeds with,
+// so the linear script never replays in hub mode.
+const COMPLETED_ONBOARDING_STATE: OnboardingState = { actIndex: 5, completed: true };
+
+const onboarding = new Map<string, OnboardingState>();
+const wizardTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+/** Translate one onboarding cue into a presence envelope and send it to the body. */
+function emitCues(socket: WebSocket, buddy: string, cues: readonly OnboardingCue[]): void {
+  for (const cue of cues) {
+    switch (cue.kind) {
+      case "move_to":
+        socket.send(JSON.stringify(presence.moveTo(buddy, cue.position)));
+        break;
+      case "express":
+        socket.send(
+          JSON.stringify(
+            presence.express(buddy, cue.emotion, cue.intensity !== undefined ? { intensity: cue.intensity } : {}),
+          ),
+        );
+        break;
+      case "say":
+        socket.send(JSON.stringify(presence.say(buddy, cue.text)));
+        break;
+      case "attention":
+        socket.send(JSON.stringify(presence.attention(buddy, cue.focus)));
+        break;
+    }
+  }
+}
+
+function clearWizardTimer(buddy: string): void {
+  const timer = wizardTimers.get(buddy);
+  if (timer) {
+    clearTimeout(timer);
+    wizardTimers.delete(buddy);
+  }
+}
+
+/** Arm the self-advance timer if the act we just entered advances on a timeout (find_me). */
+function scheduleWizardTimeout(socket: WebSocket, buddy: string, state: OnboardingState): void {
+  if (!currentAct(state).advanceOn.includes("timeout")) return;
+  const timer = setTimeout(() => {
+    wizardTimers.delete(buddy);
+    advanceWizard(socket, buddy, "timeout");
+  }, WIZARD_TIMEOUT_MS);
+  wizardTimers.set(buddy, timer);
+}
+
+/** Onboarding complete: park the Host and bring in the companion (hydrate hermes). The true
+ * window-dismiss / hermes-body spawn lands with the deferred panel spike — here we park the
+ * Host tucked and hydrate the hermes buddy so a connected hermes body settles in. */
+function handoffToHermes(socket: WebSocket, hostBuddy: string): void {
+  log("wizard complete → handoff to hermes", { host: hostBuddy });
+  socket.send(
+    JSON.stringify(presence.moveTo(hostBuddy, { mode: "tucked", edge: "right", offset: { x: 0, y: 48 } })),
+  );
+  socket.send(
+    JSON.stringify(
+      presence.hydrate(HERMES_BUDDY, {
+        emotion: "happy",
+        speech: "Hi — I'm Hermes, your companion. What shall we do first?",
+        surfaces: hydrationSurfacesFor(HERMES_BUDDY),
+      }),
+    ),
+  );
+}
+
+/** Fold one to-soul event into the onboarding flow, presenting the next act's cues and
+ * recording any earned lifecycle receipt. A non-advancing event is a silent no-op. */
+function advanceWizard(socket: WebSocket, buddy: string, event: OnboardingEvent): void {
+  const state = onboarding.get(buddy) ?? INITIAL_ONBOARDING_STATE;
+  const result = onHostEvent(state, event);
+  if (result.next === state) return; // event didn't satisfy the current act — nothing to do
+  clearWizardTimer(buddy);
+  if (result.receipt) {
+    recordLifecycleReceipt({ kind: result.receipt, storage });
+    log("wizard receipt recorded", { buddy, kind: result.receipt });
+  }
+  onboarding.set(buddy, result.next);
+  if (result.completedNow) {
+    handoffToHermes(socket, buddy);
+    return;
+  }
+  emitCues(socket, buddy, actCues(result.next));
+  scheduleWizardTimeout(socket, buddy, result.next);
+}
+
+/** Top-level Host handler under BB_SOUL=wizard. Seeds per-buddy state on attach (linear on
+ * first run, parked-complete on re-entry), greets at Act 0, and routes the advancing events
+ * (`clicked` — optionally carrying a `panel:*` discriminator — and `dropped`) into the flow. */
+function handleWizardHost(socket: WebSocket, message: { kind: string; buddy: string; panel?: string }): void {
+  const buddy = message.buddy || HOST_BUDDY;
+  switch (message.kind) {
+    case "attached": {
+      const mode = entryMode(lifecycleReceiptKinds(readLifecycleReceipts(storage)));
+      const state = mode === "linear" ? INITIAL_ONBOARDING_STATE : COMPLETED_ONBOARDING_STATE;
+      onboarding.set(buddy, state);
+      clearWizardTimer(buddy);
+      socket.send(JSON.stringify(presence.hydrate(buddy, { emotion: "neutral" })));
+      if (mode === "linear") {
+        emitCues(socket, buddy, actCues(state));
+        scheduleWizardTimeout(socket, buddy, state);
+      } else {
+        socket.send(JSON.stringify(presence.express(buddy, "happy")));
+        socket.send(
+          JSON.stringify(presence.say(buddy, "You're already set up — tug me out whenever you need me.")),
+        );
+      }
+      log("wizard attached", { buddy, mode });
+      return;
+    }
+    case "clicked": {
+      // A bare tap advances Act 0; a panel-tagged click is a settings-section completion.
+      const event: OnboardingEvent = message.panel ? (`panel:${message.panel}` as OnboardingEvent) : "clicked";
+      advanceWizard(socket, buddy, event);
+      return;
+    }
+    case "dropped": {
+      advanceWizard(socket, buddy, "dropped");
+      return;
+    }
+    case "said": {
+      // Onboarding is pre-connection — the Host doesn't route chat to a provider yet.
+      socket.send(JSON.stringify(presence.express(buddy, "happy")));
+      socket.send(JSON.stringify(presence.say(buddy, "Let's finish getting you set up first.")));
+      return;
+    }
+    default:
+      return;
+  }
 }
 
 /**
@@ -561,6 +727,12 @@ wss.on("connection", (socket, request) => {
     // Drop malformed / unknown cues; never crash the soul (mirrors the TS strict parser).
     if (!message) return;
     const buddy = message.buddy;
+
+    // Wizard persona owns the whole socket: it runs the onboarding script, not the gate.
+    if (IS_WIZARD) {
+      handleWizardHost(socket, message as { kind: string; buddy: string; panel?: string });
+      return;
+    }
 
     switch (message.kind) {
       case "attached": {

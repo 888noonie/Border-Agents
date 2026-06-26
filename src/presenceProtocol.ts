@@ -374,9 +374,16 @@ export type PresenceAttached = PresenceEnvelope<
   { at?: PresencePosition; capabilities?: readonly string[] }
 >;
 
+/**
+ * `panel` is an additive (v0), optional discriminator the onboarding settings panel
+ * sets when a form section is satisfied (e.g. `panel: "connection_ok"`). The wizard
+ * Host reads it as a `panel:<name>` advancing event; an absent `panel` is an ordinary
+ * buddy tap. The native body never sets it, so older bodies and the golden fixture stay
+ * valid — strict-parse drops a present-but-non-string `panel` (see isValidForKind).
+ */
 export type PresenceClicked = PresenceEnvelope<
   "clicked",
-  { button?: PresencePointer; at?: PresencePosition }
+  { button?: PresencePointer; at?: PresencePosition; panel?: string }
 >;
 
 export type PresenceGrabbed = PresenceEnvelope<"grabbed", { at: PresencePosition }>;
@@ -782,7 +789,9 @@ function isValidForKind(kind: PresenceKind, raw: Record<string, unknown>): boole
     case "clicked":
       return (
         (raw.button === undefined || raw.button === "primary" || raw.button === "secondary") &&
-        (raw.at === undefined || isPosition(raw.at))
+        (raw.at === undefined || isPosition(raw.at)) &&
+        // Additive (v0): a present-but-bad `panel` drops the whole cue, never widens it.
+        (raw.panel === undefined || isNonEmptyString(raw.panel))
       );
     case "grabbed":
     case "dragged":
@@ -992,10 +1001,10 @@ export const presence = {
   },
   clicked(
     buddy: string,
-    opts: { button?: PresencePointer; at?: PresencePosition } & EnvelopeOptions = {},
+    opts: { button?: PresencePointer; at?: PresencePosition; panel?: string } & EnvelopeOptions = {},
   ): PresenceClicked {
-    const { button, at, ts } = opts;
-    return envelope("clicked", buddy, { button, at }, { ts }) as PresenceClicked;
+    const { button, at, panel, ts } = opts;
+    return envelope("clicked", buddy, { button, at, panel }, { ts }) as PresenceClicked;
   },
   grabbed(buddy: string, at: PresencePosition, opts: EnvelopeOptions = {}): PresenceGrabbed {
     return envelope("grabbed", buddy, { at }, opts) as PresenceGrabbed;

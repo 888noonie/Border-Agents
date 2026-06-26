@@ -509,6 +509,46 @@ pub fn torso_action_at(layout: &Layout, px: f64, py: f64) -> Option<TorsoAction>
 /// Radius of the tucked "bump" — smaller than the head so it frees screen space.
 pub const BUMP_R: f32 = 34.0;
 
+// --- tucked "peek" extras (bubble + input drawn beside the bump) -------------------
+//
+// Fixed-size so the rects are pure geometry (no font) and hit-testing/input-region match
+// the drawing exactly. The group (bubble above input) is anchored just inward of the bump
+// on its on-screen side; for left/right edges it straddles the bump centre, for top/bottom
+// it hangs inward from the edge.
+const TUCK_PEEK_W: f32 = 212.0;
+const TUCK_PEEK_BUBBLE_H: f32 = 60.0;
+const TUCK_PEEK_INPUT_H: f32 = 34.0;
+const TUCK_PEEK_GAP: f32 = 6.0;
+
+/// Top-left of the peek group (bubble) and the shared x, clamped onto the surface.
+fn tucked_peek_origin(edge: BumpEdge, w: u32, h: u32) -> (f32, f32) {
+    let (wf, hf) = (w as f32, h as f32);
+    let (cx, cy) = bump_center(edge, w, h);
+    let group_h = TUCK_PEEK_BUBBLE_H + TUCK_PEEK_GAP + TUCK_PEEK_INPUT_H;
+    let clear = BUMP_R + TUCK_PEEK_GAP;
+    let (x, top) = match edge {
+        BumpEdge::Left => (clear, cy - group_h / 2.0),
+        BumpEdge::Right => (wf - clear - TUCK_PEEK_W, cy - group_h / 2.0),
+        BumpEdge::Top => (cx - TUCK_PEEK_W / 2.0, clear),
+        BumpEdge::Bottom => (cx - TUCK_PEEK_W / 2.0, hf - clear - group_h),
+    };
+    let x = x.clamp(4.0, (wf - TUCK_PEEK_W - 4.0).max(4.0));
+    let top = top.clamp(4.0, (hf - group_h - 4.0).max(4.0));
+    (x, top)
+}
+
+/// The peek speech bubble rect (surface-local), beside the bump on its on-screen side.
+pub fn tucked_bubble_rect(edge: BumpEdge, w: u32, h: u32) -> Rect {
+    let (x, top) = tucked_peek_origin(edge, w, h);
+    Rect { x, y: top, w: TUCK_PEEK_W, h: TUCK_PEEK_BUBBLE_H }
+}
+
+/// The peek input field rect (surface-local), directly below the peek bubble.
+pub fn tucked_input_rect(edge: BumpEdge, w: u32, h: u32) -> Rect {
+    let (x, top) = tucked_peek_origin(edge, w, h);
+    Rect { x, y: top + TUCK_PEEK_BUBBLE_H + TUCK_PEEK_GAP, w: TUCK_PEEK_W, h: TUCK_PEEK_INPUT_H }
+}
+
 /// Which screen edge a tucked buddy is parked against. (Render-side mirror of
 /// the presence protocol's edge; `main.rs` maps `presence::Edge` onto it.)
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -869,6 +909,10 @@ pub struct BodyView<'a> {
     /// When `Some`, the buddy is tucked against this edge: draw the minimized
     /// bump instead of the full figure.
     pub tucked: Option<BumpEdge>,
+    /// While tucked, also draw the latest speech in a "peek" bubble beside the bump.
+    pub tucked_show_bubble: bool,
+    /// While tucked, also draw a live input field beside the bump (implies the bubble).
+    pub tucked_show_input: bool,
     pub input_text: &'a str,
     pub input_placeholder: &'a str,
     pub input_focused: bool,
@@ -941,9 +985,28 @@ impl Sprite {
             return;
         };
 
-        // Tucked: only the minimized bump — a dormant buddy hugging the edge.
+        // Tucked: the minimized bump hugging the edge, plus an optional "peek" (speech bubble,
+        // and an input field) beside it when the user has cycled the tucked view open.
         if let Some(edge) = view.tucked {
             draw_bump(&mut pixmap, edge, w, h, view.color);
+            if let Some(font) = &self.font {
+                if view.tucked_show_bubble {
+                    draw_tucked_bubble(&mut pixmap, font, edge, w, h, view.speech.unwrap_or(""));
+                }
+                if view.tucked_show_input {
+                    draw_tucked_input(
+                        &mut pixmap,
+                        font,
+                        edge,
+                        w,
+                        h,
+                        view.input_text,
+                        view.input_placeholder,
+                        view.input_focused,
+                        view.t,
+                    );
+                }
+            }
             blit_premultiplied_bgra(pixmap.data(), canvas);
             return;
         }
@@ -2788,6 +2851,84 @@ fn draw_input(
     }
 }
 
+/// The tucked peek bubble: a fixed-size rounded card carrying the latest speech, wrapped and
+/// truncated to fit (no dynamic growth, so the drawn box matches `tucked_bubble_rect` exactly).
+fn draw_tucked_bubble(pixmap: &mut Pixmap, font: &Font, edge: BumpEdge, w: u32, h: u32, text: &str) {
+    let rect = tucked_bubble_rect(edge, w, h);
+    let pad_x = 12.0;
+    let pad_top = 18.0;
+    let bg = Color::from_rgba8(247, 251, 255, 245);
+    let border = solid(Color::from_rgba8(0, 0, 0, 175));
+    draw_round_rect(pixmap, rect, bg);
+    if let Some(path) = round_rect_path(rect, 14.0) {
+        let mut stroke = Stroke::default();
+        stroke.width = 1.0;
+        pixmap.stroke_path(&path, &border, &stroke, Transform::identity(), None);
+    }
+    let max_lines = (((rect.h - pad_top - 6.0) / LINE_H).floor() as i32).max(1) as usize;
+    let lines = if text.is_empty() {
+        Vec::new()
+    } else {
+        wrap(font, text, TEXT_PX, rect.w - pad_x * 2.0, max_lines)
+    };
+    let mut baseline = rect.y + pad_top;
+    if lines.is_empty() {
+        draw_line(pixmap, font, "…", rect.x + pad_x, baseline, TEXT_PX, [130, 138, 150]);
+    } else {
+        for line in &lines {
+            draw_line(pixmap, font, line, rect.x + pad_x, baseline, TEXT_PX, [16, 24, 44]);
+            baseline += LINE_H;
+        }
+    }
+}
+
+/// The tucked peek input: a single-line rounded field, focusable and submittable like the
+/// full-figure chat input, so the user can talk to a tucked buddy without summoning it.
+#[allow(clippy::too_many_arguments)]
+fn draw_tucked_input(
+    pixmap: &mut Pixmap,
+    font: &Font,
+    edge: BumpEdge,
+    w: u32,
+    h: u32,
+    text: &str,
+    placeholder: &str,
+    focused: bool,
+    t: f32,
+) {
+    let rect = tucked_input_rect(edge, w, h);
+    let pad = 12.0;
+    let bg = if focused {
+        Color::from_rgba8(255, 255, 255, 250)
+    } else {
+        Color::from_rgba8(232, 226, 220, 235)
+    };
+    let border = solid(Color::from_rgba8(0, 0, 0, 175));
+    draw_round_rect(pixmap, rect, bg);
+    if let Some(path) = round_rect_path(rect, 14.0) {
+        let mut stroke = Stroke::default();
+        stroke.width = 1.0;
+        pixmap.stroke_path(&path, &border, &stroke, Transform::identity(), None);
+    }
+    let baseline = rect.y + rect.h / 2.0 + TEXT_PX / 2.0 - 2.0;
+    let is_placeholder = text.is_empty();
+    let display = if is_placeholder { placeholder } else { text };
+    let shown = fit_line(font, display, TEXT_PX, rect.w - pad * 2.0);
+    if is_placeholder {
+        if !focused {
+            draw_line(pixmap, font, &shown, rect.x + pad, baseline, TEXT_PX, [130, 122, 114]);
+        }
+    } else {
+        draw_line(pixmap, font, &shown, rect.x + pad, baseline, TEXT_PX, [30, 22, 16]);
+    }
+    if focused && ((t * 1.4) as i32) % 2 == 0 {
+        let measured = if is_placeholder { 0.0 } else { measure(font, &shown, TEXT_PX) };
+        let caret_x = rect.x + pad + measured + 2.0;
+        let caret = Rect { x: caret_x, y: baseline - TEXT_PX, w: 2.0, h: TEXT_PX + 4.0 };
+        draw_round_rect(pixmap, caret, Color::from_rgba8(201, 109, 60, 255));
+    }
+}
+
 // --- primitives ---------------------------------------------------------------------
 
 fn draw_round_rect(pixmap: &mut Pixmap, rect: Rect, color: Color) {
@@ -3348,6 +3489,8 @@ mod tests {
                 }),
                 chat_open: false,
                 tucked: None,
+                tucked_show_bubble: false,
+                tucked_show_input: false,
                 input_text: "",
                 input_placeholder: "",
                 input_focused: false,
@@ -3445,6 +3588,8 @@ mod tests {
                 }),
                 chat_open: false,
                 tucked: None,
+                tucked_show_bubble: false,
+                tucked_show_input: false,
                 input_text: "",
                 input_placeholder: "",
                 input_focused: false,
@@ -3780,6 +3925,22 @@ mod tests {
     }
 
     #[test]
+    fn tucked_peek_input_sits_below_the_bubble_and_clear_of_the_bump() {
+        // Full-figure surface (the size a tuck keeps), bump on the right edge.
+        let (w, h) = (SURFACE_W, 320);
+        let bubble = tucked_bubble_rect(BumpEdge::Right, w, h);
+        let input = tucked_input_rect(BumpEdge::Right, w, h);
+        // Input is stacked directly below the bubble, no overlap.
+        assert!(input.y >= bubble.y + bubble.h);
+        // Both share the same column and stay on the surface.
+        assert_eq!(bubble.x, input.x);
+        assert!(bubble.x >= 0.0 && bubble.x + bubble.w <= w as f32);
+        assert!(input.y + input.h <= h as f32);
+        // Clear of the bump: the right-edge bump occupies the rightmost BUMP_R; the peek sits left of it.
+        assert!(bubble.x + bubble.w <= w as f32 - BUMP_R);
+    }
+
+    #[test]
     fn bump_survives_tiny_transient_surface() {
         let rect = bump_rect(BumpEdge::Left, 40, 40);
         assert!(rect.x >= 0.0);
@@ -3830,6 +3991,8 @@ mod tests {
             }),
             chat_open: false,
             tucked: None,
+            tucked_show_bubble: false,
+            tucked_show_input: false,
             input_text: "",
             input_placeholder: "Ask Border Wizard...",
             input_focused: false,

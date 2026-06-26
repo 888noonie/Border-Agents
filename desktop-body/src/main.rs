@@ -622,6 +622,7 @@ fn main() {
         exit: false,
         presence_out: None,
         tucked: None,
+        tucked_view: TuckedView::HeadOnly,
         frame_target: None,
         pinned_to_target: false,
         pinned_offset: None,
@@ -859,6 +860,33 @@ fn commandeer_mode_descriptors(chosen_is_pinned: bool) -> Vec<presence::SurfaceD
     .collect()
 }
 
+/// How much of a tucked buddy peeks out, cycled by right-clicking the bump. `HeadOnly` is the
+/// resting tuck (just the sleeping bump); `Bubble` adds the latest speech beside it; `BubbleInput`
+/// also opens an input field so you can talk to the buddy without fully summoning it. Right-click
+/// advances HeadOnly → Bubble → BubbleInput → HeadOnly (the order the user reads them in).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TuckedView {
+    HeadOnly,
+    Bubble,
+    BubbleInput,
+}
+
+impl TuckedView {
+    fn next(self) -> Self {
+        match self {
+            TuckedView::HeadOnly => TuckedView::Bubble,
+            TuckedView::Bubble => TuckedView::BubbleInput,
+            TuckedView::BubbleInput => TuckedView::HeadOnly,
+        }
+    }
+    fn shows_bubble(self) -> bool {
+        matches!(self, TuckedView::Bubble | TuckedView::BubbleInput)
+    }
+    fn shows_input(self) -> bool {
+        matches!(self, TuckedView::BubbleInput)
+    }
+}
+
 fn is_surface_bloom_press(target: PressTarget) -> bool {
     // The hold-to-bloom surface dial opens from a surface control press. The external perimeter
     // ring is retired, so the trigger fires from the same controls living inside the torso as
@@ -953,6 +981,9 @@ struct App {
     /// When `Some`, the buddy is tucked against this edge — shown as a minimized bump,
     /// input shrunk to the bump, clicking it summons the buddy back out.
     tucked: Option<presence::Edge>,
+    /// How much the tucked buddy peeks out (head-only / +bubble / +input). Right-clicking the
+    /// bump cycles it; only meaningful while `tucked` is `Some`. Reset to head-only on each tuck.
+    tucked_view: TuckedView,
     /// When `Some`, a platform driver has identified a native OS window that Hermes
     /// can be pinned to. This is tracking state only; right-click toggles presentation.
     frame_target: Option<FrameTarget>,
@@ -1303,6 +1334,8 @@ impl App {
             torso_output: torso_output.as_render(torso_image),
             chat_open: self.chat_open,
             tucked: self.tucked.map(edge_to_bump),
+            tucked_show_bubble: self.tucked.is_some() && self.tucked_view.shows_bubble(),
+            tucked_show_input: self.tucked.is_some() && self.tucked_view.shows_input(),
             input_text: &input_text,
             input_placeholder: &input_placeholder,
             input_focused: self.input_focused,
@@ -1579,7 +1612,17 @@ impl App {
         // Tucked: only the bump catches the pointer — everything else is click-through,
         // so the screen space the buddy stepped aside from is truly freed.
         let rects = if let Some(edge) = self.tucked {
-            vec![self.tucked_bump_rect(edge).as_i32()]
+            let bump = edge_to_bump(edge);
+            let mut rects = vec![self.tucked_bump_rect(edge).as_i32()];
+            // The peek bubble/input must catch the pointer when shown, or they are click-through
+            // (the input never receives a press, and clicks fall to the window behind).
+            if self.tucked_view.shows_bubble() {
+                rects.push(render::tucked_bubble_rect(bump, self.width, self.height).as_i32());
+            }
+            if self.tucked_view.shows_input() {
+                rects.push(render::tucked_input_rect(bump, self.width, self.height).as_i32());
+            }
+            rects
         } else if let Some(pinned) = self.pinned_layout() {
             let mut rects = vec![pinned.head_rect().as_i32()];
             if self.speech.is_some() {
@@ -1861,6 +1904,21 @@ impl App {
         self.update_input_region();
     }
 
+    /// Right-click on a tucked bump: advance how much peeks out (head-only → bubble →
+    /// bubble+input → head-only). The input field is live only in `BubbleInput`, so focus
+    /// follows the view — you can type to the buddy without summoning it back out.
+    fn cycle_tucked_view(&mut self) {
+        if self.tucked.is_none() {
+            return;
+        }
+        self.tucked_view = self.tucked_view.next();
+        self.input_focused = self.tucked_view.shows_input();
+        if !self.input_focused {
+            self.input_text.clear();
+        }
+        self.update_input_region();
+    }
+
     fn toggle_pin(&mut self) {
         if self.pinned_to_target {
             self.pinned_to_target = false;
@@ -2004,8 +2062,14 @@ impl App {
         // While tucked, the only live target is the bump; a click on it summons the
         // buddy back out. The bump is not draggable in v1.
         if let Some(edge) = self.tucked {
+            let bump = edge_to_bump(edge);
             let target = if self.point_in_tucked_bump(edge, x, y) {
                 PressTarget::Bump
+            } else if self.tucked_view.shows_input()
+                && render::tucked_input_rect(bump, self.width, self.height).contains(x, y)
+            {
+                // The peek input field catches the pointer so a click focuses it (and keeps focus).
+                PressTarget::Input
             } else {
                 PressTarget::Outside
             };
@@ -2162,10 +2226,15 @@ impl App {
             return;
         }
 
-        // A click on the tucked bump summons the buddy back out.
+        // The tucked bump: left-click summons the buddy back out; right-click cycles how much
+        // of it peeks (head-only → bubble → bubble+input) without summoning.
         if press.target == PressTarget::Bump {
             if press.dist <= CLICK_SLOP {
-                self.summon();
+                if press.secondary {
+                    self.cycle_tucked_view();
+                } else {
+                    self.summon();
+                }
             }
             return;
         }
@@ -2177,7 +2246,16 @@ impl App {
             if press.dist <= CLICK_SLOP
                 && matches!(press.target, PressTarget::Head | PressTarget::Body | PressTarget::Outside)
             {
-                self.open_commandeer_picker();
+                // While pinned, the dominant right-click intent is "un-pin" — and unpinning is a
+                // pure local presentation toggle (law 7 clean, no soul). Do it directly instead of
+                // routing back through the window→Unpin picker dance (which the small pinned surface
+                // never gave the dial room to show). Re-pin a different window by right-clicking once
+                // unpinned.
+                if self.pinned_to_target {
+                    self.toggle_pin();
+                } else {
+                    self.open_commandeer_picker();
+                }
             }
             return;
         }
@@ -2726,10 +2804,12 @@ impl App {
     fn enter_tuck(&mut self, edge: presence::Edge, along: f64) {
         self.chat_open = false;
         self.input_focused = false;
-        self.speech = None;
+        // Keep the latest speech: the tucked "peek" bubble surfaces it when the user cycles the
+        // tucked view, so it must survive the tuck (head-only rendering simply doesn't draw it).
         self.interior_open = false;
         self.settings_open = false;
         self.tucked = Some(edge);
+        self.tucked_view = TuckedView::HeadOnly;
         let (sw, sh) = self.screen.unwrap_or((f64::MAX, f64::MAX));
         let (surface_w, surface_h) = self.requested_surface_size();
         if let Some(layer) = self.layer.as_ref() {
@@ -2768,6 +2848,7 @@ impl App {
     /// inward off the edge, restore full input, and tell the soul.
     fn summon(&mut self) {
         let Some(edge) = self.tucked.take() else { return };
+        self.tucked_view = TuckedView::HeadOnly;
         let fig = render::figure_bbox(self.body_len);
         let inset = TUCK_THRESHOLD; // land clear of the tuck zone so it doesn't re-tuck
         let (sw, sh) = self.screen.unwrap_or((f64::MAX, f64::MAX));
@@ -3324,6 +3405,19 @@ mod tests {
         assert_eq!(commandeer_route("control", true), Some(CommandeerRoute::Gated("control")));
         // An unknown mode routes nowhere (never silently treated as a local or gated effect).
         assert_eq!(commandeer_route("delete", false), None);
+    }
+
+    #[test]
+    fn tucked_view_cycles_bubble_then_input_then_head() {
+        // The order the user reads right-clicking a tucked bump: head-only → speech bubble →
+        // bubble + input → back to head-only. Focus (and a live input) only in BubbleInput.
+        assert_eq!(TuckedView::HeadOnly.next(), TuckedView::Bubble);
+        assert_eq!(TuckedView::Bubble.next(), TuckedView::BubbleInput);
+        assert_eq!(TuckedView::BubbleInput.next(), TuckedView::HeadOnly);
+
+        assert!(!TuckedView::HeadOnly.shows_bubble() && !TuckedView::HeadOnly.shows_input());
+        assert!(TuckedView::Bubble.shows_bubble() && !TuckedView::Bubble.shows_input());
+        assert!(TuckedView::BubbleInput.shows_bubble() && TuckedView::BubbleInput.shows_input());
     }
 
     #[test]

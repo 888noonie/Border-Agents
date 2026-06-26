@@ -1583,6 +1583,13 @@ impl App {
                     rects.push(self.offset_rect_for_body(rect).as_i32());
                 }
             }
+            // Settings panel rows must catch the pointer too, or the whole panel is click-through
+            // and its buttons never receive a press (the input region gates delivery).
+            if self.settings_open {
+                for rect in layout.interior_rows_for(self.settings_row_count()) {
+                    rects.push(self.offset_rect_for_body(rect).as_i32());
+                }
+            }
             rects.push(self.offset_rect_for_body(layout.torso_action_rect(TorsoAction::Expand)).as_i32());
             rects.push(self.offset_rect_for_body(layout.torso_action_rect(TorsoAction::Copy)).as_i32());
             rects.push(self.offset_rect_for_body(layout.torso_action_rect(TorsoAction::Scroll)).as_i32());

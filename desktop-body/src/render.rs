@@ -1719,15 +1719,20 @@ fn draw_settings_view(
         }
         let text_px = (rect.h * 0.55).clamp(8.0, 12.0);
         let baseline = rect.y + rect.h / 2.0 + text_px * 0.34;
+        // Reserve the right-edge strip the torso action buttons (Expand/Copy/Scroll) occupy, so a
+        // value chip never renders under them — `torso_action_at` wins that strip in hit-testing,
+        // which would otherwise eat clicks meant to cycle the setting.
+        let right_limit = rect.x + rect.w - 26.0;
         // Label, left.
         draw_line(pixmap, font, row.label, rect.x + 8.0, baseline, text_px, label_ink);
-        // Value, right — chipped + bright when editable, plain + dim when read-only.
-        let value = fit_line(font, row.value, text_px, rect.w * 0.6);
+        // Value — chipped + bright when editable, plain + dim when read-only — anchored to the
+        // reserved right limit and width-capped so it can't collide with the label.
+        let value = fit_line(font, row.value, text_px, (right_limit - rect.x - 8.0).max(0.0) * 0.7);
         let vw = measure(font, &value, text_px);
         if row.editable {
             let chip_h = (text_px + 6.0).min(rect.h - 2.0);
             let chip = Rect {
-                x: rect.x + rect.w - vw - 18.0,
+                x: right_limit - vw - 12.0,
                 y: rect.y + (rect.h - chip_h) / 2.0,
                 w: vw + 12.0,
                 h: chip_h,
@@ -1735,7 +1740,7 @@ fn draw_settings_view(
             draw_round_rect(pixmap, chip, rgba(lighten(color, 0.62), 235));
             draw_line(pixmap, font, &value, chip.x + 6.0, baseline, text_px, shade(color, 0.34));
         } else {
-            draw_line(pixmap, font, &value, rect.x + rect.w - vw - 8.0, baseline, text_px, dim_ink);
+            draw_line(pixmap, font, &value, right_limit - vw, baseline, text_px, dim_ink);
         }
     }
 }

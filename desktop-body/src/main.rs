@@ -506,6 +506,37 @@ fn classify_torso_surface(text: &str) -> TorsoSurface {
     }
 }
 
+/// The bubble line for `text` that has been loaded into the torso: a short pointer for the
+/// surfaces that live there, or the text itself when it is small enough to read inline.
+fn loaded_bubble(text: &str) -> String {
+    match classify_torso_surface(text) {
+        TorsoSurface::Image { .. } => "Image ready in torso.".to_string(),
+        TorsoSurface::ImageStub { .. } => {
+            "Here is your picture. Click to open. Tell me what next?".to_string()
+        }
+        TorsoSurface::FileStub { .. } => "File stub ready in torso.".to_string(),
+        TorsoSurface::Text { .. } => {
+            if text.len() > 56 || text.contains('\n') {
+                "Reply ready in torso.".to_string()
+            } else {
+                text.to_string()
+            }
+        }
+        TorsoSurface::Session => text.to_string(),
+    }
+}
+
+/// The bubble line for a `say`. When a reply was awaited the text was loaded into the torso, so the
+/// bubble may point at it; otherwise nothing was loaded and the bubble must carry the text itself —
+/// it must never promise a torso reply that is not there.
+fn reply_bubble(awaiting_reply: bool, text: &str) -> String {
+    if awaiting_reply {
+        loaded_bubble(text)
+    } else {
+        text.to_string()
+    }
+}
+
 trait IfEmpty {
     fn if_empty(self, fallback: &str) -> String;
 }
@@ -595,6 +626,8 @@ fn main() {
         pinned_to_target: false,
         pinned_offset: None,
         pinned_bubble_w: env_i32("BB_PINNED_BUBBLE_W", 248) as f32,
+        pending_commandeer: None,
+        pin_on_target: None,
         keyboard: None,
         modifiers: Modifiers::default(),
         input_text: String::new(),
@@ -930,6 +963,13 @@ struct App {
     pinned_offset: Option<(f64, f64)>,
     /// Resizable pinned bubble width; env-tunable now, drag handle later.
     pinned_bubble_w: f32,
+    /// The `(target_id, mode)` of the commandeer request currently in flight, set when the
+    /// body asks the soul and read when the `allow` returns. Lets the body act on the
+    /// authorized intent (e.g. engage pin) without the body ever deciding authority itself.
+    pending_commandeer: Option<(String, String)>,
+    /// A soul-authorized `pin` whose target window has not yet been acquired by the driver.
+    /// When the matching `target_acquired` arrives the body engages pinned presentation.
+    pin_on_target: Option<String>,
     /// Keyboard, acquired when the seat advertises the capability. Drives the on-body
     /// text input that replaces the old "Say hello" button.
     keyboard: Option<wl_keyboard::WlKeyboard>,
@@ -1426,22 +1466,16 @@ impl App {
         self.update_input_region();
     }
 
-    fn bubble_for_surface(&self, text: &str) -> String {
-        match classify_torso_surface(text) {
-            TorsoSurface::Image { .. } => "Image ready in torso.".to_string(),
-            TorsoSurface::ImageStub { .. } => {
-                "Here is your picture. Click to open. Tell me what next?".to_string()
-            }
-            TorsoSurface::FileStub { .. } => "File stub ready in torso.".to_string(),
-            TorsoSurface::Text { .. } => {
-                if text.len() > 56 || text.contains('\n') {
-                    "Reply ready in torso.".to_string()
-                } else {
-                    text.to_string()
-                }
-            }
-            TorsoSurface::Session => text.to_string(),
+    fn say(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        if self.awaiting_reply {
+            // A reply the buddy promised: load it into the torso and let the bubble point at it.
+            self.show_reply_in_torso(&text);
         }
+        // The bubble may never point at an empty torso: only say "…in torso" when something was
+        // actually loaded there (a reply was awaited); otherwise carry the text itself.
+        self.speech = Some(reply_bubble(self.awaiting_reply, &text));
+        self.update_input_region();
     }
 
     /// Reposition by rewriting anchor margins — a compositor texture move, never a
@@ -1662,6 +1696,26 @@ impl App {
                     executed,
                     receipt_id,
                 });
+                // A soul-authorized commandeer can carry a body-side follow-through: `pin` engages
+                // pinned presentation on the chosen window (the body follows; it never decides). A
+                // block clears the in-flight intent; needs_confirmation keeps it for the confirm.
+                if effector == "commandeer" {
+                    match decision.as_str() {
+                        "allow" => {
+                            if let Some((target, mode)) = self.pending_commandeer.take() {
+                                if mode == "pin" {
+                                    self.pin_on_target = Some(target);
+                                    self.engage_armed_pin();
+                                }
+                            }
+                        }
+                        "blocked" => {
+                            self.pending_commandeer = None;
+                            self.pin_on_target = None;
+                        }
+                        _ => {}
+                    }
+                }
                 self.pending_effector = (decision == "needs_confirmation").then_some(effector);
                 self.set_emotion(Emotion::for_decision(&decision));
                 if let Some(text) = summary {
@@ -1697,11 +1751,14 @@ impl App {
                     return;
                 }
                 eprintln!("[bb-presence] tracked target {target_id} ({app_id} — {title:?})");
-                if !self.pinned_to_target {
+                let awaiting_pin = self.pin_on_target.as_deref() == Some(target_id.as_str());
+                if !self.pinned_to_target && !awaiting_pin {
                     self.speech = Some(format!("Right-click {} to pin to {app_id}.", self.name_label));
                     self.pinned_offset = None;
                 }
                 self.frame_target = Some(FrameTarget { id: target_id, title, app_id, bounds });
+                // A soul-authorized pin waiting on this exact window engages now that it exists.
+                self.engage_armed_pin();
                 self.sync_pinned_surface();
             }
             presence::Cue::TargetMoved { target_id, bounds } => {
@@ -1723,6 +1780,10 @@ impl App {
                     self.pinned_offset = None;
                     self.speech = Some("Released the window.".to_string());
                     self.sync_pinned_surface();
+                }
+                // A pin armed for a window that vanished before it was acquired can never land.
+                if self.pin_on_target.as_deref() == Some(target_id.as_str()) {
+                    self.pin_on_target = None;
                 }
             }
             presence::Cue::TargetsAvailable { targets } => {
@@ -1784,15 +1845,6 @@ impl App {
         self.emotion = emotion;
     }
 
-    fn say(&mut self, text: impl Into<String>) {
-        let text = text.into();
-        if self.awaiting_reply {
-            self.show_reply_in_torso(&text);
-        }
-        self.speech = Some(self.bubble_for_surface(&text));
-        self.update_input_region();
-    }
-
     /// Open/close the chat input. Opening focuses it immediately (click head →
     /// type). No local mood buttons here: expression belongs to the soul, which
     /// drives it through `express` cues — the user talks, the buddy feels.
@@ -1823,11 +1875,19 @@ impl App {
             return;
         }
 
-        let Some(target) = self.frame_target.as_ref() else {
+        if self.frame_target.is_none() {
             self.speech = Some("No active target to pin yet.".to_string());
             self.update_input_region();
             return;
-        };
+        }
+        self.engage_pin();
+    }
+
+    /// Engage pinned presentation on the currently tracked target: the surface follows the
+    /// window. Shared by the local right-click toggle and the soul-authorized `pin` path so
+    /// both pin identically. No-op without a tracked target.
+    fn engage_pin(&mut self) {
+        let Some(target) = self.frame_target.as_ref() else { return };
         self.pinned_to_target = true;
         self.pinned_offset = None;
         self.chat_open = false;
@@ -1835,6 +1895,17 @@ impl App {
         let name = if target.title.trim().is_empty() { target.app_id.as_str() } else { target.title.as_str() };
         self.speech = Some(format!("Pinned to {name}."));
         self.sync_pinned_surface();
+    }
+
+    /// If a soul-authorized `pin` is waiting on its target, engage it once the driver has
+    /// acquired that exact window. Matching by id avoids snapping onto a stale auto-tracked
+    /// target before the chosen one arrives.
+    fn engage_armed_pin(&mut self) {
+        let Some(id) = self.pin_on_target.clone() else { return };
+        if self.frame_target.as_ref().is_some_and(|f| f.id == id) {
+            self.pin_on_target = None;
+            self.engage_pin();
+        }
     }
 
     /// Handle a keystroke while the input box is focused: submit on Enter, edit on
@@ -2486,6 +2557,9 @@ impl App {
     /// replies `needs_confirmation` (the act floor), cleared by a `/confirm` (or re-selecting).
     fn request_commandeer(&mut self, target_id: &str, name: &str, mode: &str) {
         let confirmed = self.pending_effector.as_deref() == Some("commandeer");
+        // Remember the intent so the body can act on the soul's `allow` (e.g. engage pin on the
+        // chosen window). The soul still decides authority; the body only follows the verdict.
+        self.pending_commandeer = Some((target_id.to_string(), mode.to_string()));
         self.send_to_soul(presence::commandeer_request_json(
             &self.buddy,
             mode,
@@ -3018,6 +3092,20 @@ impl Dispatch<ZwpRelativePointerV1, ()> for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reply_bubble_never_points_at_an_empty_torso() {
+        let long = "Ran \"Commandeer window\" via claude. allow commandeer at 22:12:42.";
+        assert!(long.len() > 56);
+        // Awaiting a reply: the text was loaded into the torso, so the bubble may point at it.
+        assert_eq!(reply_bubble(true, long), "Reply ready in torso.");
+        // Not awaiting (e.g. a commandeer summary or surface label): nothing was loaded into the
+        // torso, so the bubble must carry the text itself — never the "…in torso" promise.
+        assert_eq!(reply_bubble(false, long), long);
+        // Short text reads inline either way.
+        assert_eq!(reply_bubble(true, "Pinned."), "Pinned.");
+        assert_eq!(reply_bubble(false, "Pinned."), "Pinned.");
+    }
 
     #[test]
     fn interior_row_specs_include_chat_controls_only_when_chat_is_open() {

@@ -55,7 +55,8 @@ a ban: metaphor is most welcome at the edges and most disciplined at the decidin
 
 ## Where the build is (June 2026)
 
-Two halves, joined by the presence protocol; not yet wired end to end.
+Two halves, joined by the presence protocol; the first soul-gated effector now
+runs end to end across both.
 
 - **Governance core** (`src/core/`) — deterministic, test-backed: `MemoryPacket`,
   `PurposePolicy`, `MemoryGrader`, `SafeContextFrame`, `PromptRenderer`,
@@ -64,14 +65,28 @@ Two halves, joined by the presence protocol; not yet wired end to end.
 - **Presence layer** (branch `presence-layer`) — soul⟷body split. Typed, versioned
   protocol (`src/presenceProtocol.ts`); a pure-Rust native body on `wlr-layer-shell`
   (`desktop-body/`, animated, drag-stable, user-verified); a browser body
-  (`extensions/browser/presence.js`); a dev gateway "soul" (`scripts/gateway-dev.mjs`).
+  (`extensions/browser/presence.js`); a dev gateway "soul" (`scripts/gateway-dev.mjs`)
+  plus the real `scripts/soul-server.ts` that runs the actual action gate.
   Born from the overlay rebuild — read `docs/OVERLAY_POSTMORTEM_AND_REBUILD_PLAN.md`
   before touching desktop overlay code.
+- **Commandeer effector (landed)** — the first computer-use-style screen action,
+  governed end to end. The COSMIC `frame_driver.rs` enumerates windows
+  (`targets_available`), and on a soul `allow` can pin / monitor / type-into the
+  chosen window. The body's right-click opens a two-phase picker (window → P/M/C)
+  that emits an `ActionIntent`; Pin/Monitor/Control route through the soul-gated
+  `commandeer` act effector (trusted-only, requires `may_use_for_action`), only
+  local Unpin stays body-side. The body never reads or acts on the screen itself
+  (law 7). Soul gate has governance tests; `desktop-body` cargo test is green.
+- **Body settings (landed)** — a body-local settings panel (dial → Customize):
+  Colour and Size are editable presentation; Posture and Buddy are read-only and
+  only reflect soul/launch state, so the visible posture can never lie about the
+  soul's actual authorization posture.
 
-Next: **Step 4** — a presence WebSocket client in the Rust body, first driven by the
-scripted **Wizard** onboarding host (`docs/WIZARD_ONBOARDING_SCRIPT.md`). Then
-**Step 5** — the governance vertical slice that makes a buddy action produce a
-receipt, finally joining the two halves.
+Next: the scripted **Wizard** onboarding host
+(`docs/WIZARD_ONBOARDING_SCRIPT.md`) driving the body through Act 0+, then the
+**governance vertical slice** that makes a buddy action grade memory and produce a
+`GradeReceipt` — finally joining the two halves around the proven grading
+primitive.
 
 ## v0.1 scope
 

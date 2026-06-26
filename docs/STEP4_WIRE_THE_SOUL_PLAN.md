@@ -69,6 +69,34 @@ open; click emits `action_request` for `receipt_review`; on `needs_confirmation`
 button flips to Confirm. Verified by compile + layout regression test; live COSMIC click
 not yet verified headlessly. Remaining for full Step 4: Wizard Act 0 host (commit 5 below).
 
+## 0c. Commandeer effector — soul-gated screen action, end to end (2026-06-26) ✅
+
+The first computer-use-style screen action, governed the whole way. This goes beyond the
+presentation-only target pin of 0/0b: the soul can now *act* on a window, but only through the
+gate.
+
+- **Driver** (`frame_driver.rs`): folded the proven enumerate + activate + virtual-keyboard
+  primitive into the real driver (calloop + bidirectional link). Emits `targets_available`
+  (the window list) and, on a soul `commandeer` cue, runs pin / monitor / control(type).
+- **Two-way wire**: both servers are broadcast relays, so this only added relay kinds —
+  `targets_available` to both, `commandeer` to the gateway.
+- **Soul gate**: a new `commandeer` **act** effector in `buddyManifest.ts` (act-lane,
+  trusted-only, requires `may_use_for_action`, granted to Forge only), action-backed in
+  `soul-server.ts` with `dispatchCommandeer` minting the gated cue on allow (direct + `/confirm`).
+  Governance tests cover act-floor confirm, allow+execution-receipt, and ungranted-block.
+- **Body picker**: right-click opens a two-phase dial (window → Pin/Monitor/Control) that reuses
+  the bloom render/hit-test path. P/M/C emit an `ActionIntent` through the gated `commandeer`
+  effector; only Unpin of the already-pinned window is local. The body never reads or acts on the
+  screen — it renders the picker and reports intent (law 7).
+- **Body settings panel** (same session): body-local Colour/Size (editable) + read-only
+  Posture/Buddy, reached from the dial's Customize entry. Input-region + chip-placement fixes make
+  the panel actually clickable on the layer surface.
+
+Gates: vitest **236** green; `desktop-body` cargo test **84** green.
+
+For the live test, run body and driver with the same `BB_BUDDY=forge` — the body drops cues
+addressed to other buddies, and `commandeer` is granted to Forge.
+
 ## 1. Integration approach — thread + calloop channel (recommended)
 
 The body is a synchronous `calloop` + Wayland loop (`main.rs:162`). Do **not** pull in
@@ -206,6 +234,11 @@ proves Act 0 end-to-end.
    `scripts/soul-server.ts` + `parseActionCommand` + tests. **✅ done (governance parity).**
 7. `feat(presence): native body Review/Confirm affordance` — on-body button, layout test.
    **✅ done (live COSMIC click pending manual verify).**
+8. `feat(commandeer+body): soul-gated screen commandeer + body settings panel` — driver
+   commandeer capability, `targets_available`/`commandeer` wire, soul `commandeer` act gate,
+   body two-phase P/M/C picker, body-local settings panel. **✅ done (2026-06-26).**
+9. `fix(body): make settings panel actually clickable` — register the panel in the Wayland
+   input region; keep value chips clear of the torso-action strip. **✅ done.**
 
 ## 9. Decisions (resolved in review)
 

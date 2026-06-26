@@ -1,17 +1,31 @@
 # bb-desktop-body — native desktop presence body
 
-Build-order **steps 2–3** from [docs/OVERLAY_POSTMORTEM_AND_REBUILD_PLAN.md](../docs/OVERLAY_POSTMORTEM_AND_REBUILD_PLAN.md).
+Grew out of build-order **steps 2–3** from [docs/OVERLAY_POSTMORTEM_AND_REBUILD_PLAN.md](../docs/OVERLAY_POSTMORTEM_AND_REBUILD_PLAN.md);
+it is now the real **soul-driven presence body**, not just a spike.
 
-A small, standalone Rust binary that de-risks the whole desktop-body plan by proving,
-on the real COSMIC/Wayland/NVIDIA machine, the capabilities the dead transparent-WebKitGTK
-stack could never deliver. It talks Wayland directly via `smithay-client-toolkit` and renders
-with software `wl_shm` (tiny-skia + fontdue) — **no GTK, no WebKit, no GPU**.
+A standalone Rust binary that talks Wayland directly via `smithay-client-toolkit` and renders
+with software `wl_shm` (tiny-skia + fontdue) — **no GTK, no WebKit, no GPU**. A `calloop` 30fps
+timer drives animation alongside Wayland input; a `tungstenite` WebSocket thread connects to a
+soul over the presence protocol (`src/presenceProtocol.ts`), the same one the browser body speaks.
 
-- **Step 2 (spike):** a static sprite on the overlay layer — placement, drag, click-through, output.
-- **Step 3 (animated body):** a time-driven face (idle bob, blink, emotion-driven eyes/mouth),
-  a real text **speech bubble**, and an expanding **menu card**. A `calloop` 30fps timer drives
-  animation alongside Wayland input. The presentation state (`set_emotion` / `say` / `toggle_menu`)
-  is the seam step 4 wires to presence-protocol events over the WebSocket.
+## What it is now
+
+- **Animated clay figure** — head, torso, arms, legs, feet; idle bob, blink, emotion-driven
+  eyes/mouth. A real text **speech bubble** and a chat input.
+- **Soul-driven** — applies inbound `express` / `say` / `move_to` / `hydrate` / `surface_active` /
+  `output` / `action_result` / `targets_available` cues; emits `attached` / `clicked` / `grabbed` /
+  `dropped` / `said` / `surface_request` / `action_request` back. The body presents and reports;
+  it never decides authority (AGENTS.md law 7).
+- **Surface dial** — hold the torso to bloom the surface switcher (two columns flanking the torso
+  so the torso stays readable); availability is soul-pushed (`available` / `unwired` / `gated`).
+- **Right-click commandeer picker** — a two-phase dial (window → Pin/Monitor/Control). P/M/C route
+  through the soul-gated `commandeer` act effector via an `ActionIntent`; only Unpin of the
+  already-pinned window is local. The body renders the picker; the soul authorizes and the
+  `frame_driver` acts.
+- **Receipt rail** — at full body length, a left-edge rail of recent `action_result` receipts.
+- **Body-local settings panel** — reached from the dial's Customize entry. Colour and Size are
+  editable presentation (cycle on tap); Posture and Buddy are read-only, reflecting soul/launch
+  state only — the visible posture can never lie about the soul's actual authorization posture.
 
 ## What it proves
 
@@ -28,15 +42,30 @@ vacated pixels to repaint — the compositor just relocates its texture.
 
 ## Run
 
+The body runs standalone (puppeting itself) if no soul is present, and connects when one appears.
+For the full governed experience, run a soul too:
+
 ```bash
-cargo run --release                       # active output, top-left
+# Terminal 1 — the real soul (runs the action gate): ws://127.0.0.1:17387/border-buddies
+npm run soul:dev
+
+# Terminal 2 — the body. Use the SAME buddy id the soul grants effectors to.
+BB_BUDDY=forge cargo run --release        # commandeer is granted to Forge
 BB_OUTPUT_INDEX=1 cargo run               # second monitor
 BB_MARGIN_LEFT=400 BB_MARGIN_TOP=200 cargo run
+
+# COSMIC screen-commandeer driver (enumerate + activate + type), driven by the soul on allow:
+cargo run --bin frame_driver
 ```
 
-**Drag** the blue buddy head with the left button. **Click** the head to open the menu +
-greeting bubble; the menu items change the buddy's speech and cycle its mood. Clicks in the
-transparent areas fall through to the window beneath. Ctrl+C (or close from the compositor) to exit.
+Useful env: `BB_BUDDY` (wire id, default `hermes`), `BB_PRESENCE_URL`, `BB_OUTPUT_INDEX`,
+`BB_MARGIN_LEFT/TOP`, `BB_COLOR` (clay colour, also cycleable in the settings panel),
+`<BUDDY>_NAME` / `<BUDDY>_PROVIDER` / `<BUDDY>_MODEL` per-buddy labels.
+
+**Drag** the figure (whole body is a move handle). **Click** the head to open chat. **Hold** the
+torso to bloom the surface dial; **right-click** to open the commandeer picker. Drag the **feet**
+to resize. The dial's **Customize** entry opens the settings panel. Clicks in transparent areas
+fall through to the window beneath. Ctrl+C (or close from the compositor) to exit.
 
 ## What to look for (manual verification)
 
@@ -46,9 +75,11 @@ transparent areas fall through to the window beneath. Ctrl+C (or close from the 
   visibly changes the eyes/mouth.
 - It can be placed on a second monitor with `BB_OUTPUT_INDEX`.
 
-## Next (step 4 — wire the soul)
+## Next
 
-Add a presence-protocol WebSocket client: feed inbound `express` / `say` / `move_to` / `hydrate`
-events into `set_emotion` / `say` / margin updates, and emit `clicked` / `grabbed` / `dragged` /
-`dropped` / `summoned` / `dismissed` back to the gateway — the same protocol the browser body
-already speaks (`src/presenceProtocol.ts`).
+- **Wizard onboarding host** (`docs/WIZARD_ONBOARDING_SCRIPT.md`) — drive the body through
+  Act 0+ from the soul side.
+- **Governance vertical slice** — make a buddy action grade memory and emit a `GradeReceipt`,
+  joining the presence body to the governance core.
+- Posture remains read-only in the settings panel; making it editable is a soul-side
+  request→echo follow-up (the body must reflect, never decide, posture — law 7).

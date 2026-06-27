@@ -7,7 +7,7 @@ import {
   type OnboardingEvent,
   type OnboardingState,
 } from "../wizardOnboarding";
-import { actCues, onHostEvent } from "../wizardOnboardingHost";
+import { actCues, actPanel, onHostEvent } from "../wizardOnboardingHost";
 
 // The advancing event each act listens for, in order — the canonical "happy path"
 // walk a Host would receive (Act 4 self-advances on a timeout the soul fires).
@@ -36,6 +36,49 @@ describe("actCues", () => {
   it("clamps a past-the-end index to the final act instead of throwing", () => {
     const overrun: OnboardingState = { actIndex: 99, completed: true };
     expect(actCues(overrun)).toEqual(ONBOARDING_ACTS[ONBOARDING_ACTS.length - 1].cues);
+  });
+});
+
+describe("actPanel", () => {
+  const stateAt = (actIndex: number): OnboardingState => ({ actIndex, completed: false });
+
+  it("emits the right section + primary token for each act of the walk", () => {
+    // The native body advances each form act on `clicked{panel: primaryPanel}`; the token the
+    // Host stamps here must match the act's `advanceOn`, or the body could never advance it.
+    const sections = ONBOARDING_ACTS.map((_, i) => {
+      const panel = actPanel(stateAt(i), []);
+      return { section: panel.section, primary: panel.primaryPanel };
+    });
+    expect(sections).toEqual([
+      { section: "none", primary: undefined }, // first_contact
+      { section: "connect", primary: "connection_ok" },
+      { section: "posture", primary: "posture_set" },
+      { section: "placement", primary: "next" },
+      { section: "none", primary: undefined }, // find_me
+      { section: "summary", primary: "done" },
+    ]);
+    // Every form section's primary token must be an event the act actually advances on.
+    ONBOARDING_ACTS.forEach((act, i) => {
+      const token = actPanel(stateAt(i), []).primaryPanel;
+      if (token) expect(act.advanceOn).toContain(`panel:${token}` as OnboardingEvent);
+    });
+  });
+
+  it("offers a masked paste_key credential field on the connect section", () => {
+    const connect = actPanel(stateAt(1), []);
+    expect(connect.options?.length).toBeGreaterThan(0);
+    const key = connect.fields?.find((f) => f.key === "apiKey");
+    expect(key?.control).toBe("paste_key");
+    expect(key?.masked).toBe(true);
+  });
+
+  it("marks summary rows recorded as their lifecycle receipts land", () => {
+    const summaryIndex = ONBOARDING_ACTS.findIndex((a) => a.panelSection === "summary");
+    const before = actPanel(stateAt(summaryIndex), []);
+    expect(before.rows?.every((r) => r.status === "pending")).toBe(true);
+    const after = actPanel(stateAt(summaryIndex), ["credential.stored", "posture.set", "placement.set"]);
+    const recorded = after.rows?.filter((r) => r.status === "recorded").length ?? 0;
+    expect(recorded).toBe(3);
   });
 });
 

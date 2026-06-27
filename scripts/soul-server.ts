@@ -53,7 +53,7 @@ import {
   type OnboardingEvent,
   type OnboardingState,
 } from "../src/wizardOnboarding";
-import { actCues, onHostEvent } from "../src/wizardOnboardingHost";
+import { actCues, actPanel, onHostEvent } from "../src/wizardOnboardingHost";
 import {
   lifecycleReceiptKinds,
   readLifecycleReceipts,
@@ -297,6 +297,17 @@ function emitCues(socket: WebSocket, buddy: string, cues: readonly OnboardingCue
   }
 }
 
+/**
+ * Push the current act's onboarding form section to the body as a `panel` cue (Build C). Always
+ * emitted alongside the act's cues so a no-form act (`section: "none"`) closes any open panel —
+ * the body and the script never drift about what's shown. Summary row statuses read the live
+ * lifecycle ledger so the receipts the body shows match what's actually recorded.
+ */
+function emitPanel(socket: WebSocket, buddy: string, state: OnboardingState): void {
+  const receiptKinds = lifecycleReceiptKinds(readLifecycleReceipts(storage));
+  socket.send(JSON.stringify(presence.panel(buddy, actPanel(state, receiptKinds))));
+}
+
 function clearWizardTimer(buddy: string): void {
   const timer = wizardTimers.get(buddy);
   if (timer) {
@@ -320,6 +331,8 @@ function scheduleWizardTimeout(socket: WebSocket, buddy: string, state: Onboardi
  * Host tucked and hydrate the hermes buddy so a connected hermes body settles in. */
 function handoffToHermes(socket: WebSocket, hostBuddy: string): void {
   log("wizard complete → handoff to hermes", { host: hostBuddy });
+  // The summary panel was open when `done` fired; close it before parking the Host tucked.
+  socket.send(JSON.stringify(presence.panel(hostBuddy, { section: "none", title: "" })));
   socket.send(
     JSON.stringify(presence.moveTo(hostBuddy, { mode: "tucked", edge: "right", offset: { x: 0, y: 48 } })),
   );
@@ -351,6 +364,7 @@ function advanceWizard(socket: WebSocket, buddy: string, event: OnboardingEvent)
     return;
   }
   emitCues(socket, buddy, actCues(result.next));
+  emitPanel(socket, buddy, result.next);
   scheduleWizardTimeout(socket, buddy, result.next);
 }
 
@@ -368,6 +382,7 @@ function handleWizardHost(socket: WebSocket, message: { kind: string; buddy: str
       socket.send(JSON.stringify(presence.hydrate(buddy, { emotion: "neutral" })));
       if (mode === "linear") {
         emitCues(socket, buddy, actCues(state));
+        emitPanel(socket, buddy, state);
         scheduleWizardTimeout(socket, buddy, state);
       } else {
         socket.send(JSON.stringify(presence.express(buddy, "happy")));

@@ -1839,6 +1839,11 @@ impl App {
                     self.update_input_region();
                 }
             }
+            presence::Cue::Panel { .. } => {
+                // Build C, Slice 1: the wire format and parser land first. The native in-torso
+                // onboarding panel that renders this section (and reports clicked{panel:*}) is
+                // Slice 3 — until then a panel cue is parsed but not yet drawn.
+            }
         }
     }
 

@@ -481,6 +481,21 @@ pub enum Cue {
         /// nested object so the passport row and a future route ring read the same shape.
         route: Option<SurfaceRoute>,
     },
+    /// An onboarding form section the wizard Host wants rendered in the torso panel (Build C).
+    /// The native twin of the React `OnboardingWizardPanel`: the Host owns the act→section mapping
+    /// and the words (law 7); the body draws the title/prompt/options/fields and reports a
+    /// `clicked{panel: primary_panel}` on confirm — it never invents the token. `section == "none"`
+    /// carries no form and tells the body to close the panel.
+    Panel {
+        section: String,
+        title: String,
+        prompt: Option<String>,
+        options: Vec<PanelOption>,
+        fields: Vec<PanelField>,
+        rows: Vec<PanelRow>,
+        primary_label: Option<String>,
+        primary_panel: Option<String>,
+    },
     /// Border-target tracking (the "Morph Frame" seam): a platform driver tells the body
     /// where a native OS window is so it can wrap its hollow torso around it. Split three
     /// ways so the renderer binds distinct behavior to the lifecycle; every cue carries
@@ -505,6 +520,37 @@ pub struct TargetEntry {
     pub target_id: String,
     pub title: String,
     pub app_id: String,
+}
+
+/// One selectable row in a `Panel` section (a posture/placement choice, a provider preset).
+/// Mirrors the TS `PresencePanelOption`. `selected` is the Host's default highlight, never
+/// authoritative — the body reports the user's actual pick (law 7).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PanelOption {
+    pub id: String,
+    pub label: String,
+    pub detail: Option<String>,
+    pub selected: bool,
+}
+
+/// One input field in a `Panel` section. Mirrors the TS `PresencePanelField`: `control` is the
+/// closed set `paste_key | text | select` (`paste_key` is the masked clipboard credential
+/// affordance); `masked` echoes the value as dots.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PanelField {
+    pub key: String,
+    pub label: String,
+    pub control: String,
+    pub masked: bool,
+    pub value: Option<String>,
+}
+
+/// One receipt row in the summary section. Mirrors the TS `PresencePanelRow`: `status` is the
+/// closed set `recorded | pending`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PanelRow {
+    pub label: String,
+    pub status: String,
 }
 
 /// One entry in the `hydrate` surface list. Mirrors the TS `PresenceSurfaceDescriptor`:
@@ -691,6 +737,63 @@ fn parse_surfaces(value: &Value) -> Option<Vec<SurfaceDescriptor>> {
     Some(out)
 }
 
+/// Parse the optional `options` list on a `Panel`. Each entry needs a non-empty `id` and a
+/// string `label`; `detail`/`selected` are optional. A present-but-malformed list drops the
+/// whole cue (`?`), mirroring the TS `isPanelOptionArray` guard.
+fn parse_panel_options(value: &Value) -> Option<Vec<PanelOption>> {
+    let arr = value.as_array()?;
+    let mut out = Vec::with_capacity(arr.len());
+    for item in arr {
+        out.push(PanelOption {
+            id: nonempty(item.get("id"))?,
+            label: item.get("label")?.as_str()?.to_string(),
+            detail: item.get("detail").and_then(|s| s.as_str()).map(String::from),
+            selected: item.get("selected").and_then(|s| s.as_bool()).unwrap_or(false),
+        });
+    }
+    Some(out)
+}
+
+/// Parse the optional `fields` list on a `Panel`. Each entry needs a non-empty `key`, a string
+/// `label`, and a `control` in the closed set `paste_key | text | select` — anything else drops
+/// the whole cue (mirrors the TS `isPanelFieldArray` guard).
+fn parse_panel_fields(value: &Value) -> Option<Vec<PanelField>> {
+    let arr = value.as_array()?;
+    let mut out = Vec::with_capacity(arr.len());
+    for item in arr {
+        let control = item.get("control")?.as_str()?.to_string();
+        if !matches!(control.as_str(), "paste_key" | "text" | "select") {
+            return None;
+        }
+        out.push(PanelField {
+            key: nonempty(item.get("key"))?,
+            label: item.get("label")?.as_str()?.to_string(),
+            control,
+            masked: item.get("masked").and_then(|s| s.as_bool()).unwrap_or(false),
+            value: item.get("value").and_then(|s| s.as_str()).map(String::from),
+        });
+    }
+    Some(out)
+}
+
+/// Parse the optional `rows` list on a `Panel` (summary receipts). Each entry needs a string
+/// `label` and a `status` in the closed set `recorded | pending`.
+fn parse_panel_rows(value: &Value) -> Option<Vec<PanelRow>> {
+    let arr = value.as_array()?;
+    let mut out = Vec::with_capacity(arr.len());
+    for item in arr {
+        let status = item.get("status")?.as_str()?.to_string();
+        if !matches!(status.as_str(), "recorded" | "pending") {
+            return None;
+        }
+        out.push(PanelRow {
+            label: item.get("label")?.as_str()?.to_string(),
+            status,
+        });
+    }
+    Some(out)
+}
+
 /// A required, non-empty string field (mirrors the TS `isNonEmptyString` guard).
 fn nonempty(value: Option<&Value>) -> Option<String> {
     let s = value?.as_str()?;
@@ -813,6 +916,40 @@ pub fn parse_to_body(text: &str) -> Option<ToBody> {
                 label: v.get("label").and_then(|s| s.as_str()).map(String::from),
                 provider_label: v.get("providerLabel").and_then(|s| s.as_str()).map(String::from),
                 route,
+            }
+        }
+        "panel" => {
+            let section = v.get("section")?.as_str()?.to_string();
+            if !matches!(
+                section.as_str(),
+                "connect" | "posture" | "placement" | "summary" | "none"
+            ) {
+                return None;
+            }
+            Cue::Panel {
+                section,
+                title: v.get("title")?.as_str()?.to_string(),
+                prompt: v.get("prompt").and_then(|s| s.as_str()).map(String::from),
+                // Absent → empty (valid); present-but-malformed → `?` drops the cue.
+                options: match v.get("options") {
+                    None => Vec::new(),
+                    Some(o) => parse_panel_options(o)?,
+                },
+                fields: match v.get("fields") {
+                    None => Vec::new(),
+                    Some(f) => parse_panel_fields(f)?,
+                },
+                rows: match v.get("rows") {
+                    None => Vec::new(),
+                    Some(r) => parse_panel_rows(r)?,
+                },
+                primary_label: v.get("primaryLabel").and_then(|s| s.as_str()).map(String::from),
+                // Absent → None (valid); present must be a non-empty string, else `?` drops the
+                // cue (mirrors the TS `isNonEmptyString(raw.primaryPanel)` guard).
+                primary_panel: match v.get("primaryPanel") {
+                    None => None,
+                    Some(p) => Some(nonempty(Some(p))?),
+                },
             }
         }
         "target_acquired" => Cue::TargetAcquired {
@@ -1026,6 +1163,47 @@ mod tests {
         // A missing targetId drops the whole cue (strict guard).
         let bad = r#"{"protocol":"presence","v":0,"kind":"targets_available","buddy":"forge","ts":7,"targets":[{"targetId":"","title":"x","appId":"y"}]}"#;
         assert!(parse_to_body(bad).is_none());
+    }
+
+    #[test]
+    fn parses_panel_connect_fixture() {
+        // The shared golden fixture's `panel` is a connect section (options + a masked paste_key
+        // field + a Host-owned primary token) — the cross-language contract for Build C.
+        let panel = parse_to_body(&fixture("panel")).unwrap();
+        assert_eq!(panel.buddy, "hermes");
+        match panel.cue {
+            Cue::Panel { section, title, options, fields, primary_panel, .. } => {
+                assert_eq!(section, "connect");
+                assert_eq!(title, "Connect a provider");
+                assert_eq!(options.len(), 2);
+                assert!(options[0].selected);
+                assert_eq!(options[0].id, "xai");
+                // The credential field arrives as a masked paste_key control.
+                let key = fields.iter().find(|f| f.key == "apiKey").unwrap();
+                assert_eq!(key.control, "paste_key");
+                assert!(key.masked);
+                assert_eq!(primary_panel.as_deref(), Some("connection_ok"));
+            }
+            other => panic!("expected panel, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn panel_validation_mirrors_ts() {
+        // `none` carries no form — the minimal close signal still parses.
+        assert!(matches!(
+            parse_to_body(r#"{"protocol":"presence","v":0,"kind":"panel","buddy":"host","ts":1,"section":"none","title":""}"#).unwrap().cue,
+            Cue::Panel { .. }
+        ));
+        // Unknown section is dropped (closed set, not a free string).
+        assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"panel","buddy":"host","ts":1,"section":"billing","title":"x"}"#).is_none());
+        // Unknown field control is dropped.
+        assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"panel","buddy":"host","ts":1,"section":"connect","title":"x","fields":[{"key":"apiKey","label":"API key","control":"biometric"}]}"#).is_none());
+        // Unknown summary row status is dropped.
+        assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"panel","buddy":"host","ts":1,"section":"summary","title":"x","rows":[{"label":"Posture","status":"halfway"}]}"#).is_none());
+        // An option missing its id, and a present-but-empty primaryPanel, both drop the cue.
+        assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"panel","buddy":"host","ts":1,"section":"posture","title":"x","options":[{"label":"Work"}]}"#).is_none());
+        assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"panel","buddy":"host","ts":1,"section":"connect","title":"x","primaryPanel":""}"#).is_none());
     }
 
     #[test]

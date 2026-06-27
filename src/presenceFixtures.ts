@@ -85,6 +85,27 @@ export const PRESENCE_FIXTURES = {
     },
     { ts: 1019 },
   ),
+  panel: presence.panel(
+    BUDDY,
+    {
+      // The connect section exercises the full shape: a select-style option list, a masked
+      // paste_key credential field, and a Host-owned primary action token.
+      section: "connect",
+      title: "Connect a provider",
+      prompt: "Pick a provider and paste its API key.",
+      options: [
+        { id: "xai", label: "xAI / Grok", detail: "Hosted Grok via xAI", selected: true },
+        { id: "ollama", label: "Ollama", detail: "Local OpenAI-compatible" },
+      ],
+      fields: [
+        { key: "model", label: "Model", control: "text", value: "grok-4" },
+        { key: "apiKey", label: "API key", control: "paste_key", masked: true },
+      ],
+      primaryLabel: "Test connection",
+      primaryPanel: "connection_ok",
+    },
+    { ts: 1022 },
+  ),
   surface_request: presence.surfaceRequest(BUDDY, "private_local_chat", { ts: 1020 }),
   surface_active: presence.surfaceActive(
     BUDDY,

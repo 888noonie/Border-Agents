@@ -11,6 +11,7 @@ import {
   type PresenceMessage,
   type PresencePosition,
 } from "../presenceProtocol";
+import { PRESENCE_FIXTURES } from "../presenceFixtures";
 
 const FREE: PresencePosition = { mode: "free", space: "viewport", x: 120, y: 64 };
 const ANCHORED: PresencePosition = { mode: "anchored", edge: "right", offset: { x: 0, y: 0 } };
@@ -383,6 +384,51 @@ describe("action gate cues", () => {
         surface: "private_local_chat",
         posture: "party",
       }),
+    ).toBeNull();
+  });
+});
+
+describe("onboarding panel cue (Build C)", () => {
+  const base = { protocol: PRESENCE_PROTOCOL, v: 0, kind: "panel" as const, buddy: "host", ts: 1 };
+
+  test("accepts a full connect section and a bare none-section close", () => {
+    expect(parsePresenceMessage(PRESENCE_FIXTURES.panel)).not.toBeNull();
+    // `none` carries no form — the minimal close signal must still parse.
+    expect(parsePresenceMessage({ ...base, section: "none", title: "" })).not.toBeNull();
+  });
+
+  test("rejects an unknown section", () => {
+    expect(parsePresenceMessage({ ...base, section: "billing", title: "x" })).toBeNull();
+  });
+
+  test("rejects an unknown field control", () => {
+    expect(
+      parsePresenceMessage({
+        ...base,
+        section: "connect",
+        title: "x",
+        fields: [{ key: "apiKey", label: "API key", control: "biometric" }],
+      }),
+    ).toBeNull();
+  });
+
+  test("rejects an unknown summary row status", () => {
+    expect(
+      parsePresenceMessage({
+        ...base,
+        section: "summary",
+        title: "x",
+        rows: [{ label: "Posture", status: "halfway" }],
+      }),
+    ).toBeNull();
+  });
+
+  test("rejects an option missing its id, and a present-but-empty primaryPanel", () => {
+    expect(
+      parsePresenceMessage({ ...base, section: "posture", title: "x", options: [{ label: "Work" }] }),
+    ).toBeNull();
+    expect(
+      parsePresenceMessage({ ...base, section: "connect", title: "x", primaryPanel: "" }),
     ).toBeNull();
   });
 });

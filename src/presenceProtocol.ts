@@ -346,6 +346,79 @@ export type PresenceSurfaceActive = PresenceEnvelope<
   }
 >;
 
+/**
+ * Which onboarding form section the body should render in its torso panel, soul-pushed
+ * (Build C). The wizard Host owns the act→section mapping (law 7); the body never derives
+ * it. `none` closes the panel (Act 0/1/handoff carry no form). The four form sections mirror
+ * the React `OnboardingPanelSection` so the two bodies render the same script.
+ */
+export type PresencePanelSection = "connect" | "posture" | "placement" | "summary" | "none";
+
+export const PRESENCE_PANEL_SECTIONS: readonly PresencePanelSection[] = [
+  "connect",
+  "posture",
+  "placement",
+  "summary",
+  "none",
+];
+
+/** One selectable row in a panel section (a posture/placement choice, a provider preset). */
+export interface PresencePanelOption {
+  id: string;
+  label: string;
+  detail?: string;
+  /** Default highlight the body shows before the user picks; never authoritative (law 7). */
+  selected?: boolean;
+}
+
+/**
+ * One input field the body renders. `paste_key` is the credential affordance: the body pulls
+ * from the clipboard and echoes it masked (it never round-trips the secret to the screen). `text`
+ * is a plain editable line; `select` defers to the section's `options`. `masked` hides the value.
+ */
+export interface PresencePanelField {
+  key: string;
+  label: string;
+  control: "paste_key" | "text" | "select";
+  masked?: boolean;
+  value?: string;
+}
+
+export type PresencePanelFieldControl = PresencePanelField["control"];
+
+export const PRESENCE_PANEL_FIELD_CONTROLS: readonly PresencePanelFieldControl[] = [
+  "paste_key",
+  "text",
+  "select",
+];
+
+/** One receipt row in the summary section: a lifecycle step and whether it's recorded yet. */
+export interface PresencePanelRow {
+  label: string;
+  status: "recorded" | "pending";
+}
+
+/**
+ * The onboarding form section to render, soul-pushed by the wizard Host (Build C). This is the
+ * native body's in-torso twin of the React `OnboardingWizardPanel`: the Host renders the current
+ * section's title/prompt/options/fields and the body draws + reports. The primary action emits
+ * `clicked{panel: primaryPanel}` — the Host decides the token, the body never invents it (law 7).
+ * `section: "none"` carries no form and tells the body to close the panel.
+ */
+export type PresencePanel = PresenceEnvelope<
+  "panel",
+  {
+    section: PresencePanelSection;
+    title: string;
+    prompt?: string;
+    options?: PresencePanelOption[];
+    fields?: PresencePanelField[];
+    rows?: PresencePanelRow[];
+    primaryLabel?: string;
+    primaryPanel?: string;
+  }
+>;
+
 export type PresenceToBodyMessage =
   | PresenceMoveTo
   | PresenceExpress
@@ -355,6 +428,7 @@ export type PresenceToBodyMessage =
   | PresenceOutput
   | PresenceActionResult
   | PresenceSurfaceActive
+  | PresencePanel
   | PresenceTargetAcquired
   | PresenceTargetMoved
   | PresenceTargetLost;
@@ -485,6 +559,7 @@ export const PRESENCE_TO_BODY_KINDS: readonly PresenceToBodyMessage["kind"][] = 
   "output",
   "action_result",
   "surface_active",
+  "panel",
   "target_acquired",
   "target_moved",
   "target_lost",
@@ -663,6 +738,51 @@ function isSurfaceDescriptorArray(value: unknown): value is PresenceSurfaceDescr
   );
 }
 
+function isPanelSection(value: unknown): value is PresencePanelSection {
+  return (PRESENCE_PANEL_SECTIONS as readonly unknown[]).includes(value);
+}
+
+function isPanelOptionArray(value: unknown): value is PresencePanelOption[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (item) =>
+        isObject(item) &&
+        isNonEmptyString(item.id) &&
+        typeof item.label === "string" &&
+        (item.detail === undefined || typeof item.detail === "string") &&
+        (item.selected === undefined || typeof item.selected === "boolean"),
+    )
+  );
+}
+
+function isPanelFieldArray(value: unknown): value is PresencePanelField[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (item) =>
+        isObject(item) &&
+        isNonEmptyString(item.key) &&
+        typeof item.label === "string" &&
+        (PRESENCE_PANEL_FIELD_CONTROLS as readonly unknown[]).includes(item.control) &&
+        (item.masked === undefined || typeof item.masked === "boolean") &&
+        (item.value === undefined || typeof item.value === "string"),
+    )
+  );
+}
+
+function isPanelRowArray(value: unknown): value is PresencePanelRow[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (item) =>
+        isObject(item) &&
+        typeof item.label === "string" &&
+        (item.status === "recorded" || item.status === "pending"),
+    )
+  );
+}
+
 function isPlatform(value: unknown): value is PresencePlatform {
   return (
     isObject(value) &&
@@ -769,6 +889,17 @@ function isValidForKind(kind: PresenceKind, raw: Record<string, unknown>): boole
         (raw.label === undefined || typeof raw.label === "string") &&
         (raw.providerLabel === undefined || typeof raw.providerLabel === "string") &&
         (raw.route === undefined || isSurfaceRoute(raw.route))
+      );
+    case "panel":
+      return (
+        isPanelSection(raw.section) &&
+        typeof raw.title === "string" &&
+        (raw.prompt === undefined || typeof raw.prompt === "string") &&
+        (raw.options === undefined || isPanelOptionArray(raw.options)) &&
+        (raw.fields === undefined || isPanelFieldArray(raw.fields)) &&
+        (raw.rows === undefined || isPanelRowArray(raw.rows)) &&
+        (raw.primaryLabel === undefined || typeof raw.primaryLabel === "string") &&
+        (raw.primaryPanel === undefined || isNonEmptyString(raw.primaryPanel))
       );
     case "target_acquired":
       return (
@@ -970,6 +1101,22 @@ export const presence = {
     opts: EnvelopeOptions = {},
   ): PresenceSurfaceActive {
     return envelope("surface_active", buddy, { ...payload }, opts) as PresenceSurfaceActive;
+  },
+  panel(
+    buddy: string,
+    payload: {
+      section: PresencePanelSection;
+      title: string;
+      prompt?: string;
+      options?: PresencePanelOption[];
+      fields?: PresencePanelField[];
+      rows?: PresencePanelRow[];
+      primaryLabel?: string;
+      primaryPanel?: string;
+    },
+    opts: EnvelopeOptions = {},
+  ): PresencePanel {
+    return envelope("panel", buddy, { ...payload }, opts) as PresencePanel;
   },
   targetAcquired(
     buddy: string,

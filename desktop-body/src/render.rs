@@ -287,6 +287,45 @@ impl Layout {
             .collect()
     }
 
+    /// Minimum torso stretch so a connect-style panel (many options + credential fields) fits
+    /// without overlapping rows. Callers may bump `body_len` to this when a `panel` cue opens.
+    pub fn min_body_len_for_onboarding(
+        list_rows: usize,
+        field_rows: usize,
+        has_prompt: bool,
+        has_primary: bool,
+    ) -> f32 {
+        let content = Self::min_onboarding_content_h(list_rows, field_rows, has_prompt, has_primary);
+        // output_panel_rect: h = body_len - 16; content: h = panel.h - 8
+        (content + 24.0).clamp(BODY_LEN_MIN, BODY_LEN_MAX)
+    }
+
+    fn min_onboarding_content_h(
+        list_rows: usize,
+        field_rows: usize,
+        has_prompt: bool,
+        has_primary: bool,
+    ) -> f32 {
+        let title = 15.0 + 2.0;
+        let prompt = if has_prompt { 13.0 + 2.0 } else { 0.0 };
+        let primary = if has_primary { 24.0 + 6.0 } else { 0.0 };
+        let gap = 2.0;
+        let section_gap = 4.0;
+        let opt_h = 18.0;
+        let field_h = 16.0;
+        let list_h = if list_rows > 0 {
+            list_rows as f32 * opt_h + (list_rows as f32 - 1.0).max(0.0) * gap + section_gap
+        } else {
+            0.0
+        };
+        let fields_h = if field_rows > 0 {
+            field_rows as f32 * field_h + (field_rows as f32 - 1.0).max(0.0) * gap
+        } else {
+            0.0
+        };
+        title + prompt + list_h + fields_h + primary + 4.0
+    }
+
     /// Interactive rects for the in-torso onboarding panel (Build C). Shares the torso output
     /// card with the settings/interior views; reserves the right-edge strip for torso actions.
     pub fn onboarding_layout(
@@ -298,7 +337,7 @@ impl Layout {
     ) -> OnboardingLayout {
         let panel = self.output_panel_rect();
         let inset = 4.0;
-        let right_reserve = 26.0;
+        let right_reserve = 22.0;
         let content = Rect {
             x: panel.x + inset,
             y: panel.y + inset,
@@ -316,13 +355,13 @@ impl Layout {
             };
         }
 
+        let title_h = 15.0_f32;
         let mut y = content.y;
-        let title_h = 16.0_f32.min(content.h);
         let title = Rect { x: content.x, y, w: content.w, h: title_h };
         y += title_h + 2.0;
 
         let prompt = if has_prompt {
-            let h = 14.0_f32.min((content.y + content.h - y).max(0.0));
+            let h = 13.0_f32.min((content.y + content.h - y).max(0.0));
             let rect = Rect { x: content.x, y, w: content.w, h };
             y += h + 2.0;
             Some(rect)
@@ -330,8 +369,8 @@ impl Layout {
             None
         };
 
-        let primary_h = 22.0_f32;
-        let primary_gap = 5.0_f32;
+        let primary_h = 24.0_f32;
+        let primary_gap = 6.0_f32;
         let primary = if has_primary {
             Some(Rect {
                 x: content.x,
@@ -345,20 +384,37 @@ impl Layout {
 
         let bottom = primary.map(|r| r.y - primary_gap).unwrap_or(content.y + content.h);
         let mid_h = (bottom - y - 2.0).max(0.0);
-        let gap = 2.0;
-        let total_mid = list_rows + field_rows;
+        let row_gap = 2.0;
+        let section_gap = 4.0;
+        let field_row_h = 16.0_f32;
+        let fields_total = if field_rows > 0 {
+            field_rows as f32 * field_row_h + (field_rows as f32 - 1.0).max(0.0) * row_gap + section_gap
+        } else {
+            0.0
+        };
+        let list_budget = (mid_h - fields_total).max(0.0);
 
-        let option_rects = if list_rows > 0 && mid_h >= 8.0 {
-            let list_budget = if field_rows > 0 { mid_h * 0.58 } else { mid_h };
-            let row_h = ((list_budget - gap * (list_rows as f32 - 1.0)) / list_rows as f32)
-                .max(8.0)
-                .min(16.0);
+        let opt_h_detailed = 18.0_f32;
+        let opt_h_compact = 12.0_f32;
+        let option_row_h = if list_rows == 0 {
+            0.0
+        } else if list_budget >= list_rows as f32 * opt_h_detailed + (list_rows as f32 - 1.0).max(0.0) * row_gap {
+            opt_h_detailed
+        } else if list_budget >= list_rows as f32 * opt_h_compact + (list_rows as f32 - 1.0).max(0.0) * row_gap {
+            opt_h_compact
+        } else {
+            ((list_budget - (list_rows as f32 - 1.0).max(0.0) * row_gap) / list_rows as f32)
+                .max(10.0)
+                .min(opt_h_compact)
+        };
+
+        let option_rects = if list_rows > 0 && option_row_h >= 10.0 {
             (0..list_rows)
                 .map(|i| Rect {
                     x: content.x,
-                    y: y + i as f32 * (row_h + gap),
+                    y: y + i as f32 * (option_row_h + row_gap),
                     w: content.w,
-                    h: row_h,
+                    h: option_row_h,
                 })
                 .collect()
         } else {
@@ -366,21 +422,17 @@ impl Layout {
         };
 
         let fields_y = if list_rows > 0 {
-            option_rects.last().map(|r| r.y + r.h + 4.0).unwrap_or(y)
+            option_rects.last().map(|r| r.y + r.h + section_gap).unwrap_or(y)
         } else {
             y
         };
-        let fields_budget = (bottom - fields_y - 3.0).max(0.0);
-        let field_rects = if field_rows > 0 && fields_budget >= 8.0 && total_mid > 0 {
-            let row_h = ((fields_budget - gap * (field_rows as f32 - 1.0)) / field_rows as f32)
-                .max(8.0)
-                .min(18.0);
+        let field_rects = if field_rows > 0 && (bottom - fields_y) >= field_row_h {
             (0..field_rows)
                 .map(|i| Rect {
                     x: content.x,
-                    y: fields_y + i as f32 * (row_h + gap),
+                    y: fields_y + i as f32 * (field_row_h + row_gap),
                     w: content.w,
-                    h: row_h,
+                    h: field_row_h,
                 })
                 .collect()
         } else {
@@ -1339,8 +1391,10 @@ fn draw_body_content(
             );
             // When the interior view is open, Paste/Review/Edit live as labeled rows inside the
             // torso — don't also draw the standalone perimeter buttons (they'd duplicate and
-            // float outside, exactly what the interior view exists to retire).
-            if view.interior_rows.is_empty() {
+            // float outside, exactly what the interior view exists to retire). The onboarding
+            // panel owns the torso too — drawing P/R/E here would overlap the form (law 7: body
+            // only presents; overlapping chrome makes the Host panel unusable).
+            if view.interior_rows.is_empty() && view.onboarding.is_none() {
                 draw_paste_button(pixmap, font, &view.layout);
                 draw_governance_button(pixmap, font, view.layout.review_button_rect(), view.review_pending, "Review");
                 draw_governance_button(pixmap, font, view.layout.edit_button_rect(), view.edit_pending, "Edit");
@@ -2126,41 +2180,46 @@ fn draw_onboarding_view(
     }
 
     for (field, rect) in panel.fields.iter().zip(panel_layout.fields.iter()) {
-        let text_px = (rect.h * 0.55).clamp(8.0, 11.0);
+        let text_px = (rect.h * 0.52).clamp(8.0, 10.5);
         let baseline = rect.y + rect.h / 2.0 + text_px * 0.34;
+        let label_w = (rect.w * 0.34).clamp(36.0, 52.0);
         draw_line(pixmap, font, field.label, rect.x + 6.0, baseline, text_px, label_ink);
         let display = if field.display.is_empty() {
             "—"
         } else {
             field.display
         };
-        let max_value_w = (rect.w * 0.45).max(0.0);
+        let action_px = (text_px - 1.0).clamp(7.0, 9.0);
+        let chip_w = field
+            .action
+            .map(|action| measure(font, action, action_px) + 10.0)
+            .unwrap_or(0.0)
+            .max(0.0);
+        let value_right = rect.x + rect.w - chip_w - 8.0;
+        let max_value_w = (value_right - (rect.x + label_w + 6.0)).max(0.0);
         let value = truncate_to_width(font, display, text_px, max_value_w);
         let vw = measure(font, &value, text_px);
-        let value_x = rect.x + rect.w - vw - 6.0;
+        let value_x = value_right - vw;
         let ink = if field.focused { lighten(color, 0.95) } else { dim_ink };
         draw_line(pixmap, font, &value, value_x, baseline, text_px, ink);
         if let Some(action) = field.action {
-            let action_px = (text_px - 1.0).clamp(7.0, 9.0);
             let aw = measure(font, action, action_px);
             let chip = Rect {
-                x: (rect.x + 6.0).max(value_x - aw - 16.0),
-                y: rect.y + 1.0,
+                x: rect.x + rect.w - aw - 12.0,
+                y: rect.y + 2.0,
                 w: aw + 8.0,
-                h: (rect.h * 0.42).max(8.0).min(rect.h - 2.0),
+                h: (rect.h - 4.0).max(10.0),
             };
-            if chip.x + chip.w < value_x - 4.0 {
-                draw_round_rect(pixmap, chip, rgba(lighten(color, 0.62), 220));
-                draw_line(
-                    pixmap,
-                    font,
-                    action,
-                    chip.x + 4.0,
-                    chip.y + chip.h * 0.72,
-                    action_px,
-                    shade(color, 0.3),
-                );
-            }
+            draw_round_rect(pixmap, chip, rgba(lighten(color, 0.62), 220));
+            draw_line(
+                pixmap,
+                font,
+                action,
+                chip.x + 4.0,
+                chip.y + chip.h * 0.72,
+                action_px,
+                shade(color, 0.3),
+            );
         }
     }
 
@@ -3871,6 +3930,31 @@ mod tests {
             onboarding_hit_at(&layout, f64::from(opt.x + 2.0), f64::from(opt.y + 2.0)),
             Some(OnboardingHit::Option(1)),
         );
+    }
+
+    #[test]
+    fn connect_panel_layout_fits_at_recommended_body_len() {
+        let body_len = Layout::min_body_len_for_onboarding(4, 2, true, true);
+        assert!(
+            body_len > BODY_LEN_DEFAULT,
+            "connect needs more than default stretch, got {body_len}"
+        );
+        let l = Layout { facing: Facing::Right, body_len };
+        let layout = l.onboarding_layout(4, 2, true, true);
+        assert_eq!(layout.options.len(), 4);
+        assert_eq!(layout.fields.len(), 2);
+        assert!(layout.primary.is_some());
+        for (i, rect) in layout.options.iter().enumerate() {
+            assert!(rect.h >= 12.0, "option row {i} too short: {}", rect.h);
+        }
+        for (i, rect) in layout.fields.iter().enumerate() {
+            assert!(rect.h >= 14.0, "field row {i} too short: {}", rect.h);
+        }
+        if let Some(primary) = layout.primary {
+            for field in &layout.fields {
+                assert!(field.y + field.h <= primary.y - 2.0, "field overlaps primary");
+            }
+        }
     }
 
     #[test]

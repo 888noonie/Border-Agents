@@ -2071,9 +2071,12 @@ impl App {
                     ));
                     self.settings_open = false;
                     self.interior_open = false;
+                    self.chat_open = false;
+                    self.input_text.clear();
                     self.input_focused = false;
                     self.surface_bloom_open = false;
                     self.picker = None;
+                    self.ensure_onboarding_body_len();
                 }
                 self.update_input_region();
             }
@@ -2948,6 +2951,21 @@ impl App {
             panel.prompt.is_some(),
             panel.primary_label.is_some(),
         )
+    }
+
+    /// Stretch the torso when a multi-row onboarding section would otherwise cram options and
+    /// credential fields into overlapping strips (connect is the worst case: four providers + two fields).
+    fn ensure_onboarding_body_len(&mut self) {
+        let Some(panel) = self.onboarding_panel.as_ref() else {
+            return;
+        };
+        let (list_rows, field_rows, has_prompt, has_primary) =
+            Self::onboarding_panel_layout_counts(panel);
+        let min_len =
+            render::Layout::min_body_len_for_onboarding(list_rows, field_rows, has_prompt, has_primary);
+        if self.body_len + 0.5 < min_len {
+            self.set_body_len(min_len);
+        }
     }
 
     fn onboarding_panel_layout(&self) -> render::OnboardingLayout {

@@ -217,6 +217,23 @@ export interface PresenceSurfaceDescriptor {
 export type PresenceSurfaceDescriptorKind = "surface" | "launcher";
 
 /**
+ * Wizard handoff payload shipped on Hermes `hydrate` after onboarding completes (Build C
+ * Slice 5). Carries the connect draft in-process, memory-only — never logged or persisted.
+ * The native body ignores unknown hydrate fields today; the soul retains the credential for
+ * provider routing.
+ */
+export interface PresenceHermesHydrateDraft {
+  provider: string;
+  apiBase: string;
+  apiKey: string;
+  model: string;
+  systemPrompt: string;
+  posture: UserPosture;
+  enabledBuddyIds: string[];
+  buddyEdges: Record<string, string>;
+}
+
+/**
  * Full snapshot so a late-joining or reconnecting body can hydrate at once. `surfaces` is
  * the ordered, soul-pushed surface list (canonical SURFACE_ORDER) with per-surface
  * availability — the body cycles and dims from this instead of any local manifest.
@@ -229,6 +246,8 @@ export type PresenceHydrate = PresenceEnvelope<
     speech?: string;
     platform?: PresencePlatform;
     surfaces?: PresenceSurfaceDescriptor[];
+    /** Present on wizard→Hermes handoff; carries the connect draft including `apiKey`. */
+    hermesDraft?: PresenceHermesHydrateDraft;
   }
 >;
 
@@ -823,6 +842,32 @@ function isPanelRowArray(value: unknown): value is PresencePanelRow[] {
   );
 }
 
+function isBuddyEdge(value: unknown): boolean {
+  return value === "top" || value === "right" || value === "bottom" || value === "left";
+}
+
+function isHermesHydrateDraft(value: unknown): value is PresenceHermesHydrateDraft {
+  if (!isObject(value)) {
+    return false;
+  }
+  if (
+    typeof value.provider !== "string" ||
+    typeof value.apiBase !== "string" ||
+    typeof value.apiKey !== "string" ||
+    typeof value.model !== "string" ||
+    typeof value.systemPrompt !== "string" ||
+    !isUserPosture(value.posture) ||
+    !Array.isArray(value.enabledBuddyIds) ||
+    !value.enabledBuddyIds.every((id) => typeof id === "string" && id.length > 0)
+  ) {
+    return false;
+  }
+  if (!isObject(value.buddyEdges)) {
+    return false;
+  }
+  return Object.values(value.buddyEdges).every(isBuddyEdge);
+}
+
 function isPlatform(value: unknown): value is PresencePlatform {
   return (
     isObject(value) &&
@@ -908,7 +953,8 @@ function isValidForKind(kind: PresenceKind, raw: Record<string, unknown>): boole
         (raw.emotion === undefined || isEmotion(raw.emotion)) &&
         (raw.speech === undefined || typeof raw.speech === "string") &&
         (raw.platform === undefined || isPlatform(raw.platform)) &&
-        (raw.surfaces === undefined || isSurfaceDescriptorArray(raw.surfaces))
+        (raw.surfaces === undefined || isSurfaceDescriptorArray(raw.surfaces)) &&
+        (raw.hermesDraft === undefined || isHermesHydrateDraft(raw.hermesDraft))
       );
     case "output":
       return isValidOutputPayload(raw);
@@ -1097,6 +1143,7 @@ export const presence = {
       speech?: string;
       platform?: PresencePlatform;
       surfaces?: PresenceSurfaceDescriptor[];
+      hermesDraft?: PresenceHermesHydrateDraft;
     },
     opts: EnvelopeOptions = {},
   ): PresenceHydrate {

@@ -323,3 +323,19 @@ Independent re-read of wire/strict-parse, body `apply_cue` + `click_choices`, so
 **Slice 5 decision (recorded):** Pass the draft into `handoffToHermes`; Hermes `hydrate` carries the key **in-process, memory-only** (smallest fix). **Do not log the hydrate payload** — it will carry `apiKey`; existing `log("wizard complete → handoff…")` only logs `{ host }`. Receipt `detail` path remains safe (no key by construction).
 
 **Run tasks added:** VS Code → Run Task → **BB wizard host (onboarding)** (`scripts/bb-wizard-host.sh`) · **BB forge + soul + frame** (`scripts/bb-forge-stack.sh`). npm: `npm run wizard:host` · `npm run forge:stack`.
+
+---
+
+## L5 checkpoint — Slice 5 Hermes handoff credential (2026-06-27)
+
+**What landed:**
+
+| Layer | Change |
+|-------|--------|
+| Wire | Additive optional `hydrate.hermesDraft` (`PresenceHermesHydrateDraft`, strict-parse) |
+| Soul | `handoffToHermes(socket, host, draft)` passes `wizardDrafts` entry; `hermesCompanionDrafts` map retains in-process; hydrate envelope carries `apiKey` — **not logged** |
+| Helper | `hermesHydrateDraftFromWizard` in `wizardHostDraft.ts` |
+
+**Render-pass decision (deliberate no):** Slice 5 does **not** include another render pass. The reserved 22px primary band from Slice 4 is the only layout change; cramped torso at realistic sizes remains a **known open item**, not a regression. Revisit render polish only if manual smoke fails legibility.
+
+**Manual smoke (required):** Run Task → **BB wizard host (onboarding)**; walk Acts 0→5 without injected clicks; confirm selections survive each confirm; verify handoff log shows `{ host }` only (no `hermesDraft` in any log line).

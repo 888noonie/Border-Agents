@@ -4,6 +4,7 @@ import { DEFAULT_USER_POSTURE } from "../core/userPosture";
 import {
   applyPanelChoices,
   createWizardHostDraft,
+  hermesHydrateDraftFromWizard,
   receiptDetailForAct,
 } from "../wizardHostDraft";
 
@@ -51,5 +52,18 @@ describe("wizardHostDraft", () => {
     });
     const again = applyPanelChoices(prior, "next", { selectedOptionIds: [] });
     expect(again.enabledBuddyIds).toEqual(["hermes", "owl"]);
+  });
+
+  it("builds hermes handoff draft with apiKey for in-process hydrate only", () => {
+    const draft = applyPanelChoices(createWizardHostDraft(), "connection_ok", {
+      selectedOptionIds: ["xai"],
+      fieldValues: { apiKey: "handoff-secret", model: "grok-4" },
+    });
+    const handoff = hermesHydrateDraftFromWizard(draft);
+    expect(handoff.apiKey).toBe("handoff-secret");
+    expect(handoff.provider).toBe("xai");
+    expect(handoff.model).toBe("grok-4");
+    expect(handoff.enabledBuddyIds).toEqual(draft.enabledBuddyIds);
+    expect(handoff.buddyEdges).toEqual(draft.buddyEdges);
   });
 });

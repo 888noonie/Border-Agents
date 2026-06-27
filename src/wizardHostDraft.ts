@@ -13,13 +13,27 @@ import {
   type OnboardingSurfaceDraft,
 } from "./onboardingSurfaceState";
 import { isUserPosture } from "./core/userPosture";
-import type { PresencePanelChoices } from "./presenceProtocol";
+import type { PresenceHermesHydrateDraft, PresencePanelChoices } from "./presenceProtocol";
 import type { OnboardingAct } from "./wizardOnboarding";
 
 export type WizardHostDraft = OnboardingSurfaceDraft;
 
 export function createWizardHostDraft(): WizardHostDraft {
   return createDefaultOnboardingSurfaceState().draft;
+}
+
+/** Build the in-process Hermes handoff draft for `hydrate` — includes `apiKey`; never log this. */
+export function hermesHydrateDraftFromWizard(draft: WizardHostDraft): PresenceHermesHydrateDraft {
+  return {
+    provider: draft.provider,
+    apiBase: draft.apiBase,
+    apiKey: draft.apiKey,
+    model: draft.model,
+    systemPrompt: draft.systemPrompt,
+    posture: draft.posture,
+    enabledBuddyIds: [...draft.enabledBuddyIds],
+    buddyEdges: { ...draft.buddyEdges },
+  };
 }
 
 function isProviderPresetId(value: string): value is HermesProviderPresetId {

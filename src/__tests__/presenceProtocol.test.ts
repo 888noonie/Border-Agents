@@ -138,11 +138,51 @@ describe("presence protocol parsing rejects malformed input", () => {
     expect(parsePresenceMessage({ protocol: PRESENCE_PROTOCOL, v: 0, kind: "hydrate", buddy: "h", ts: 1, surfaces: [{ id: "", label: "X", availability: "gated" }] })).toBeNull();
     // hydrate surfaces that is not an array
     expect(parsePresenceMessage({ protocol: PRESENCE_PROTOCOL, v: 0, kind: "hydrate", buddy: "h", ts: 1, surfaces: "session" })).toBeNull();
+    // hydrate hermesDraft with a malformed buddy edge
+    expect(
+      parsePresenceMessage({
+        protocol: PRESENCE_PROTOCOL,
+        v: 0,
+        kind: "hydrate",
+        buddy: "h",
+        ts: 1,
+        hermesDraft: {
+          provider: "xai",
+          apiBase: "https://api.x.ai/v1",
+          apiKey: "secret",
+          model: "grok-4",
+          systemPrompt: "hi",
+          posture: "work",
+          enabledBuddyIds: ["hermes"],
+          buddyEdges: { hermes: "diagonal" },
+        },
+      }),
+    ).toBeNull();
   });
 
   test("accepts valid optional fields and minimal payloads", () => {
     expect(parsePresenceMessage(presence.clicked("hermes", { ts: 1 }))).not.toBeNull();
     expect(parsePresenceMessage(presence.hydrate("hermes", {}, { ts: 1 }))).not.toBeNull();
+    expect(
+      parsePresenceMessage(
+        presence.hydrate(
+          "hermes",
+          {
+            hermesDraft: {
+              provider: "xai",
+              apiBase: "https://api.x.ai/v1",
+              apiKey: "secret",
+              model: "grok-4",
+              systemPrompt: "You are Hermes.",
+              posture: "play",
+              enabledBuddyIds: ["hermes", "owl"],
+              buddyEdges: { hermes: "right", owl: "top" },
+            },
+          },
+          { ts: 1 },
+        ),
+      ),
+    ).not.toBeNull();
   });
 });
 

@@ -58,6 +58,7 @@ import { actCues, actPanel, onHostEvent } from "../src/wizardOnboardingHost";
 import {
   applyPanelChoices,
   createWizardHostDraft,
+  hermesHydrateDraftFromWizard,
   receiptDetailForOnboardingAct,
   type WizardHostDraft,
 } from "../src/wizardHostDraft";
@@ -283,6 +284,8 @@ const COMPLETED_ONBOARDING_STATE: OnboardingState = { actIndex: 5, completed: tr
 
 const onboarding = new Map<string, OnboardingState>();
 const wizardDrafts = new Map<string, WizardHostDraft>();
+/** In-memory Hermes connect draft after wizard handoff — never logged or persisted. */
+const hermesCompanionDrafts = new Map<string, WizardHostDraft>();
 const wizardTimers = new Map<string, ReturnType<typeof setTimeout>>();
 /** Posture chosen during wizard onboarding; applied to gate calls after handoff. */
 let wizardSessionPosture: UserPosture = POSTURE;
@@ -343,9 +346,11 @@ function scheduleWizardTimeout(socket: WebSocket, buddy: string, state: Onboardi
 
 /** Onboarding complete: park the Host and bring in the companion (hydrate hermes). The true
  * window-dismiss / hermes-body spawn lands with the deferred panel spike — here we park the
- * Host tucked and hydrate the hermes buddy so a connected hermes body settles in. */
-function handoffToHermes(socket: WebSocket, hostBuddy: string): void {
+ * Host tucked and hydrate the hermes buddy so a connected hermes body settles in. The wizard
+ * draft (including `apiKey`) rides in `hermesDraft` in-process only — do not log the envelope. */
+function handoffToHermes(socket: WebSocket, hostBuddy: string, draft: WizardHostDraft): void {
   log("wizard complete → handoff to hermes", { host: hostBuddy });
+  hermesCompanionDrafts.set(HERMES_BUDDY, draft);
   // The summary panel was open when `done` fired; close it before parking the Host tucked.
   socket.send(JSON.stringify(presence.panel(hostBuddy, { section: "none", title: "" })));
   socket.send(
@@ -357,6 +362,7 @@ function handoffToHermes(socket: WebSocket, hostBuddy: string): void {
         emotion: "happy",
         speech: "Hi — I'm Hermes, your companion. What shall we do first?",
         surfaces: hydrationSurfacesFor(HERMES_BUDDY),
+        hermesDraft: hermesHydrateDraftFromWizard(draft),
       }),
     ),
   );
@@ -378,7 +384,7 @@ function advanceWizard(socket: WebSocket, buddy: string, event: OnboardingEvent)
   }
   onboarding.set(buddy, result.next);
   if (result.completedNow) {
-    handoffToHermes(socket, buddy);
+    handoffToHermes(socket, buddy, draft);
     return;
   }
   emitCues(socket, buddy, actCues(result.next));

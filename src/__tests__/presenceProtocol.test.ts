@@ -433,6 +433,35 @@ describe("onboarding panel cue (Build C)", () => {
   });
 });
 
+describe("clicked panelChoices (Build C Slice 4)", () => {
+  const base = {
+    protocol: PRESENCE_PROTOCOL,
+    v: 0,
+    kind: "clicked" as const,
+    buddy: "host",
+    ts: 1,
+    panel: "connection_ok",
+  };
+
+  test("accepts selected options and field values alongside panel", () => {
+    expect(
+      parsePresenceMessage({
+        ...base,
+        panelChoices: {
+          selectedOptionIds: ["ollama"],
+          fieldValues: { apiKey: "secret", model: "llama3.1" },
+        },
+      }),
+    ).not.toBeNull();
+  });
+
+  test("rejects malformed panelChoices", () => {
+    expect(parsePresenceMessage({ ...base, panelChoices: { selectedOptionIds: [""] } })).toBeNull();
+    expect(parsePresenceMessage({ ...base, panelChoices: { fieldValues: { apiKey: 7 } } })).toBeNull();
+    expect(parsePresenceMessage({ ...base, panelChoices: "bad" })).toBeNull();
+  });
+});
+
 describe("attached handshake", () => {
   test("is a to-soul lifecycle kind, distinct from summoned", () => {
     expect((PRESENCE_TO_SOUL_KINDS as readonly string[])).toContain("attached");

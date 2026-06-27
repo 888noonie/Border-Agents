@@ -287,6 +287,125 @@ impl Layout {
             .collect()
     }
 
+    /// Interactive rects for the in-torso onboarding panel (Build C). Shares the torso output
+    /// card with the settings/interior views; reserves the right-edge strip for torso actions.
+    pub fn onboarding_layout(
+        &self,
+        list_rows: usize,
+        field_rows: usize,
+        has_prompt: bool,
+        has_primary: bool,
+    ) -> OnboardingLayout {
+        let panel = self.output_panel_rect();
+        let inset = 4.0;
+        let right_reserve = 26.0;
+        let content = Rect {
+            x: panel.x + inset,
+            y: panel.y + inset,
+            w: (panel.w - inset * 2.0 - right_reserve).max(0.0),
+            h: (panel.h - inset * 2.0).max(0.0),
+        };
+        if content.h < 24.0 {
+            return OnboardingLayout {
+                card: content,
+                title: content,
+                prompt: None,
+                options: Vec::new(),
+                fields: Vec::new(),
+                primary: None,
+            };
+        }
+
+        let mut y = content.y;
+        let title_h = 16.0_f32.min(content.h);
+        let title = Rect { x: content.x, y, w: content.w, h: title_h };
+        y += title_h + 2.0;
+
+        let prompt = if has_prompt {
+            let h = 14.0_f32.min((content.y + content.h - y).max(0.0));
+            let rect = Rect { x: content.x, y, w: content.w, h };
+            y += h + 2.0;
+            Some(rect)
+        } else {
+            None
+        };
+
+        let primary_h = 22.0_f32;
+        let primary_gap = 5.0_f32;
+        let primary = if has_primary {
+            Some(Rect {
+                x: content.x,
+                y: content.y + content.h - primary_h,
+                w: content.w,
+                h: primary_h,
+            })
+        } else {
+            None
+        };
+
+        let bottom = primary.map(|r| r.y - primary_gap).unwrap_or(content.y + content.h);
+        let mid_h = (bottom - y - 2.0).max(0.0);
+        let gap = 2.0;
+        let total_mid = list_rows + field_rows;
+
+        let option_rects = if list_rows > 0 && mid_h >= 8.0 {
+            let list_budget = if field_rows > 0 { mid_h * 0.58 } else { mid_h };
+            let row_h = ((list_budget - gap * (list_rows as f32 - 1.0)) / list_rows as f32)
+                .max(8.0)
+                .min(16.0);
+            (0..list_rows)
+                .map(|i| Rect {
+                    x: content.x,
+                    y: y + i as f32 * (row_h + gap),
+                    w: content.w,
+                    h: row_h,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        let fields_y = if list_rows > 0 {
+            option_rects.last().map(|r| r.y + r.h + 4.0).unwrap_or(y)
+        } else {
+            y
+        };
+        let fields_budget = (bottom - fields_y - 3.0).max(0.0);
+        let field_rects = if field_rows > 0 && fields_budget >= 8.0 && total_mid > 0 {
+            let row_h = ((fields_budget - gap * (field_rows as f32 - 1.0)) / field_rows as f32)
+                .max(8.0)
+                .min(18.0);
+            (0..field_rows)
+                .map(|i| Rect {
+                    x: content.x,
+                    y: fields_y + i as f32 * (row_h + gap),
+                    w: content.w,
+                    h: row_h,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        let card_top = title.y - 4.0;
+        let card_bottom = primary.map(|r| r.y + r.h + 4.0).unwrap_or(bottom);
+        let card = Rect {
+            x: content.x - 4.0,
+            y: card_top,
+            w: content.w + 8.0,
+            h: (card_bottom - card_top).max(0.0),
+        };
+
+        OnboardingLayout {
+            card,
+            title,
+            prompt,
+            options: option_rects,
+            fields: field_rects,
+            primary,
+        }
+    }
+
     pub fn torso_action_rect(&self, action: TorsoAction) -> Rect {
         let panel = self.output_panel_rect();
         let size = 18.0_f32.min(panel.w.max(0.0)).min((panel.h / 2.0).max(0.0));
@@ -871,6 +990,86 @@ pub struct SettingsRow<'a> {
     pub editable: bool,
 }
 
+/// The in-torso onboarding panel (Build C) — the native twin of the React `OnboardingWizardPanel`.
+/// Purely a render snapshot of the `panel` cue the wizard Host pushed plus the user's local edits;
+/// the body owns none of the meaning (AGENTS.md law 7). `single_select` distinguishes the connect /
+/// posture pick-one sections from the placement pick-many toggles.
+pub struct OnboardingPanelView<'a> {
+    pub title: &'a str,
+    pub prompt: Option<&'a str>,
+    pub options: &'a [OnboardingOptionView<'a>],
+    pub fields: &'a [OnboardingFieldView<'a>],
+    pub summary_rows: &'a [OnboardingRowView<'a>],
+    pub primary_label: Option<&'a str>,
+    #[allow(dead_code)]
+    /// Connect/posture pick-one vs placement pick-many — reserved for future render hints.
+    pub single_select: bool,
+}
+
+/// One selectable option row (a provider preset, a posture card, a buddy toggle).
+pub struct OnboardingOptionView<'a> {
+    pub label: &'a str,
+    pub detail: Option<&'a str>,
+    pub selected: bool,
+}
+
+/// One input field. `display` is what to paint — already masked to dots for a credential, so the
+/// secret never reaches the render path. `action` labels a tap-chip (e.g. "Paste key") when the
+/// field fills from the clipboard rather than the keyboard.
+pub struct OnboardingFieldView<'a> {
+    pub label: &'a str,
+    pub display: &'a str,
+    pub focused: bool,
+    pub action: Option<&'a str>,
+}
+
+/// One summary receipt row: a setup step and whether its lifecycle receipt has landed yet.
+pub struct OnboardingRowView<'a> {
+    pub label: &'a str,
+    pub recorded: bool,
+}
+
+/// The interactive rects of the onboarding panel, computed once and shared between the renderer and
+/// the body's hit-test so a tap always lands on exactly what was drawn (the same contract the
+/// settings panel keeps via `interior_rows_for`).
+pub struct OnboardingLayout {
+    pub card: Rect,
+    pub title: Rect,
+    pub prompt: Option<Rect>,
+    /// Option / summary rows (the middle list), in order.
+    pub options: Vec<Rect>,
+    pub fields: Vec<Rect>,
+    pub primary: Option<Rect>,
+}
+
+/// A press inside the onboarding panel, if any.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnboardingHit {
+    Option(usize),
+    Field(usize),
+    Primary,
+}
+
+/// Hit-test the onboarding panel using the same layout the renderer drew.
+pub fn onboarding_hit_at(layout: &OnboardingLayout, px: f64, py: f64) -> Option<OnboardingHit> {
+    if let Some(rect) = layout.primary {
+        if rect.contains(px, py) {
+            return Some(OnboardingHit::Primary);
+        }
+    }
+    for (i, rect) in layout.fields.iter().enumerate() {
+        if rect.contains(px, py) {
+            return Some(OnboardingHit::Field(i));
+        }
+    }
+    for (i, rect) in layout.options.iter().enumerate() {
+        if rect.contains(px, py) {
+            return Some(OnboardingHit::Option(i));
+        }
+    }
+    None
+}
+
 #[derive(Clone, Copy)]
 pub struct ReceiptRailItem<'a> {
     pub glyph: &'a str,
@@ -939,6 +1138,9 @@ pub struct BodyView<'a> {
     /// Body-local settings panel rows. Non-empty only while the settings panel is open, in which
     /// case it takes the torso over the output/interior view.
     pub settings: &'a [SettingsRow<'a>],
+    /// Wizard onboarding form section (Build C). When present it owns the torso over settings,
+    /// interior, and torso output.
+    pub onboarding: Option<&'a OnboardingPanelView<'a>>,
     pub layout: Layout,
     pub pinned: Option<PinnedLayout>,
     pub frame: Option<FrameLayout>,
@@ -1096,7 +1298,9 @@ fn draw_body_content(
 ) {
     draw_figure(pixmap, &view.layout, view.color, bob, pose, view.route_health, view.route_flash);
     if let Some(font) = font {
-        if !view.settings.is_empty() {
+        if let Some(panel) = view.onboarding {
+            draw_onboarding_view(pixmap, font, &view.layout, panel, view.color);
+        } else if !view.settings.is_empty() {
             draw_settings_view(pixmap, font, &view.layout, view.settings, view.color);
         } else if view.interior_rows.is_empty() {
             draw_torso_output(pixmap, font, &view.layout, &view.torso_output);
@@ -1805,6 +2009,174 @@ fn draw_settings_view(
         } else {
             draw_line(pixmap, font, &value, right_limit - vw, baseline, text_px, dim_ink);
         }
+    }
+}
+
+/// The wizard onboarding panel: soul-pushed section rendered inside the torso card. The body draws
+/// only; confirming emits the Host-stamped `primary_panel` token (AGENTS.md law 7).
+fn draw_onboarding_view(
+    pixmap: &mut Pixmap,
+    font: &Font,
+    layout: &Layout,
+    panel: &OnboardingPanelView,
+    color: [u8; 3],
+) {
+    let list_rows = if panel.summary_rows.is_empty() {
+        panel.options.len()
+    } else {
+        panel.summary_rows.len()
+    };
+    let panel_layout = layout.onboarding_layout(
+        list_rows,
+        panel.fields.len(),
+        panel.prompt.is_some(),
+        panel.primary_label.is_some(),
+    );
+    if panel_layout.card.h < 8.0 {
+        return;
+    }
+
+    draw_round_rect(pixmap, panel_layout.card, rgba(shade(color, 0.28), 240));
+    if let Some(path) = round_rect_path(panel_layout.card, 9.0) {
+        let mut stroke = Stroke::default();
+        stroke.width = 1.0;
+        pixmap.stroke_path(
+            &path,
+            &solid(rgba(shade(color, 0.5), 200)),
+            &stroke,
+            Transform::identity(),
+            None,
+        );
+    }
+
+    let title_px = 11.0;
+    let title_ink = lighten(color, 0.92);
+    draw_line(
+        pixmap,
+        font,
+        panel.title,
+        panel_layout.title.x + 4.0,
+        panel_layout.title.y + title_px,
+        title_px,
+        title_ink,
+    );
+
+    if let (Some(prompt), Some(rect)) = (panel.prompt, panel_layout.prompt) {
+        let prompt_px = 8.5;
+        let text = truncate_to_width(font, prompt, prompt_px, rect.w - 6.0);
+        draw_line(
+            pixmap,
+            font,
+            &text,
+            rect.x + 3.0,
+            rect.y + prompt_px,
+            prompt_px,
+            lighten(color, 0.62),
+        );
+    }
+
+    let label_ink = lighten(color, 0.86);
+    let dim_ink = lighten(color, 0.5);
+
+    if !panel.summary_rows.is_empty() {
+        for (row, rect) in panel.summary_rows.iter().zip(panel_layout.options.iter()) {
+            let text_px = (rect.h * 0.55).clamp(8.0, 11.0);
+            let baseline = rect.y + rect.h / 2.0 + text_px * 0.34;
+            draw_line(pixmap, font, row.label, rect.x + 6.0, baseline, text_px, label_ink);
+            let status = if row.recorded { "Recorded" } else { "Pending" };
+            let sw = measure(font, status, text_px - 1.0);
+            draw_line(
+                pixmap,
+                font,
+                status,
+                rect.x + rect.w - sw - 6.0,
+                baseline,
+                text_px - 1.0,
+                if row.recorded { lighten(color, 0.72) } else { dim_ink },
+            );
+        }
+    } else {
+        for (opt, rect) in panel.options.iter().zip(panel_layout.options.iter()) {
+            let bg = if opt.selected {
+                rgba(lighten(color, 0.58), 235)
+            } else {
+                rgba(shade(color, 0.42), 180)
+            };
+            draw_round_rect(pixmap, *rect, bg);
+            let text_px = (rect.h * 0.55).clamp(8.0, 11.0);
+            let baseline = rect.y + rect.h / 2.0 + text_px * 0.34;
+            draw_line(pixmap, font, opt.label, rect.x + 6.0, baseline, text_px, label_ink);
+            if rect.h >= 14.0 {
+                if let Some(detail) = opt.detail {
+                    let detail_px = (text_px - 1.5).clamp(7.0, 9.0);
+                    let max_w = (rect.w - 12.0).max(0.0);
+                    let text = truncate_to_width(font, detail, detail_px, max_w);
+                    draw_line(
+                        pixmap,
+                        font,
+                        &text,
+                        rect.x + 6.0,
+                        rect.y + rect.h - 3.0,
+                        detail_px,
+                        dim_ink,
+                    );
+                }
+            }
+        }
+    }
+
+    for (field, rect) in panel.fields.iter().zip(panel_layout.fields.iter()) {
+        let text_px = (rect.h * 0.55).clamp(8.0, 11.0);
+        let baseline = rect.y + rect.h / 2.0 + text_px * 0.34;
+        draw_line(pixmap, font, field.label, rect.x + 6.0, baseline, text_px, label_ink);
+        let display = if field.display.is_empty() {
+            "—"
+        } else {
+            field.display
+        };
+        let max_value_w = (rect.w * 0.45).max(0.0);
+        let value = truncate_to_width(font, display, text_px, max_value_w);
+        let vw = measure(font, &value, text_px);
+        let value_x = rect.x + rect.w - vw - 6.0;
+        let ink = if field.focused { lighten(color, 0.95) } else { dim_ink };
+        draw_line(pixmap, font, &value, value_x, baseline, text_px, ink);
+        if let Some(action) = field.action {
+            let action_px = (text_px - 1.0).clamp(7.0, 9.0);
+            let aw = measure(font, action, action_px);
+            let chip = Rect {
+                x: (rect.x + 6.0).max(value_x - aw - 16.0),
+                y: rect.y + 1.0,
+                w: aw + 8.0,
+                h: (rect.h * 0.42).max(8.0).min(rect.h - 2.0),
+            };
+            if chip.x + chip.w < value_x - 4.0 {
+                draw_round_rect(pixmap, chip, rgba(lighten(color, 0.62), 220));
+                draw_line(
+                    pixmap,
+                    font,
+                    action,
+                    chip.x + 4.0,
+                    chip.y + chip.h * 0.72,
+                    action_px,
+                    shade(color, 0.3),
+                );
+            }
+        }
+    }
+
+    if let (Some(label), Some(rect)) = (panel.primary_label, panel_layout.primary) {
+        draw_round_rect(pixmap, rect, rgba(lighten(color, 0.68), 245));
+        let text_px = (rect.h * 0.55).clamp(8.0, 11.0);
+        let tw = measure(font, label, text_px);
+        draw_line(
+            pixmap,
+            font,
+            label,
+            rect.x + (rect.w - tw) / 2.0,
+            rect.y + rect.h / 2.0 + text_px * 0.34,
+            text_px,
+            shade(color, 0.28),
+        );
     }
 }
 
@@ -3465,6 +3837,43 @@ mod tests {
     }
 
     #[test]
+    fn onboarding_layout_degenerate_when_content_too_short() {
+        // onboarding_layout returns empty interactive rects when content.h < 24; use a torso
+        // short enough that output_panel_rect().h - 16 < 24 (body_len < ~48).
+        let l = Layout {
+            facing: Facing::Right,
+            body_len: 40.0,
+        };
+        let panel = l.output_panel_rect();
+        assert!(panel.h < 32.0, "test fixture must exercise content.h < 24, got panel.h {}", panel.h);
+        let layout = l.onboarding_layout(3, 2, true, true);
+        assert!(layout.options.is_empty());
+        assert!(layout.fields.is_empty());
+        assert!(layout.primary.is_none());
+    }
+
+    #[test]
+    fn onboarding_layout_fits_inside_torso_and_hit_test_matches_primary() {
+        let l = Layout { facing: Facing::Right, body_len: BODY_LEN_DEFAULT };
+        let panel = l.output_panel_rect();
+        let layout = l.onboarding_layout(3, 2, true, true);
+        assert!(layout.card.x >= panel.x);
+        assert!(layout.card.y >= panel.y);
+        assert_eq!(layout.options.len(), 3);
+        assert_eq!(layout.fields.len(), 2);
+        let primary = layout.primary.expect("primary button");
+        assert_eq!(
+            onboarding_hit_at(&layout, f64::from(primary.x + 2.0), f64::from(primary.y + 2.0)),
+            Some(OnboardingHit::Primary),
+        );
+        let opt = layout.options[1];
+        assert_eq!(
+            onboarding_hit_at(&layout, f64::from(opt.x + 2.0), f64::from(opt.y + 2.0)),
+            Some(OnboardingHit::Option(1)),
+        );
+    }
+
+    #[test]
     fn interior_view_replaces_torso_output_and_hides_the_perimeter_ring() {
         // The whole point of the interior view: outside buttons come inside, so the outside
         // ring must not render, and the interior rows must paint into the torso panel.
@@ -3503,6 +3912,7 @@ mod tests {
                 receipt_rail: &[],
                 interior_rows: interior,
                 settings: &[],
+                onboarding: None,
                 layout,
                 pinned: None,
                 frame: None,
@@ -3602,6 +4012,7 @@ mod tests {
                 receipt_rail: &[],
                 interior_rows: &interior,
                 settings: &[],
+                onboarding: None,
                 layout,
                 pinned: None,
                 frame: None,
@@ -4005,6 +4416,7 @@ mod tests {
             receipt_rail: &[],
             interior_rows: &[],
             settings: &[],
+            onboarding: None,
             layout: Layout::initial(),
             pinned: None,
             frame: Some(frame),

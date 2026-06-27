@@ -23,7 +23,7 @@ mod presence;
 mod render;
 
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     io::Write,
     process::{Command, Stdio},
     time::{Duration, Instant},
@@ -33,7 +33,7 @@ use calloop::channel::Event as ChannelEvent;
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{EventLoop, LoopSignal};
 use calloop_wayland_source::WaylandSource;
-use render::{BodyView, BumpEdge, Emotion, Facing, PerimeterId, Sprite, TorsoAction};
+use render::{BodyView, BumpEdge, Emotion, Facing, OnboardingHit, PerimeterId, Sprite, TorsoAction};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, Region},
     delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
@@ -641,6 +641,7 @@ fn main() {
         picker: None,
         available_targets: Vec::new(),
         settings_open: false,
+        onboarding_panel: None,
         // The interior control list is the primary surface for perimeter controls now — the
         // external ring is gone, so the labeled in-torso list shows by default. Torso scroll
         // toggles it away to reveal the torso output panel.
@@ -758,6 +759,152 @@ struct PressState {
     bloom_started: bool,
 }
 
+/// Local mirror of the wizard Host's `panel` cue plus the user's in-progress picks. The body
+/// stores draft state for rendering only; confirming emits the Host-stamped `primary_panel` token
+/// without inventing it (AGENTS.md law 7).
+struct OnboardingPanelState {
+    section: String,
+    title: String,
+    prompt: Option<String>,
+    options: Vec<presence::PanelOption>,
+    fields: Vec<presence::PanelField>,
+    rows: Vec<presence::PanelRow>,
+    primary_label: Option<String>,
+    primary_panel: Option<String>,
+    option_selected: Vec<bool>,
+    field_drafts: Vec<String>,
+    focused_field: Option<usize>,
+}
+
+impl OnboardingPanelState {
+    fn from_cue(
+        section: String,
+        title: String,
+        prompt: Option<String>,
+        options: Vec<presence::PanelOption>,
+        fields: Vec<presence::PanelField>,
+        rows: Vec<presence::PanelRow>,
+        primary_label: Option<String>,
+        primary_panel: Option<String>,
+    ) -> Self {
+        Self {
+            option_selected: options.iter().map(|o| o.selected).collect(),
+            field_drafts: fields
+                .iter()
+                .map(|f| f.value.clone().unwrap_or_default())
+                .collect(),
+            focused_field: None,
+            section,
+            title,
+            prompt,
+            options,
+            fields,
+            rows,
+            primary_label,
+            primary_panel,
+        }
+    }
+
+    fn apply_cue(
+        previous: Option<Self>,
+        section: String,
+        title: String,
+        prompt: Option<String>,
+        options: Vec<presence::PanelOption>,
+        fields: Vec<presence::PanelField>,
+        rows: Vec<presence::PanelRow>,
+        primary_label: Option<String>,
+        primary_panel: Option<String>,
+    ) -> Self {
+        if let Some(mut panel) = previous {
+            if panel.section == section {
+                panel.merge_metadata(title, prompt, options, fields, rows, primary_label, primary_panel);
+                return panel;
+            }
+        }
+        Self::from_cue(
+            section,
+            title,
+            prompt,
+            options,
+            fields,
+            rows,
+            primary_label,
+            primary_panel,
+        )
+    }
+
+    fn merge_metadata(
+        &mut self,
+        title: String,
+        prompt: Option<String>,
+        options: Vec<presence::PanelOption>,
+        fields: Vec<presence::PanelField>,
+        rows: Vec<presence::PanelRow>,
+        primary_label: Option<String>,
+        primary_panel: Option<String>,
+    ) {
+        let prior_selected: HashMap<String, bool> = self
+            .options
+            .iter()
+            .zip(self.option_selected.iter())
+            .map(|(option, selected)| (option.id.clone(), *selected))
+            .collect();
+        let prior_fields: HashMap<String, String> = self
+            .fields
+            .iter()
+            .zip(self.field_drafts.iter())
+            .map(|(field, draft)| (field.key.clone(), draft.clone()))
+            .collect();
+
+        self.title = title;
+        self.prompt = prompt;
+        self.options = options;
+        self.fields = fields;
+        self.rows = rows;
+        self.primary_label = primary_label;
+        self.primary_panel = primary_panel;
+        self.option_selected = self
+            .options
+            .iter()
+            .map(|option| prior_selected.get(&option.id).copied().unwrap_or(option.selected))
+            .collect();
+        self.field_drafts = self
+            .fields
+            .iter()
+            .map(|field| {
+                prior_fields
+                    .get(&field.key)
+                    .cloned()
+                    .unwrap_or_else(|| field.value.clone().unwrap_or_default())
+            })
+            .collect();
+    }
+
+    fn click_choices(&self) -> presence::PanelClickChoices {
+        let selected_option_ids = self
+            .options
+            .iter()
+            .zip(self.option_selected.iter())
+            .filter_map(|(option, selected)| (*selected).then(|| option.id.clone()))
+            .collect();
+        let field_values = self
+            .fields
+            .iter()
+            .zip(self.field_drafts.iter())
+            .map(|(field, draft)| (field.key.clone(), draft.clone()))
+            .collect();
+        presence::PanelClickChoices {
+            selected_option_ids,
+            field_values,
+        }
+    }
+
+    fn single_select(&self) -> bool {
+        matches!(self.section.as_str(), "connect" | "posture")
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum PressTarget {
     Head,
@@ -772,6 +919,12 @@ enum PressTarget {
     Interior(PerimeterId),
     /// A row of the body-local settings panel (colour/size editable; posture/buddy read-only).
     SettingsRow(usize),
+    /// A selectable row in the wizard onboarding panel (provider/posture/buddy toggle).
+    OnboardingOption(usize),
+    /// A field row in the onboarding panel (paste-key credential, model display).
+    OnboardingField(usize),
+    /// The onboarding panel's primary confirm button (emits `clicked{panel:*}`).
+    OnboardingPrimary,
     ReceiptRail(usize),
     SurfaceBloom(usize),
     TorsoAction(TorsoAction),
@@ -1032,6 +1185,9 @@ struct App {
     /// Body-local settings panel open over the torso (colour/size editable; posture/buddy shown
     /// read-only). Reached from the dial's Customize entry. Pure presentation state (law 7).
     settings_open: bool,
+    /// Wizard onboarding form section soul-pushed via `panel` cues (Build C). When present it owns
+    /// the torso over settings, interior, and output views.
+    onboarding_panel: Option<OnboardingPanelState>,
     /// The full enumerable window list pushed by the driver's `targets_available`, the data behind
     /// the picker's first phase. The body only renders these as choices (AGENTS.md law 7).
     available_targets: Vec<presence::TargetEntry>,
@@ -1306,6 +1462,50 @@ impl App {
             .iter()
             .map(|(label, value, editable)| render::SettingsRow { label, value: value.as_str(), editable: *editable })
             .collect();
+        let mut onboarding_option_views = Vec::new();
+        let mut onboarding_field_displays = Vec::new();
+        let mut onboarding_field_views = Vec::new();
+        let mut onboarding_row_views = Vec::new();
+        let onboarding_view = self.onboarding_panel.as_ref().map(|panel| {
+            for (i, opt) in panel.options.iter().enumerate() {
+                onboarding_option_views.push(render::OnboardingOptionView {
+                    label: opt.label.as_str(),
+                    detail: opt.detail.as_deref(),
+                    selected: panel.option_selected.get(i).copied().unwrap_or(opt.selected),
+                });
+            }
+            for (i, field) in panel.fields.iter().enumerate() {
+                let draft = panel.field_drafts.get(i).map(String::as_str).unwrap_or("");
+                onboarding_field_displays.push(self.mask_onboarding_field_display(field, draft));
+            }
+            for (i, field) in panel.fields.iter().enumerate() {
+                onboarding_field_views.push(render::OnboardingFieldView {
+                    label: field.label.as_str(),
+                    display: onboarding_field_displays.get(i).map(String::as_str).unwrap_or(""),
+                    focused: panel.focused_field == Some(i),
+                    action: if field.control == "paste_key" {
+                        Some("Paste key")
+                    } else {
+                        None
+                    },
+                });
+            }
+            for row in &panel.rows {
+                onboarding_row_views.push(render::OnboardingRowView {
+                    label: row.label.as_str(),
+                    recorded: row.status == "recorded",
+                });
+            }
+            render::OnboardingPanelView {
+                title: panel.title.as_str(),
+                prompt: panel.prompt.as_deref(),
+                options: &onboarding_option_views,
+                fields: &onboarding_field_views,
+                summary_rows: &onboarding_row_views,
+                primary_label: panel.primary_label.as_deref(),
+                single_select: panel.single_select(),
+            }
+        });
         let bloom_order = self.bloom_descriptors();
         let bloom_items: Vec<render::SurfaceDialItem<'_>> = if self.surface_bloom_open {
             bloom_order
@@ -1346,8 +1546,9 @@ impl App {
             route_health: route_health.as_deref(),
             route_flash,
             receipt_rail: &receipt_rail_items,
-            interior_rows: &interior_rows,
-            settings: &settings_rows,
+            interior_rows: if onboarding_view.is_some() { &[] } else { &interior_rows },
+            settings: if onboarding_view.is_some() { &[] } else { &settings_rows },
+            onboarding: onboarding_view.as_ref(),
             layout,
             pinned,
             frame: None,
@@ -1667,6 +1868,11 @@ impl App {
                     rects.push(self.offset_rect_for_body(rect).as_i32());
                 }
             }
+            if self.onboarding_panel.is_some() {
+                for rect in self.onboarding_panel_rects(&layout) {
+                    rects.push(self.offset_rect_for_body(rect).as_i32());
+                }
+            }
             rects.push(self.offset_rect_for_body(layout.torso_action_rect(TorsoAction::Expand)).as_i32());
             rects.push(self.offset_rect_for_body(layout.torso_action_rect(TorsoAction::Copy)).as_i32());
             rects.push(self.offset_rect_for_body(layout.torso_action_rect(TorsoAction::Scroll)).as_i32());
@@ -1839,10 +2045,37 @@ impl App {
                     self.update_input_region();
                 }
             }
-            presence::Cue::Panel { .. } => {
-                // Build C, Slice 1: the wire format and parser land first. The native in-torso
-                // onboarding panel that renders this section (and reports clicked{panel:*}) is
-                // Slice 3 — until then a panel cue is parsed but not yet drawn.
+            presence::Cue::Panel {
+                section,
+                title,
+                prompt,
+                options,
+                fields,
+                rows,
+                primary_label,
+                primary_panel,
+            } => {
+                if section == "none" {
+                    self.onboarding_panel = None;
+                } else {
+                    self.onboarding_panel = Some(OnboardingPanelState::apply_cue(
+                        self.onboarding_panel.take(),
+                        section,
+                        title,
+                        prompt,
+                        options,
+                        fields,
+                        rows,
+                        primary_label,
+                        primary_panel,
+                    ));
+                    self.settings_open = false;
+                    self.interior_open = false;
+                    self.input_focused = false;
+                    self.surface_bloom_open = false;
+                    self.picker = None;
+                }
+                self.update_input_region();
             }
         }
     }
@@ -2093,6 +2326,17 @@ impl App {
             }
         } else if render::point_in_head(body_x, y) {
             PressTarget::Head
+        } else if self.onboarding_panel.is_some()
+            && layout.output_panel_rect().contains(body_x, y)
+            && render::torso_action_at(&layout, body_x, y).is_none()
+        {
+            self.onboarding_hit(body_x, y)
+                .map(|hit| match hit {
+                    OnboardingHit::Option(i) => PressTarget::OnboardingOption(i),
+                    OnboardingHit::Field(i) => PressTarget::OnboardingField(i),
+                    OnboardingHit::Primary => PressTarget::OnboardingPrimary,
+                })
+                .unwrap_or(PressTarget::Body)
         } else if self.settings_open
             && layout.output_panel_rect().contains(body_x, y)
             && render::torso_action_at(&layout, body_x, y).is_none()
@@ -2304,6 +2548,18 @@ impl App {
             PressTarget::SettingsRow(idx) => {
                 self.input_focused = false;
                 self.on_settings_row(idx);
+            }
+            PressTarget::OnboardingOption(idx) => {
+                self.input_focused = false;
+                self.on_onboarding_option(idx);
+            }
+            PressTarget::OnboardingField(idx) => {
+                self.input_focused = false;
+                self.on_onboarding_field(idx);
+            }
+            PressTarget::OnboardingPrimary => {
+                self.input_focused = false;
+                self.on_onboarding_primary();
             }
             PressTarget::TorsoAction(action) => {
                 self.input_focused = false;
@@ -2665,6 +2921,121 @@ impl App {
         self.update_input_region();
     }
 
+    // --- wizard onboarding panel (Build C) ----------------------------------------
+
+    fn mask_onboarding_field_display(&self, field: &presence::PanelField, draft: &str) -> String {
+        if field.masked || field.control == "paste_key" {
+            let n = draft.chars().count();
+            if n == 0 {
+                String::new()
+            } else {
+                "•".repeat(n.min(12))
+            }
+        } else {
+            draft.to_string()
+        }
+    }
+
+    fn onboarding_panel_layout_counts(panel: &OnboardingPanelState) -> (usize, usize, bool, bool) {
+        let list_rows = if panel.rows.is_empty() {
+            panel.options.len()
+        } else {
+            panel.rows.len()
+        };
+        (
+            list_rows,
+            panel.fields.len(),
+            panel.prompt.is_some(),
+            panel.primary_label.is_some(),
+        )
+    }
+
+    fn onboarding_panel_layout(&self) -> render::OnboardingLayout {
+        let layout = self.layout();
+        let Some(panel) = self.onboarding_panel.as_ref() else {
+            return render::OnboardingLayout {
+                card: layout.output_panel_rect(),
+                title: layout.output_panel_rect(),
+                prompt: None,
+                options: Vec::new(),
+                fields: Vec::new(),
+                primary: None,
+            };
+        };
+        let (list_rows, field_rows, has_prompt, has_primary) = Self::onboarding_panel_layout_counts(panel);
+        layout.onboarding_layout(list_rows, field_rows, has_prompt, has_primary)
+    }
+
+    fn onboarding_panel_rects(&self, layout: &render::Layout) -> Vec<render::Rect> {
+        let Some(panel) = self.onboarding_panel.as_ref() else {
+            return Vec::new();
+        };
+        let (list_rows, field_rows, has_prompt, has_primary) = Self::onboarding_panel_layout_counts(panel);
+        let panel_layout = layout.onboarding_layout(list_rows, field_rows, has_prompt, has_primary);
+        let mut rects = vec![panel_layout.card];
+        rects.extend(panel_layout.options.iter().copied());
+        rects.extend(panel_layout.fields.iter().copied());
+        if let Some(rect) = panel_layout.primary {
+            rects.push(rect);
+        }
+        rects
+    }
+
+    fn onboarding_hit(&self, x: f64, y: f64) -> Option<OnboardingHit> {
+        if self.onboarding_panel.is_none() {
+            return None;
+        }
+        render::onboarding_hit_at(&self.onboarding_panel_layout(), x, y)
+    }
+
+    fn on_onboarding_option(&mut self, idx: usize) {
+        let Some(panel) = self.onboarding_panel.as_mut() else {
+            return;
+        };
+        if idx >= panel.option_selected.len() {
+            return;
+        }
+        if panel.single_select() {
+            for (i, selected) in panel.option_selected.iter_mut().enumerate() {
+                *selected = i == idx;
+            }
+        } else {
+            panel.option_selected[idx] = !panel.option_selected[idx];
+        }
+        self.update_input_region();
+    }
+
+    fn on_onboarding_field(&mut self, idx: usize) {
+        let Some(panel) = self.onboarding_panel.as_mut() else {
+            return;
+        };
+        if idx >= panel.fields.len() {
+            return;
+        }
+        let control = panel.fields[idx].control.clone();
+        panel.focused_field = Some(idx);
+        if control == "paste_key" {
+            if let Ok(text) = read_clipboard_text().map(|text| sanitize_paste(&text)) {
+                if let Some(draft) = panel.field_drafts.get_mut(idx) {
+                    *draft = text;
+                }
+            }
+        }
+        self.update_input_region();
+    }
+
+    fn on_onboarding_primary(&mut self) {
+        let payload = self.onboarding_panel.as_ref().and_then(|panel| {
+            panel
+                .primary_panel
+                .clone()
+                .map(|token| (token, panel.click_choices()))
+        });
+        if let Some((token, choices)) = payload {
+            self.emit_clicked_panel(&token, Some(&choices));
+        }
+    }
+
     // --- body-local settings panel ------------------------------------------------
 
     /// The settings rows are a fixed set: Colour, Size, Posture, Buddy.
@@ -2914,6 +3285,10 @@ impl App {
 
     fn emit_clicked(&self) {
         self.send_to_soul(presence::clicked_json(&self.buddy, self.margin_left, self.margin_top));
+    }
+
+    fn emit_clicked_panel(&self, panel: &str, choices: Option<&presence::PanelClickChoices>) {
+        self.send_to_soul(presence::clicked_panel_json(&self.buddy, panel, choices));
     }
 
     fn emit_grabbed(&self) {
@@ -3178,6 +3553,43 @@ impl Dispatch<ZwpRelativePointerV1, ()> for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn onboarding_panel_single_select_sections() {
+        let connect = OnboardingPanelState::from_cue(
+            "connect".into(),
+            "Connect".into(),
+            None,
+            vec![],
+            vec![],
+            vec![],
+            None,
+            None,
+        );
+        let posture = OnboardingPanelState::from_cue(
+            "posture".into(),
+            "Posture".into(),
+            None,
+            vec![],
+            vec![],
+            vec![],
+            None,
+            None,
+        );
+        let placement = OnboardingPanelState::from_cue(
+            "placement".into(),
+            "Placement".into(),
+            None,
+            vec![],
+            vec![],
+            vec![],
+            None,
+            None,
+        );
+        assert!(connect.single_select());
+        assert!(posture.single_select());
+        assert!(!placement.single_select());
+    }
 
     #[test]
     fn reply_bubble_never_points_at_an_empty_torso() {

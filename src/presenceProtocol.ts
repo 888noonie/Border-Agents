@@ -449,15 +449,31 @@ export type PresenceAttached = PresenceEnvelope<
 >;
 
 /**
+ * The user's in-progress onboarding picks, reported alongside `clicked{panel:*}` (Build C
+ * Slice 4). The body echoes what the user selected/typed; the Host applies it to the draft
+ * and writes settings/receipts. Additive optional field — absent on ordinary taps.
+ */
+export interface PresencePanelChoices {
+  /** Selected option ids (one for single-select sections; many for placement). */
+  selectedOptionIds?: readonly string[];
+  /** Field key → draft value. The soul must never log or receipt secret values. */
+  fieldValues?: Readonly<Record<string, string>>;
+}
+
+/**
  * `panel` is an additive (v0), optional discriminator the onboarding settings panel
  * sets when a form section is satisfied (e.g. `panel: "connection_ok"`). The wizard
  * Host reads it as a `panel:<name>` advancing event; an absent `panel` is an ordinary
- * buddy tap. The native body never sets it, so older bodies and the golden fixture stay
- * valid — strict-parse drops a present-but-non-string `panel` (see isValidForKind).
+ * buddy tap. `panelChoices` carries the user's draft alongside a panel confirm.
  */
 export type PresenceClicked = PresenceEnvelope<
   "clicked",
-  { button?: PresencePointer; at?: PresencePosition; panel?: string }
+  {
+    button?: PresencePointer;
+    at?: PresencePosition;
+    panel?: string;
+    panelChoices?: PresencePanelChoices;
+  }
 >;
 
 export type PresenceGrabbed = PresenceEnvelope<"grabbed", { at: PresencePosition }>;
@@ -742,6 +758,30 @@ function isPanelSection(value: unknown): value is PresencePanelSection {
   return (PRESENCE_PANEL_SECTIONS as readonly unknown[]).includes(value);
 }
 
+function isPanelChoices(value: unknown): value is PresencePanelChoices {
+  if (!isObject(value)) {
+    return false;
+  }
+  if (
+    value.selectedOptionIds !== undefined &&
+    (!Array.isArray(value.selectedOptionIds) ||
+      !value.selectedOptionIds.every((id) => isNonEmptyString(id)))
+  ) {
+    return false;
+  }
+  if (value.fieldValues !== undefined) {
+    if (!isObject(value.fieldValues)) {
+      return false;
+    }
+    for (const fieldValue of Object.values(value.fieldValues)) {
+      if (typeof fieldValue !== "string") {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
 function isPanelOptionArray(value: unknown): value is PresencePanelOption[] {
   return (
     Array.isArray(value) &&
@@ -922,7 +962,8 @@ function isValidForKind(kind: PresenceKind, raw: Record<string, unknown>): boole
         (raw.button === undefined || raw.button === "primary" || raw.button === "secondary") &&
         (raw.at === undefined || isPosition(raw.at)) &&
         // Additive (v0): a present-but-bad `panel` drops the whole cue, never widens it.
-        (raw.panel === undefined || isNonEmptyString(raw.panel))
+        (raw.panel === undefined || isNonEmptyString(raw.panel)) &&
+        (raw.panelChoices === undefined || isPanelChoices(raw.panelChoices))
       );
     case "grabbed":
     case "dragged":
@@ -1148,10 +1189,15 @@ export const presence = {
   },
   clicked(
     buddy: string,
-    opts: { button?: PresencePointer; at?: PresencePosition; panel?: string } & EnvelopeOptions = {},
+    opts: {
+      button?: PresencePointer;
+      at?: PresencePosition;
+      panel?: string;
+      panelChoices?: PresencePanelChoices;
+    } & EnvelopeOptions = {},
   ): PresenceClicked {
-    const { button, at, panel, ts } = opts;
-    return envelope("clicked", buddy, { button, at, panel }, { ts }) as PresenceClicked;
+    const { button, at, panel, panelChoices, ts } = opts;
+    return envelope("clicked", buddy, { button, at, panel, panelChoices }, { ts }) as PresenceClicked;
   },
   grabbed(buddy: string, at: PresencePosition, opts: EnvelopeOptions = {}): PresenceGrabbed {
     return envelope("grabbed", buddy, { at }, opts) as PresenceGrabbed;

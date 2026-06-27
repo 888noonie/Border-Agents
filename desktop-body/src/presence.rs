@@ -197,6 +197,42 @@ pub fn clicked_json(buddy: &str, x: f64, y: f64) -> String {
     to_soul("clicked", buddy, json!({ "button": "primary", "at": free_at(x, y) }))
 }
 
+/// Choices the body reports alongside a panel confirm (Build C Slice 4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PanelClickChoices {
+    pub selected_option_ids: Vec<String>,
+    pub field_values: Vec<(String, String)>,
+}
+
+/// The user confirmed an onboarding panel section: a `clicked` carrying the Host-stamped
+/// `primary_panel` token plus the user's draft picks (Build C Slice 4). The Host reads the token
+/// as `panel:<token>` to advance the act and applies `panelChoices` to its draft — the body never
+/// invents the token (AGENTS.md law 7).
+pub fn clicked_panel_json(buddy: &str, panel: &str, choices: Option<&PanelClickChoices>) -> String {
+    match choices {
+        None => to_soul("clicked", buddy, json!({ "button": "primary", "panel": panel })),
+        Some(choices) => {
+            let field_values: serde_json::Map<String, Value> = choices
+                .field_values
+                .iter()
+                .map(|(key, value)| (key.clone(), json!(value)))
+                .collect();
+            to_soul(
+                "clicked",
+                buddy,
+                json!({
+                    "button": "primary",
+                    "panel": panel,
+                    "panelChoices": {
+                        "selectedOptionIds": choices.selected_option_ids,
+                        "fieldValues": field_values,
+                    }
+                }),
+            )
+        }
+    }
+}
+
 /// The user began dragging the buddy (emitted once, when travel crosses the click slop).
 pub fn grabbed_json(buddy: &str, x: f64, y: f64) -> String {
     to_soul("grabbed", buddy, json!({ "at": free_at(x, y) }))
@@ -523,8 +559,9 @@ pub struct TargetEntry {
 }
 
 /// One selectable row in a `Panel` section (a posture/placement choice, a provider preset).
-/// Mirrors the TS `PresencePanelOption`. `selected` is the Host's default highlight, never
-/// authoritative — the body reports the user's actual pick (law 7).
+/// Mirrors the TS `PresencePanelOption`. `selected` is the Host's default highlight on first
+/// paint; after the user picks, the body reports the actual selection via `panelChoices` on
+/// confirm (law 7).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PanelOption {
     pub id: String,
@@ -1483,6 +1520,15 @@ mod tests {
         assert_eq!(c["kind"], "clicked");
         assert_eq!(c["button"], "primary");
         assert_eq!(c["at"]["mode"], "free");
+
+        let panel_click = PanelClickChoices {
+            selected_option_ids: vec!["ollama".into()],
+            field_values: vec![("apiKey".into(), "secret".into())],
+        };
+        let p: Value = serde_json::from_str(&clicked_panel_json("host", "connection_ok", Some(&panel_click))).unwrap();
+        assert_eq!(p["panel"], "connection_ok");
+        assert_eq!(p["panelChoices"]["selectedOptionIds"][0], "ollama");
+        assert_eq!(p["panelChoices"]["fieldValues"]["apiKey"], "secret");
 
         let d: Value = serde_json::from_str(&dropped_json("hermes", 3.0, 4.0)).unwrap();
         assert_eq!(d["kind"], "dropped");

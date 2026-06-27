@@ -42,6 +42,7 @@ import {
   parsePresenceMessage,
   presence,
   type PresenceActionIntent,
+  type PresenceClicked,
   type PresenceSurfaceDescriptor,
 } from "../src/presenceProtocol";
 import { createDefaultBuddySettings, BUDDY_PROFILES, type BuddyProfile } from "../src/buddyProfiles";
@@ -54,6 +55,12 @@ import {
   type OnboardingState,
 } from "../src/wizardOnboarding";
 import { actCues, actPanel, onHostEvent } from "../src/wizardOnboardingHost";
+import {
+  applyPanelChoices,
+  createWizardHostDraft,
+  receiptDetailForOnboardingAct,
+  type WizardHostDraft,
+} from "../src/wizardHostDraft";
 import {
   lifecycleReceiptKinds,
   readLifecycleReceipts,
@@ -75,6 +82,10 @@ const IS_WIZARD = process.env.BB_SOUL?.trim() === "wizard";
 
 function normalizePosture(value: string | undefined): UserPosture {
   return value === "play" || value === "private" ? value : "work";
+}
+
+function sessionPosture(): UserPosture {
+  return IS_WIZARD ? wizardSessionPosture : POSTURE;
 }
 
 function log(message: string, extra?: Record<string, unknown>) {
@@ -271,7 +282,10 @@ const WIZARD_TIMEOUT_MS = 6000;
 const COMPLETED_ONBOARDING_STATE: OnboardingState = { actIndex: 5, completed: true };
 
 const onboarding = new Map<string, OnboardingState>();
+const wizardDrafts = new Map<string, WizardHostDraft>();
 const wizardTimers = new Map<string, ReturnType<typeof setTimeout>>();
+/** Posture chosen during wizard onboarding; applied to gate calls after handoff. */
+let wizardSessionPosture: UserPosture = POSTURE;
 
 /** Translate one onboarding cue into a presence envelope and send it to the body. */
 function emitCues(socket: WebSocket, buddy: string, cues: readonly OnboardingCue[]): void {
@@ -305,7 +319,8 @@ function emitCues(socket: WebSocket, buddy: string, cues: readonly OnboardingCue
  */
 function emitPanel(socket: WebSocket, buddy: string, state: OnboardingState): void {
   const receiptKinds = lifecycleReceiptKinds(readLifecycleReceipts(storage));
-  socket.send(JSON.stringify(presence.panel(buddy, actPanel(state, receiptKinds))));
+  const draft = wizardDrafts.get(buddy) ?? createWizardHostDraft();
+  socket.send(JSON.stringify(presence.panel(buddy, actPanel(state, receiptKinds, draft))));
 }
 
 function clearWizardTimer(buddy: string): void {
@@ -351,12 +366,15 @@ function handoffToHermes(socket: WebSocket, hostBuddy: string): void {
  * recording any earned lifecycle receipt. A non-advancing event is a silent no-op. */
 function advanceWizard(socket: WebSocket, buddy: string, event: OnboardingEvent): void {
   const state = onboarding.get(buddy) ?? INITIAL_ONBOARDING_STATE;
+  const act = currentAct(state);
+  const draft = wizardDrafts.get(buddy) ?? createWizardHostDraft();
   const result = onHostEvent(state, event);
   if (result.next === state) return; // event didn't satisfy the current act — nothing to do
   clearWizardTimer(buddy);
   if (result.receipt) {
-    recordLifecycleReceipt({ kind: result.receipt, storage });
-    log("wizard receipt recorded", { buddy, kind: result.receipt });
+    const detail = receiptDetailForOnboardingAct(act, draft);
+    recordLifecycleReceipt({ kind: result.receipt, detail, storage });
+    log("wizard receipt recorded", { buddy, kind: result.receipt, detail });
   }
   onboarding.set(buddy, result.next);
   if (result.completedNow) {
@@ -371,13 +389,15 @@ function advanceWizard(socket: WebSocket, buddy: string, event: OnboardingEvent)
 /** Top-level Host handler under BB_SOUL=wizard. Seeds per-buddy state on attach (linear on
  * first run, parked-complete on re-entry), greets at Act 0, and routes the advancing events
  * (`clicked` — optionally carrying a `panel:*` discriminator — and `dropped`) into the flow. */
-function handleWizardHost(socket: WebSocket, message: { kind: string; buddy: string; panel?: string }): void {
+function handleWizardHost(socket: WebSocket, message: PresenceClicked | { kind: string; buddy: string }): void {
   const buddy = message.buddy || HOST_BUDDY;
   switch (message.kind) {
     case "attached": {
       const mode = entryMode(lifecycleReceiptKinds(readLifecycleReceipts(storage)));
       const state = mode === "linear" ? INITIAL_ONBOARDING_STATE : COMPLETED_ONBOARDING_STATE;
       onboarding.set(buddy, state);
+      wizardDrafts.set(buddy, createWizardHostDraft());
+      wizardSessionPosture = POSTURE;
       clearWizardTimer(buddy);
       socket.send(JSON.stringify(presence.hydrate(buddy, { emotion: "neutral" })));
       if (mode === "linear") {
@@ -394,9 +414,18 @@ function handleWizardHost(socket: WebSocket, message: { kind: string; buddy: str
       return;
     }
     case "clicked": {
-      // A bare tap advances Act 0; a panel-tagged click is a settings-section completion.
-      const event: OnboardingEvent = message.panel ? (`panel:${message.panel}` as OnboardingEvent) : "clicked";
-      advanceWizard(socket, buddy, event);
+      const clicked = message as PresenceClicked;
+      if (clicked.panel) {
+        const draft = wizardDrafts.get(buddy) ?? createWizardHostDraft();
+        const nextDraft = applyPanelChoices(draft, clicked.panel, clicked.panelChoices);
+        wizardDrafts.set(buddy, nextDraft);
+        if (clicked.panel === "posture_set") {
+          wizardSessionPosture = nextDraft.posture;
+        }
+        advanceWizard(socket, buddy, `panel:${clicked.panel}` as OnboardingEvent);
+      } else {
+        advanceWizard(socket, buddy, "clicked");
+      }
       return;
     }
     case "dropped": {
@@ -425,7 +454,7 @@ function authorizeAndReply(
   confirmed: boolean,
   requestId?: string,
   intent?: ActionIntent,
-  posture: UserPosture = POSTURE,
+  posture: UserPosture = sessionPosture(),
   route?: ActionRoute,
 ) {
   // The soul projects its own state the instant it begins weighing — the deliberation face.
@@ -745,7 +774,7 @@ wss.on("connection", (socket, request) => {
 
     // Wizard persona owns the whole socket: it runs the onboarding script, not the gate.
     if (IS_WIZARD) {
-      handleWizardHost(socket, message as { kind: string; buddy: string; panel?: string });
+      handleWizardHost(socket, message);
       return;
     }
 

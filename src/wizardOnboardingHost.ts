@@ -29,6 +29,7 @@ import type {
   PresencePanelRow,
   PresencePanelSection,
 } from "./presenceProtocol";
+import { createWizardHostDraft, type WizardHostDraft } from "./wizardHostDraft";
 
 /** The body cues to present when the buddy is sitting on `state`'s act, in order. */
 export function actCues(state: OnboardingState): readonly OnboardingCue[] {
@@ -56,7 +57,11 @@ export interface HostPanel {
   primaryPanel?: string;
 }
 
-export function actPanel(state: OnboardingState, receiptKinds: readonly string[]): HostPanel {
+export function actPanel(
+  state: OnboardingState,
+  receiptKinds: readonly string[],
+  draft: WizardHostDraft = createWizardHostDraft(),
+): HostPanel {
   const model = buildOnboardingPanelModel({ state, receiptKinds });
   const title = model.act.title;
   const section = model.section;
@@ -66,7 +71,6 @@ export function actPanel(state: OnboardingState, receiptKinds: readonly string[]
   }
   switch (section.kind) {
     case "connect": {
-      const defaultPreset = section.providers.find((p) => p.id === section.defaultProvider);
       return {
         section: "connect",
         title,
@@ -75,11 +79,11 @@ export function actPanel(state: OnboardingState, receiptKinds: readonly string[]
           id: p.id,
           label: p.label,
           detail: p.helper,
-          selected: p.id === section.defaultProvider,
+          selected: p.id === draft.provider,
         })),
         fields: [
           { key: "apiKey", label: "API key", control: "paste_key", masked: true },
-          { key: "model", label: "Model", control: "text", value: defaultPreset?.modelPlaceholder },
+          { key: "model", label: "Model", control: "text", value: draft.model },
         ],
         primaryLabel: section.primaryActionLabel,
         primaryPanel: "connection_ok",
@@ -94,7 +98,7 @@ export function actPanel(state: OnboardingState, receiptKinds: readonly string[]
           id: o.posture,
           label: o.label,
           detail: o.consequence,
-          selected: o.posture === section.defaultPosture,
+          selected: o.posture === draft.posture,
         })),
         primaryLabel: "Set posture",
         primaryPanel: "posture_set",
@@ -107,8 +111,8 @@ export function actPanel(state: OnboardingState, receiptKinds: readonly string[]
         options: section.buddyChoices.map((b) => ({
           id: b.buddyId,
           label: b.label,
-          detail: `${capitalize(b.defaultEdge)} edge`,
-          selected: b.defaultEnabled,
+          detail: `${capitalize(draft.buddyEdges[b.buddyId] ?? b.defaultEdge)} edge`,
+          selected: draft.enabledBuddyIds.includes(b.buddyId),
         })),
         primaryLabel: "Place them",
         primaryPanel: "next",

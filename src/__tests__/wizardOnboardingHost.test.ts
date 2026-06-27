@@ -8,6 +8,7 @@ import {
   type OnboardingState,
 } from "../wizardOnboarding";
 import { actCues, actPanel, onHostEvent } from "../wizardOnboardingHost";
+import { applyPanelChoices, createWizardHostDraft } from "../wizardHostDraft";
 
 // The advancing event each act listens for, in order — the canonical "happy path"
 // walk a Host would receive (Act 4 self-advances on a timeout the soul fires).
@@ -70,6 +71,22 @@ describe("actPanel", () => {
     const key = connect.fields?.find((f) => f.key === "apiKey");
     expect(key?.control).toBe("paste_key");
     expect(key?.masked).toBe(true);
+  });
+
+  it("reflects the wizard draft in connect/posture panel highlights", () => {
+    const draft = applyPanelChoices(createWizardHostDraft(), "connection_ok", {
+      selectedOptionIds: ["ollama"],
+      fieldValues: { model: "llama3.1" },
+    });
+    const connect = actPanel(stateAt(1), [], draft);
+    expect(connect.options?.find((option) => option.id === "ollama")?.selected).toBe(true);
+    expect(connect.fields?.find((field) => field.key === "model")?.value).toBe("llama3.1");
+
+    const postureDraft = applyPanelChoices(createWizardHostDraft(), "posture_set", {
+      selectedOptionIds: ["private"],
+    });
+    const posture = actPanel(stateAt(2), [], postureDraft);
+    expect(posture.options?.find((option) => option.id === "private")?.selected).toBe(true);
   });
 
   it("marks summary rows recorded as their lifecycle receipts land", () => {

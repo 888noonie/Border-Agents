@@ -62,7 +62,44 @@
         "group": "bb"
       },
       "problemMatcher": ["$rustc"],
-      "detail": "Onboarding: wizard gateway (stub gate) + browser + frame + body"
+      "detail": "Legacy: wizard gateway stub + browser + frame + body. Prefer BB wizard host for Build C."
+    },
+    {
+      "label": "BB wizard host (onboarding)",
+      "type": "shell",
+      "command": "bash",
+      "args": ["scripts/bb-wizard-host.sh"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true,
+        "focus": true,
+        "group": "bb"
+      },
+      "problemMatcher": ["$rustc"],
+      "detail": "Build C smoke: real soul (BB_SOUL=wizard) + native host body (BB_BUDDY=host). No browser/frame."
+    },
+    {
+      "label": "BB forge + soul + frame",
+      "type": "shell",
+      "command": "bash",
+      "args": ["scripts/bb-forge-stack.sh"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "BB_TARGET": "${input:frameTarget}" }
+      },
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true,
+        "focus": true,
+        "group": "bb"
+      },
+      "problemMatcher": ["$rustc"],
+      "detail": "Commandeer stack: governance soul + COSMIC frame driver + forge body (BB_BUDDY=forge)"
     },
     {
       "label": "BB spawn",

@@ -169,6 +169,41 @@ describe("action gate cues", () => {
     expect(overTheWire(result)).toMatchObject({ kind: "action_result", decision: "needs_confirmation" });
   });
 
+  test("action_result carries an additive grade (graded/trusted/backedBy) and round-trips", () => {
+    const result = presence.actionResult(
+      "veritas",
+      {
+        effector: "repo_edit",
+        decision: "allow",
+        receiptId: "action:veritas:repo_edit:t",
+        grade: { graded: 3, trusted: 2, backedBy: ["grade:veritas:agent_action:a", "grade:veritas:agent_action:b"] },
+      },
+      { ts: 1 },
+    );
+    const parsed = parsePresenceMessage(overTheWire(result));
+    expect(parsed).not.toBeNull();
+    expect(overTheWire(result)).toMatchObject({
+      kind: "action_result",
+      grade: { graded: 3, trusted: 2, backedBy: ["grade:veritas:agent_action:a", "grade:veritas:agent_action:b"] },
+    });
+  });
+
+  test("drops a malformed grade (backedBy not a string array) while the rest stays strict", () => {
+    expect(
+      parsePresenceMessage({
+        protocol: PRESENCE_PROTOCOL,
+        v: 0,
+        kind: "action_result",
+        buddy: "veritas",
+        ts: 1,
+        effector: "repo_edit",
+        decision: "allow",
+        receiptId: "r1",
+        grade: { graded: 1, trusted: 1, backedBy: [42] },
+      }),
+    ).toBeNull();
+  });
+
   test("rejects a malformed action_request (missing effector)", () => {
     expect(
       parsePresenceMessage({ protocol: PRESENCE_PROTOCOL, v: 0, kind: "action_request", buddy: "veritas", ts: 1 }),

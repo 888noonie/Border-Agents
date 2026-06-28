@@ -20,6 +20,7 @@ import {
 import {
   authorizeEffectorAction,
   emptyFrame,
+  getReceiptForChunk,
   type ActionIntent,
   type ActionReceipt,
   type ActionRoute,
@@ -41,6 +42,7 @@ import {
 } from "./liveGovernance";
 import {
   presence,
+  type PresenceActionGrade,
   type PresenceActionIntent,
   type PresenceActionResult,
   type PresenceAlertLevel,
@@ -302,6 +304,28 @@ export function handleActionRequest(args: {
   return finish(args, receipt, spec.label, manifestId, execution, snapshot);
 }
 
+/**
+ * Project the grade basis that backed a gated action onto the wire (Slice 2 of the governance
+ * join). Reads the SAME GradeReceipts the snapshot persisted to the ledger (law 6) — never a
+ * re-grade — so the body's "authorized by N graded memories (M trusted)" rail traces back to
+ * the ledger's memory entries. `backedBy` carries the receipt ids of the TRUSTED chunks (the
+ * audit trail), resolved via core `getReceiptForChunk`; `trusted` is `backedBy.length`, so the
+ * count can never out-claim what an auditor can actually trace. A trusted chunk with no receipt
+ * is a grader contract violation (pinned by the core test); here it simply does not enter the
+ * trail rather than fabricating one. Returns undefined when no graded memory was weighed
+ * (snapshot null) — fail-closed: no grade, no claim.
+ */
+export function actionGradeSummary(
+  snapshot: BuddyGovernanceSnapshot | null | undefined,
+): PresenceActionGrade | undefined {
+  if (!snapshot) return undefined;
+  const { frame } = snapshot;
+  const backedBy = frame.trusted
+    .map((mem) => getReceiptForChunk(frame, mem.chunk_id)?.receipt_id)
+    .filter((id): id is string => id !== undefined);
+  return { graded: frame.receipts.length, trusted: backedBy.length, backedBy };
+}
+
 function finish(
   args: { buddy: string; storage?: Storage; requestId?: string },
   receipt: ActionReceipt,
@@ -339,6 +363,11 @@ function finish(
       }
     : undefined;
 
+  // The grade basis crosses the wire alongside the execution outcome, projected from the same
+  // snapshot whose GradeReceipts were just persisted above (byte-identical receipt ids) — the
+  // body's honest "authorized by N graded memories" rail (Slice 3) traces straight to law 6.
+  const grade = actionGradeSummary(snapshot);
+
   const result = presence.actionResult(args.buddy, {
     effector: receipt.effector,
     decision: receipt.decision,
@@ -347,6 +376,7 @@ function finish(
     summary: summarize(receipt, label, execution),
     alertLevel: decisionAlertLevel(receipt.decision),
     ...(outcome ? { outcome } : {}),
+    ...(grade ? { grade } : {}),
   });
 
   return { receipt, result, execution, ...(snapshot ? { snapshot } : {}) };

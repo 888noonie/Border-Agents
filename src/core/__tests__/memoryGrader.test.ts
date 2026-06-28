@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { gradeMemories } from "../grader";
+import { getReceiptForChunk, gradeMemories } from "../grader";
+import type { Grade } from "../types";
 import { createCustomPurposePolicy, getPurposePolicy } from "../policies";
 import type { ClaimType, MemoryPacket, MemoryPermissions, RetrievedMemory, Sensitivity } from "../types";
 
@@ -99,6 +100,56 @@ describe("MemoryGrader", () => {
       field: "allow_sensitive",
       policy_rule: "custom_purpose.no_widening_without_override",
     });
+  });
+});
+
+// Contract (not coverage) for getReceiptForChunk: it is the chunk-id resolver the governance
+// wire (soulActions.actionGradeSummary → action_result.backedBy) leans on, so these tests pin
+// the INVARIANT that frame.receipts is the authoritative chunk-id-indexed store — not that a
+// .find() loop runs. If a future change to how the frame is populated breaks any of these, the
+// wire's `backedBy` would silently lie while the suite still goes green; that is the exact shape
+// this slice exists to prevent.
+describe("getReceiptForChunk contract", () => {
+  const ALL_GRADES: Grade[] = ["trusted", "limited", "reference_only", "blocked", "quarantined"];
+
+  // A spread of grades from one purpose: a usable chunk (trusted), one missing the action
+  // permission (blocked), and one expired-but-readable claim (reference_only).
+  function mixedFrame() {
+    const policy = getPurposePolicy("agent_action");
+    const usable = memory({ id: "usable", text: "trusted for action." });
+    const noAction = memory({ id: "no_action", text: "cannot authorize action.", permissions: { may_use_for_action: false } });
+    const expired = memory({ id: "stale", text: "expired claim.", claimType: "current_policy", validUntil: "2026-06-01T00:00:00Z" });
+    return gradeMemories({ purpose: policy, retrieved: [usable, noAction, expired], now: NOW });
+  }
+
+  test("every chunk in any grade bucket resolves to its own receipt", () => {
+    const frame = mixedFrame();
+    for (const grade of ALL_GRADES) {
+      for (const mem of frame[grade]) {
+        const receipt = getReceiptForChunk(frame, mem.chunk_id);
+        expect(receipt).toBeDefined();
+        expect(receipt!.chunk_id).toBe(mem.chunk_id);
+        // The resolved receipt's grade matches the bucket the chunk lives in — buckets and
+        // receipts cannot disagree, which is what makes backedBy's "trusted" count honest.
+        expect(receipt!.grade).toBe(grade);
+      }
+    }
+  });
+
+  test("a chunk absent from the frame returns undefined, not a throw", () => {
+    // The wire layer calls this on ids it does not control; it must degrade to undefined.
+    const frame = mixedFrame();
+    expect(getReceiptForChunk(frame, "chunk_does_not_exist")).toBeUndefined();
+  });
+
+  test("two distinct chunk ids never resolve to the same receipt", () => {
+    const frame = mixedFrame();
+    const a = getReceiptForChunk(frame, "chunk_usable");
+    const b = getReceiptForChunk(frame, "chunk_no_action");
+    expect(a).toBeDefined();
+    expect(b).toBeDefined();
+    expect(a!.receipt_id).not.toBe(b!.receipt_id);
+    expect(a).not.toBe(b);
   });
 });
 

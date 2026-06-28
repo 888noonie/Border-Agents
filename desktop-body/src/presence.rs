@@ -444,6 +444,9 @@ pub enum Cue {
         /// World-facing execution outcome (present only on `allow` paths). `executed` is the
         /// load-bearing bit; `route` is the provider provenance ("providers rotate").
         outcome: Option<ActionOutcome>,
+        /// The grade basis that justified the decision (present only when the gate weighed
+        /// graded memory). `backed_by` is the audit trail back to the ledger (law 6).
+        grade: Option<ActionGrade>,
     },
     SurfaceActive {
         surface: String,
@@ -501,6 +504,18 @@ pub struct ActionOutcome {
     pub executed: bool,
     pub execution_receipt_id: Option<String>,
     pub route: Option<ActionRoute>,
+}
+
+/// The grade basis that justified the gate's decision on an `action_result`. Mirrors the TS
+/// `PresenceActionGrade`: `trusted` equals `backed_by.len()` by construction, and `backed_by`
+/// carries the GradeReceipt ids of the trusted chunks — the audit trail back to the ledger's
+/// memory entries (AGENTS.md law 6). The full GradeReceipts stay soul-side; the body holds only
+/// counts + ids so it can render an honest "Authorized by N graded memories (M trusted)" rail.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActionGrade {
+    pub graded: u32,
+    pub trusted: u32,
+    pub backed_by: Vec<String>,
 }
 
 /// A parsed to-body message: which buddy it concerns, and the cue to apply.
@@ -564,7 +579,27 @@ fn parse_action_result(v: &Value) -> Option<Cue> {
         None => None,
         Some(raw) => Some(parse_action_outcome(raw)?),
     };
-    Some(Cue::ActionResult { effector, decision, receipt_id, request_id, summary, outcome })
+    // A `grade` is optional, but if present it must be well-formed — a malformed grade drops the
+    // whole cue (mirrors the TS `isActionGrade` guard) rather than rendering a half-known basis.
+    let grade = match v.get("grade") {
+        None => None,
+        Some(raw) => Some(parse_action_grade(raw)?),
+    };
+    Some(Cue::ActionResult { effector, decision, receipt_id, request_id, summary, outcome, grade })
+}
+
+/// Parse the optional `grade` on an `action_result`. `graded`/`trusted` must be non-negative
+/// integers and `backedBy` an array of strings; any malformed field returns `None` so the
+/// caller's `?` drops the whole cue (mirrors the TS `isActionGrade` strict guard).
+fn parse_action_grade(v: &Value) -> Option<ActionGrade> {
+    let graded = u32::try_from(v.get("graded")?.as_u64()?).ok()?;
+    let trusted = u32::try_from(v.get("trusted")?.as_u64()?).ok()?;
+    let raw = v.get("backedBy")?.as_array()?;
+    let mut backed_by = Vec::with_capacity(raw.len());
+    for item in raw {
+        backed_by.push(item.as_str()?.to_string());
+    }
+    Some(ActionGrade { graded, trusted, backed_by })
 }
 
 /// Parse the optional `outcome` on an `action_result`. `executed` must be a boolean; if a
@@ -987,7 +1022,7 @@ mod tests {
         let result = parse_to_body(&fixture("action_result")).unwrap();
         assert_eq!(result.buddy, "hermes");
         match result.cue {
-            Cue::ActionResult { effector, decision, receipt_id, request_id, summary, outcome } => {
+            Cue::ActionResult { effector, decision, receipt_id, request_id, summary, outcome, grade } => {
                 assert_eq!(effector, "receipt_review");
                 assert_eq!(decision, "allow");
                 assert!(!receipt_id.is_empty());
@@ -1001,6 +1036,8 @@ mod tests {
                 assert_eq!(route.provider, "claude");
                 assert_eq!(route.locality, "cloud");
                 assert!(!route.downgraded);
+                // The golden fixture is the back-compat anchor: no grade field, parses to None.
+                assert!(grade.is_none());
             }
             other => panic!("expected action_result, got {other:?}"),
         }
@@ -1016,6 +1053,27 @@ mod tests {
         assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"action_result","buddy":"h","ts":1,"effector":"repo_edit","decision":"allow","receiptId":"r1","outcome":{"executed":true,"route":{"provider":"gpt","locality":"orbit","downgraded":false}}}"#).is_none());
         // A well-formed outcome with a downgraded route parses.
         assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"action_result","buddy":"h","ts":1,"effector":"repo_edit","decision":"allow","receiptId":"r1","outcome":{"executed":true,"route":{"provider":"gpt","locality":"cloud","downgraded":true,"fallbackOf":"claude"}}}"#).is_some());
+    }
+
+    #[test]
+    fn action_grade_validation_mirrors_ts() {
+        // A well-formed grade parses, carrying the audit trail (backedBy ids) into the cue.
+        let ok = parse_to_body(r#"{"protocol":"presence","v":0,"kind":"action_result","buddy":"h","ts":1,"effector":"repo_edit","decision":"allow","receiptId":"r1","grade":{"graded":3,"trusted":2,"backedBy":["grade:a","grade:b"]}}"#).unwrap();
+        match ok.cue {
+            Cue::ActionResult { grade, .. } => {
+                let grade = grade.expect("present grade parses");
+                assert_eq!(grade.graded, 3);
+                assert_eq!(grade.trusted, 2);
+                assert_eq!(grade.backed_by, vec!["grade:a".to_string(), "grade:b".to_string()]);
+            }
+            other => panic!("expected action_result, got {other:?}"),
+        }
+        // A non-integer `trusted` drops the whole cue (strict, mirrors isActionGrade).
+        assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"action_result","buddy":"h","ts":1,"effector":"repo_edit","decision":"allow","receiptId":"r1","grade":{"graded":1,"trusted":"two","backedBy":[]}}"#).is_none());
+        // A backedBy entry that is not a string drops the cue (no half-known audit trail).
+        assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"action_result","buddy":"h","ts":1,"effector":"repo_edit","decision":"allow","receiptId":"r1","grade":{"graded":1,"trusted":1,"backedBy":[42]}}"#).is_none());
+        // A missing field (no backedBy) drops the cue.
+        assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"action_result","buddy":"h","ts":1,"effector":"repo_edit","decision":"allow","receiptId":"r1","grade":{"graded":1,"trusted":1}}"#).is_none());
     }
 
     #[test]

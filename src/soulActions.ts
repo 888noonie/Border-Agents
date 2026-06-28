@@ -20,6 +20,7 @@ import {
 import {
   authorizeEffectorAction,
   emptyFrame,
+  getReceiptForChunk,
   type ActionIntent,
   type ActionReceipt,
   type ActionRoute,
@@ -33,16 +34,26 @@ import {
   DEFAULT_EXECUTORS,
   type ExecutorRegistry,
 } from "./effectorExecutors";
-import { buildBuddyGovernanceSnapshot, selectPurpose, type SessionChatLine } from "./liveGovernance";
+import {
+  buildBuddyGovernanceSnapshot,
+  selectPurpose,
+  type BuddyGovernanceSnapshot,
+  type SessionChatLine,
+} from "./liveGovernance";
 import {
   presence,
+  type PresenceActionGrade,
   type PresenceActionIntent,
   type PresenceActionResult,
   type PresenceAlertLevel,
   type PresenceEmotion,
   type SurfaceRoute,
 } from "./presenceProtocol";
-import { appendActionReceiptToLedger, appendExecutionReceiptToLedger } from "./receiptLedger";
+import {
+  appendActionReceiptToLedger,
+  appendExecutionReceiptToLedger,
+  appendSnapshotToReceiptLedger,
+} from "./receiptLedger";
 
 const LOCAL_PROVIDERS = new Set<RouteProvider>(["lm_studio", "ollama"]);
 
@@ -216,7 +227,7 @@ export function handleActionRequest(args: {
   requestId?: string;
   storage?: Storage;
   now?: string;
-}): { receipt: ActionReceipt; result: PresenceActionResult; execution?: ExecutionReceipt } {
+}): { receipt: ActionReceipt; result: PresenceActionResult; execution?: ExecutionReceipt; snapshot?: BuddyGovernanceSnapshot } {
   const derivedAt = args.now ?? new Date().toISOString();
 
   // The body speaks in persona ids (e.g. "owl"); the gate authorizes under the governance
@@ -290,7 +301,29 @@ export function handleActionRequest(args: {
       : buildExecutionReceipt(ctx, false, { outcome: "skipped", detail: "no executor wired on this surface" });
   }
 
-  return finish(args, receipt, spec.label, manifestId, execution);
+  return finish(args, receipt, spec.label, manifestId, execution, snapshot);
+}
+
+/**
+ * Project the grade basis that backed a gated action onto the wire (Slice 2 of the governance
+ * join). Reads the SAME GradeReceipts the snapshot persisted to the ledger (law 6) — never a
+ * re-grade — so the body's "authorized by N graded memories (M trusted)" rail traces back to
+ * the ledger's memory entries. `backedBy` carries the receipt ids of the TRUSTED chunks (the
+ * audit trail), resolved via core `getReceiptForChunk`; `trusted` is `backedBy.length`, so the
+ * count can never out-claim what an auditor can actually trace. A trusted chunk with no receipt
+ * is a grader contract violation (pinned by the core test); here it simply does not enter the
+ * trail rather than fabricating one. Returns undefined when no graded memory was weighed
+ * (snapshot null) — fail-closed: no grade, no claim.
+ */
+export function actionGradeSummary(
+  snapshot: BuddyGovernanceSnapshot | null | undefined,
+): PresenceActionGrade | undefined {
+  if (!snapshot) return undefined;
+  const { frame } = snapshot;
+  const backedBy = frame.trusted
+    .map((mem) => getReceiptForChunk(frame, mem.chunk_id)?.receipt_id)
+    .filter((id): id is string => id !== undefined);
+  return { graded: frame.receipts.length, trusted: backedBy.length, backedBy };
 }
 
 function finish(
@@ -299,9 +332,16 @@ function finish(
   label: string,
   ledgerBuddyId: string,
   execution?: ExecutionReceipt,
-): { receipt: ActionReceipt; result: PresenceActionResult; execution?: ExecutionReceipt } {
-  // Order matters: the authorization receipt lands before the execution receipt, so the
-  // ledger reads "authorized X, then executed X" — different borders, in sequence.
+  snapshot?: BuddyGovernanceSnapshot | null,
+): { receipt: ActionReceipt; result: PresenceActionResult; execution?: ExecutionReceipt; snapshot?: BuddyGovernanceSnapshot } {
+  // Law 6 (every grade must produce a receipt): when the gate weighed graded memory, the
+  // GradeReceipts that backed the decision land FIRST — so the ledger reads "graded X,
+  // authorized X, then executed X", three borders in sequence. Persisted regardless of the
+  // action's decision: a block is justified by the same grade, and blocked chunks must be
+  // preserved in the frame ledger. Absent only when memory was off or nothing was retrieved.
+  if (snapshot) {
+    appendSnapshotToReceiptLedger({ buddyId: ledgerBuddyId, snapshot, storage: args.storage });
+  }
   appendActionReceiptToLedger({ buddyId: ledgerBuddyId, receipt, storage: args.storage });
   if (execution) {
     appendExecutionReceiptToLedger({ buddyId: ledgerBuddyId, receipt: execution, storage: args.storage });
@@ -323,6 +363,11 @@ function finish(
       }
     : undefined;
 
+  // The grade basis crosses the wire alongside the execution outcome, projected from the same
+  // snapshot whose GradeReceipts were just persisted above (byte-identical receipt ids) — the
+  // body's honest "authorized by N graded memories" rail (Slice 3) traces straight to law 6.
+  const grade = actionGradeSummary(snapshot);
+
   const result = presence.actionResult(args.buddy, {
     effector: receipt.effector,
     decision: receipt.decision,
@@ -331,7 +376,8 @@ function finish(
     summary: summarize(receipt, label, execution),
     alertLevel: decisionAlertLevel(receipt.decision),
     ...(outcome ? { outcome } : {}),
+    ...(grade ? { grade } : {}),
   });
 
-  return { receipt, result, execution };
+  return { receipt, result, execution, ...(snapshot ? { snapshot } : {}) };
 }

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
   handleActionRequest,
+  actionGradeSummary,
   parseActionCommand,
   presenceIntentToActionIntent,
   decisionEmotion,
@@ -105,9 +106,12 @@ describe("handleActionRequest", () => {
     expect(receipt.decision).toBe("allow");
     expect(result.decision).toBe("allow");
     expect(result.requestId).toBe("req-7");
+    // The grade that justified the allow is recorded FIRST, then the action receipt:
+    // "graded X, then authorized X" (law 6 — every grade produces a receipt).
     const ledger = readReceiptLedger(storage);
-    expect(ledger).toHaveLength(1);
-    expect(ledger[0].kind).toBe("action");
+    expect(ledger).toHaveLength(2);
+    expect(ledger[0].kind).toBe("memory");
+    expect(ledger[1].kind).toBe("action");
   });
 
   test("memory-off, action-enabled request fails closed (high risk, no backing)", () => {
@@ -156,7 +160,17 @@ describe("handleActionRequest", () => {
     expect(second.receipt.decision).toBe("allow");
     expect(second.receipt.confirmed).toBe(true);
 
-    expect(readReceiptLedger(storage)).toHaveLength(2);
+    // Each gate pass re-grades its backing, so the round-trip records two action receipts
+    // (needs_confirmation then allow), each preceded by its own grade entry: 2 memory + 2 action.
+    const ledger = readReceiptLedger(storage);
+    const actions = ledger.filter((e) => e.kind === "action");
+    const memories = ledger.filter((e) => e.kind === "memory");
+    expect(actions).toHaveLength(2);
+    expect(memories).toHaveLength(2);
+    expect(actions.map((e) => (e.kind === "action" ? e.decision : null))).toEqual([
+      "needs_confirmation",
+      "allow",
+    ]);
   });
 
   // Regression: the dock/body addresses buddies by persona id ("owl"), but grants are keyed
@@ -180,9 +194,11 @@ describe("handleActionRequest", () => {
     // Receipt/ledger carry the governance identity; the cue is addressed back to the persona.
     expect(receipt.buddy).toBe("veritas");
     expect(result.buddy).toBe("owl");
+    // Both the grade entry and the action entry are keyed to the governance identity (the
+    // audit subject), not the requesting persona.
     const ledger = readReceiptLedger(storage);
-    expect(ledger).toHaveLength(1);
-    expect(ledger[0].buddyId).toBe("veritas");
+    expect(ledger).toHaveLength(2);
+    expect(ledger.every((e) => e.buddyId === "veritas")).toBe(true);
   });
 
   test("aether can attach local_chat under private posture without an ungranted block", () => {
@@ -225,6 +241,171 @@ describe("handleActionRequest", () => {
     expect(receipt.rules.some((r) => r.policy_rule === "action.blocked.unwired")).toBe(true);
     expect(receipt.rules.some((r) => r.policy_rule === "action.blocked.unknown_effector")).toBe(false);
     expect(receipt.rules.some((r) => r.policy_rule === "action.blocked.ungranted")).toBe(false);
+  });
+});
+
+// The governance vertical slice: a buddy action grades memory and that grade is now
+// persisted as a GradeReceipt trail (law 6), not just consumed as a boolean by the gate.
+// The grade lands BEFORE the action it justified — the "graded X, then authorized X" story.
+describe("grade-receipt persistence (the governance join)", () => {
+  test("an allowed action records the backing grade first, and returns the snapshot", () => {
+    const storage = memoryStorage();
+    const { receipt, snapshot } = handleActionRequest({
+      buddy: "veritas",
+      effectorId: "receipt_review",
+      settings: BASE_SETTINGS, // summarize_history, low risk
+      posture: "play",
+      history: [{ role: "user", text: "What changed today?" }],
+      storage,
+      now: "2026-06-13T12:00:00Z",
+    });
+
+    expect(receipt.decision).toBe("allow");
+    // The grade that backed the gate is returned to the caller (the wire/body slices project it).
+    expect(snapshot?.frame.receipts.length).toBeGreaterThan(0);
+
+    const ledger = readReceiptLedger(storage);
+    const memory = ledger.find((e) => e.kind === "memory");
+    const action = ledger.find((e) => e.kind === "action");
+    expect(memory).toBeDefined();
+    expect(action).toBeDefined();
+    // Ordering: the grade is persisted ahead of the authorization it justified.
+    expect(ledger.indexOf(memory!)).toBeLessThan(ledger.indexOf(action!));
+    // The persisted grade carries the actual per-chunk GradeReceipts.
+    if (memory && memory.kind === "memory") {
+      expect(memory.receipts.length).toBeGreaterThan(0);
+      expect(memory.receipts[0].purpose).toBe("summarize_history");
+    }
+  });
+
+  test("a blocked action still records the grade that justified the block, and nothing executes", () => {
+    const storage = memoryStorage();
+    const { receipt, execution } = handleActionRequest({
+      buddy: "forge",
+      effectorId: "repo_edit",
+      settings: { ...BASE_SETTINGS, allowAction: true }, // agent_action, memory on
+      posture: "work",
+      history: ACTION_HISTORY,
+      intent: {
+        effectorId: "repo_edit",
+        operation: "apply_patch",
+        target: { kind: "repo_path", path: "AGENTS.md" }, // protected → hard block
+        summary: "apply_patch AGENTS.md",
+      },
+      confirmed: true,
+      storage,
+      now: "2026-06-13T12:00:00Z",
+    });
+
+    expect(receipt.decision).toBe("blocked");
+    expect(execution).toBeUndefined();
+    const ledger = readReceiptLedger(storage);
+    // Law 6 holds on the block path too: the grade is receipted even though the action did not run.
+    expect(ledger.some((e) => e.kind === "memory")).toBe(true);
+    expect(ledger.some((e) => e.kind === "execution")).toBe(false);
+  });
+
+  test("memory off records no grade and returns no snapshot (nothing to receipt, fails closed)", () => {
+    const storage = memoryStorage();
+    const { receipt, snapshot } = handleActionRequest({
+      buddy: "veritas",
+      effectorId: "receipt_review",
+      settings: { ...BASE_SETTINGS, allowAction: true, memoryMode: "off" },
+      posture: "work",
+      history: ACTION_HISTORY,
+      storage,
+      now: "2026-06-13T12:00:00Z",
+    });
+
+    expect(receipt.decision).toBe("blocked"); // high risk, no backing
+    expect(snapshot).toBeUndefined();
+    expect(readReceiptLedger(storage).some((e) => e.kind === "memory")).toBe(false);
+  });
+});
+
+// Slice 2 of the governance join: the grade that backed the gate is projected onto the
+// action_result wire as `grade` so a dumb body can render an honest "authorized by N graded
+// memories (M trusted)" rail. backedBy carries the receipt ids (the audit trail), and they
+// must be the SAME ids the ledger persisted — the wire cannot be allowed to disagree with law 6.
+describe("grade projection onto the action_result wire (Slice 2)", () => {
+  const ACTING: BuddySettings = { ...BASE_SETTINGS, allowAction: true };
+  function repoIntent(path: string, operation = "write_patch") {
+    return {
+      effectorId: "repo_edit" as const,
+      operation,
+      target: { kind: "repo_path" as const, path },
+      payloadDigest: "sha256:patch",
+      summary: `${operation} ${path}`,
+    };
+  }
+
+  test("a null snapshot projects no grade — fail-closed, no grade no claim", () => {
+    expect(actionGradeSummary(null)).toBeUndefined();
+    expect(actionGradeSummary(undefined)).toBeUndefined();
+  });
+
+  test("an allowed, trusted-backed action carries a grade whose backedBy ids trace to the ledger", () => {
+    const storage = memoryStorage();
+    const intent = repoIntent(".border-agents/proofs/slice2.patch");
+    // First request → needs_confirmation (high risk), then confirm → allow + execute.
+    handleActionRequest({
+      buddy: "forge", effectorId: "repo_edit", settings: ACTING, posture: "work",
+      history: ACTION_HISTORY, intent, storage, now: "2026-06-13T12:00:00Z",
+    });
+    const { receipt, result, snapshot } = handleActionRequest({
+      buddy: "forge", effectorId: "repo_edit", settings: ACTING, posture: "work",
+      history: ACTION_HISTORY, intent, confirmed: true, storage, now: "2026-06-13T12:00:01Z",
+    });
+
+    expect(receipt.decision).toBe("allow");
+    const grade = result.grade;
+    expect(grade).toBeDefined();
+    expect(grade!.graded).toBeGreaterThan(0);
+    // trusted equals the traceable trail length — the count can never out-claim backedBy.
+    expect(grade!.trusted).toBe(grade!.backedBy.length);
+    expect(grade!.trusted).toBeGreaterThan(0);
+    // No chunk appears twice in the trail: a duplicate would inflate the trusted count and
+    // double-list an audit entry, so the count stays a faithful tally of distinct backing grades.
+    expect(new Set(grade!.backedBy).size).toBe(grade!.backedBy.length);
+
+    // The projection used the SAME GradeReceipts the snapshot persisted — byte-identical ids.
+    const trustedIds = snapshot!.frame.trusted
+      .map((m) => snapshot!.frame.receipts.find((r) => r.chunk_id === m.chunk_id)!.receipt_id);
+    expect(grade!.backedBy).toEqual(trustedIds);
+
+    // And every backedBy id is a grade the ledger actually persisted (law 6 trace). The two-pass
+    // confirm flow writes one memory entry per pass (distinct derivedAt-keyed ids), so the trail
+    // is checked against the union of persisted grade receipts, not just one pass's entry.
+    const ledger = readReceiptLedger(storage);
+    const ledgerTrustedIds = ledger.flatMap((e) =>
+      e.kind === "memory" ? e.receipts.filter((r) => r.grade === "trusted").map((r) => r.receipt_id) : [],
+    );
+    expect(ledgerTrustedIds.length).toBeGreaterThan(0);
+    for (const id of grade!.backedBy) expect(ledgerTrustedIds).toContain(id);
+  });
+
+  test("a grade-justified block still carries the grade on the wire (distinct from a no-memory block)", () => {
+    const storage = memoryStorage();
+    const { receipt, result } = handleActionRequest({
+      buddy: "forge", effectorId: "repo_edit", settings: ACTING, posture: "work",
+      history: ACTION_HISTORY,
+      intent: repoIntent("AGENTS.md", "apply_patch"), // protected → hard block, memory still graded
+      confirmed: true, storage, now: "2026-06-13T12:00:00Z",
+    });
+    expect(receipt.decision).toBe("blocked");
+    expect(result.grade).toBeDefined();
+    expect(result.grade!.graded).toBeGreaterThan(0);
+  });
+
+  test("memory off projects no grade even on an allow (the body shows no rail it cannot back)", () => {
+    const storage = memoryStorage();
+    const { receipt, result } = handleActionRequest({
+      buddy: "veritas", effectorId: "receipt_review",
+      settings: { ...BASE_SETTINGS, memoryMode: "off" }, posture: "play", // low risk → allow
+      history: ACTION_HISTORY, storage, now: "2026-06-13T12:00:00Z",
+    });
+    expect(receipt.decision).toBe("allow");
+    expect(result.grade).toBeUndefined();
   });
 });
 

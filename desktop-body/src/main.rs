@@ -282,6 +282,9 @@ struct ReceiptRailEntry {
     route_label: Option<String>,
     executed: Option<bool>,
     receipt_id: String,
+    /// The grade basis that justified the decision (law 6), present only when the gate weighed
+    /// graded memory. Normalized at ingestion so `graded == 0` never reaches here as `Some`.
+    grade: Option<presence::ActionGrade>,
 }
 
 impl ReceiptRailEntry {
@@ -298,6 +301,22 @@ impl ReceiptRailEntry {
         let mut parts = Vec::new();
         if let Some(summary) = self.summary.as_deref().filter(|s| !s.trim().is_empty()) {
             parts.push(summary.trim().to_string());
+        }
+        // The grade sentence leads (before the decision): the grade is what JUSTIFIES the
+        // decision, so it reads "Authorized by N graded (M trusted) → <decision> → receiptId".
+        // Reversing it would read as justification-after-the-fact — a different speech act. This
+        // is a GRADE-justified authorization, deliberately worded "Authorized by …", never
+        // "confirmed" (that wording belongs to a panel-confirm echo, a distinct speech act).
+        if let Some(grade) = self.grade.as_ref() {
+            parts.push(format!(
+                "Authorized by {} graded memories ({} trusted).",
+                grade.graded, grade.trusted
+            ));
+            // The audit trail: raw GradeReceipt ids an auditor follows back to ledger entries
+            // (law 6). Shown in full, like receiptId — these are keys, not human-readable names.
+            if !grade.backed_by.is_empty() {
+                parts.push(format!("backedBy: {}", grade.backed_by.join(", ")));
+            }
         }
         parts.push(format!("{} {} at {time}.", self.decision, self.effector));
         parts.push(format!("receiptId: {}", self.receipt_id));
@@ -955,6 +974,8 @@ impl App {
                 effector: entry.effector.as_str(),
                 decision: entry.decision.as_str(),
                 route_label: entry.route_label.as_deref(),
+                graded: entry.grade.as_ref().map(|g| g.graded).unwrap_or(0),
+                trusted: entry.grade.as_ref().map(|g| g.trusted).unwrap_or(0),
                 time: time.as_str(),
             })
             .collect();
@@ -1356,7 +1377,7 @@ impl App {
             presence::Cue::Output { surface, text, caption, media_type, data_base64 } => {
                 self.apply_output(&surface, text, caption, media_type, data_base64);
             }
-            presence::Cue::ActionResult { effector, decision, receipt_id, summary, outcome, .. } => {
+            presence::Cue::ActionResult { effector, decision, receipt_id, summary, outcome, grade, .. } => {
                 // Present the soul's authorization outcome — the body renders it, it never decides
                 // it (law 7). The face is the fastest read: each decision wears a DISTINCT, honest
                 // expression (allow→happy, needs_confirmation→curious, blocked→alert) so a glance
@@ -1367,6 +1388,9 @@ impl App {
                     .as_ref()
                     .and_then(|o| o.route.as_ref())
                     .map(|r| r.provider.clone());
+                // Fail-closed defense: a degenerate `graded: 0` grade carries no basis to show, so
+                // collapse it to None — the body renders no ⚖ marker, identical to "no grade".
+                let grade = grade.filter(|g| g.graded > 0);
                 push_receipt_rail_entry(&mut self.receipt_rail, ReceiptRailEntry {
                     effector: effector.clone(),
                     decision: decision.clone(),
@@ -1375,6 +1399,7 @@ impl App {
                     route_label,
                     executed,
                     receipt_id,
+                    grade,
                 });
                 self.pending_effector = (decision == "needs_confirmation").then_some(effector);
                 self.set_emotion(Emotion::for_decision(&decision));
@@ -2474,6 +2499,7 @@ mod tests {
             route_label: Some("claude".to_string()),
             executed: Some(true),
             receipt_id: format!("receipt-{idx}"),
+            grade: None,
         }
     }
 
@@ -2510,16 +2536,55 @@ mod tests {
             route_label: None,
             executed: Some(true),
             receipt_id: "action:1".to_string(),
+            grade: None,
         };
         let detail = entry.detail_text();
         assert!(detail.contains("Applied the patch."));
         assert!(detail.contains("allow repo_edit at 01:02:03."));
         assert!(detail.contains("receiptId: action:1"));
+        // No grade → no authorization-by-grade sentence at all.
+        assert!(!detail.contains("Authorized by"));
 
         let no_summary = ReceiptRailEntry { summary: None, ..entry };
         let detail = no_summary.detail_text();
         assert!(!detail.contains("Applied the patch."));
         assert!(detail.contains("allow repo_edit at 01:02:03."));
+    }
+
+    #[test]
+    fn receipt_detail_leads_with_the_grade_that_justified_the_decision() {
+        let entry = ReceiptRailEntry {
+            effector: "repo_edit".to_string(),
+            decision: "allow".to_string(),
+            ts: 3_723,
+            summary: Some("Applied the patch.".to_string()),
+            route_label: Some("claude".to_string()),
+            executed: Some(true),
+            receipt_id: "action:1".to_string(),
+            grade: Some(presence::ActionGrade {
+                graded: 3,
+                trusted: 2,
+                backed_by: vec!["grade:a".to_string(), "grade:b".to_string()],
+            }),
+        };
+        let detail = entry.detail_text();
+        // The honest sentence + the raw audit trail (backedBy ids, shown in full like receiptId).
+        assert!(detail.contains("Authorized by 3 graded memories (2 trusted)."));
+        assert!(detail.contains("backedBy: grade:a, grade:b"));
+        assert!(detail.contains("receiptId: action:1"));
+
+        // Refinement A — reading order: the grade JUSTIFIES the decision, so it leads.
+        let grade_at = detail.find("Authorized by").unwrap();
+        let decision_at = detail.find("allow repo_edit").unwrap();
+        assert!(grade_at < decision_at, "grade sentence must precede the decision sentence");
+
+        // Refinement B — speech-act pin (self-asserting half; the bidirectional confirm half
+        // lands with a Build C merge): a grade-justified authorization is worded "Authorized
+        // by …" and must NOT borrow the panel-confirm vocabulary.
+        assert!(!detail.to_lowercase().contains("confirmed"));
+        assert!(!detail.to_lowercase().contains("panel"));
+        // TODO(build-c-merge): add the inverse — a panel-confirm receipt contains "confirmed"
+        // and must NOT contain "Authorized by" — so the two speech acts can never collapse.
     }
 
     #[test]

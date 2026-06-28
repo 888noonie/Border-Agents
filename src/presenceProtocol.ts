@@ -286,6 +286,23 @@ export interface PresenceActionOutcome {
 }
 
 /**
+ * The grade basis that backed a gated action (additive, v0). It lets a dumb body render an
+ * honest "authorized by N graded memories (M trusted)" rail without any policy reasoning.
+ * `backedBy` is the load-bearing field: the GradeReceipt ids of the trusted chunks that form
+ * the audit trail back to the ledger's memory entries (law 6) — a body claim a downstream
+ * auditor can trace to the ledger. `graded`/`trusted` are summary counts; `trusted` equals
+ * `backedBy.length` by construction, so the count can never out-claim the traceable trail.
+ * The full GradeReceipts stay soul-side (law 7); only ids + counts cross the wire. Present
+ * only when the gate weighed graded memory (memory on, retrieval non-empty); absent otherwise
+ * — fail-closed: no grade, no claim.
+ */
+export interface PresenceActionGrade {
+  graded: number;
+  trusted: number;
+  backedBy: string[];
+}
+
+/**
  * Outcome of an `action_request` the soul ran through the governance action gate
  * (src/core/actionGate.ts) — soul → body. Distinct from `output` (rendered artifact
  * bytes) and `say` (ephemeral speech): an authorization outcome is a governance result
@@ -310,6 +327,11 @@ export type PresenceActionResult = PresenceEnvelope<
      * instead of re-deriving policy state locally. Optional/additive (v0).
      */
     alertLevel?: PresenceAlertLevel;
+    /**
+     * The grade basis that justified the gate's decision (additive, v0). Projected from the
+     * SAME GradeReceipts the soul persisted to the ledger, so the rail traces to law-6 entries.
+     */
+    grade?: PresenceActionGrade;
   }
 >;
 
@@ -548,6 +570,14 @@ function isActionOutcome(value: unknown): value is PresenceActionOutcome {
   return true;
 }
 
+function isActionGrade(value: unknown): value is PresenceActionGrade {
+  if (!isObject(value)) return false;
+  if (!isFiniteNumber(value.graded)) return false;
+  if (!isFiniteNumber(value.trusted)) return false;
+  if (!isStringArray(value.backedBy)) return false;
+  return true;
+}
+
 function isEdge(value: unknown): value is PresenceEdge {
   return value === "top" || value === "right" || value === "bottom" || value === "left";
 }
@@ -739,7 +769,8 @@ function isValidForKind(kind: PresenceKind, raw: Record<string, unknown>): boole
         (raw.requestId === undefined || typeof raw.requestId === "string") &&
         (raw.summary === undefined || typeof raw.summary === "string") &&
         (raw.outcome === undefined || isActionOutcome(raw.outcome)) &&
-        (raw.alertLevel === undefined || isAlertLevel(raw.alertLevel))
+        (raw.alertLevel === undefined || isAlertLevel(raw.alertLevel)) &&
+        (raw.grade === undefined || isActionGrade(raw.grade))
       );
     case "surface_active":
       return (
@@ -930,6 +961,7 @@ export const presence = {
       summary?: string;
       outcome?: PresenceActionOutcome;
       alertLevel?: PresenceAlertLevel;
+      grade?: PresenceActionGrade;
     },
     opts: EnvelopeOptions = {},
   ): PresenceActionResult {

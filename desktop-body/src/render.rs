@@ -712,6 +712,10 @@ pub struct ReceiptRailItem<'a> {
     pub effector: &'a str,
     pub decision: &'a str,
     pub route_label: Option<&'a str>,
+    /// Grade basis (law 6). `graded == 0` means no grade backed this action (memory off /
+    /// nothing retrieved) → no ⚖ marker, same as absent. `trusted` is the trusted count.
+    pub graded: u32,
+    pub trusted: u32,
     pub time: &'a str,
 }
 
@@ -1979,6 +1983,31 @@ fn draw_passport_card(pixmap: &mut Pixmap, font: &Font, rect: Rect, card: &Passp
     }
 }
 
+/// Compose the receipt card's second (detail) line. When the action was backed by graded
+/// memory, the grade marker "⚖ M/N trusted" replaces the decision word (the decision is already
+/// encoded in the glyph + its color, the cheapest-to-read real estate doing nothing new). The
+/// route provenance is appended only if the combined line fits — the grade is the new
+/// information and wins the budget, so a long provider label is dropped before the marker is
+/// ever truncated (the trusted ratio must stay intact). With no grade, the line falls back to
+/// the route label or the decision word, exactly as before.
+fn receipt_detail_line(font: &Font, item: &ReceiptRailItem, max_w: f32) -> String {
+    if item.graded == 0 {
+        return item.route_label.unwrap_or(item.decision).to_string();
+    }
+    let marker = format!("\u{2696} {}/{} trusted", item.trusted, item.graded);
+    match item.route_label {
+        Some(route) => {
+            let combined = format!("{marker} \u{00b7} {route}");
+            if measure(font, &combined, 8.0) <= max_w {
+                combined
+            } else {
+                marker
+            }
+        }
+        None => marker,
+    }
+}
+
 fn draw_receipt_rail(pixmap: &mut Pixmap, font: &Font, items: &[ReceiptRailItem]) {
     fill_round_rect(
         pixmap,
@@ -2006,8 +2035,8 @@ fn draw_receipt_rail(pixmap: &mut Pixmap, font: &Font, items: &[ReceiptRailItem]
         let top = fit_line(font, item.effector, 8.5, 72.0);
         draw_line(pixmap, font, &top, effector_x, rect.y + 11.0, 8.5, [35, 39, 43]);
 
-        let detail = item.route_label.unwrap_or(item.decision);
-        let detail = fit_line(font, detail, 8.0, 72.0);
+        let detail = receipt_detail_line(font, item, 72.0);
+        let detail = fit_line(font, &detail, 8.0, 72.0);
         draw_line(pixmap, font, &detail, effector_x, rect.y + 22.0, 8.0, [83, 91, 99]);
 
         draw_line(pixmap, font, item.time, rect.x + rect.w - 43.0, rect.y + 18.0, 8.0, [83, 91, 99]);
@@ -2755,6 +2784,43 @@ mod tests {
         assert_eq!(receipt_rail_card_index(12.0, 45.0, 2), Some(1));
         assert_eq!(receipt_rail_card_index(RECEIPT_RAIL_W as f64 + 1.0, 12.0, 2), None);
         assert_eq!(receipt_rail_card_index(12.0, 90.0, 2), None);
+    }
+
+    #[test]
+    fn receipt_detail_line_shows_grade_marker_and_drops_route_before_truncating_it() {
+        let font = load_font().expect("system font available for receipt detail test");
+        let with_grade = |graded, trusted, route| ReceiptRailItem {
+            glyph: "✅",
+            effector: "repo_edit",
+            decision: "allow",
+            route_label: route,
+            graded,
+            trusted,
+            time: "11:00:01",
+        };
+
+        // No grade → falls back to route label (or decision), no ⚖ marker.
+        let none = receipt_detail_line(&font, &with_grade(0, 0, Some("claude")), 72.0);
+        assert_eq!(none, "claude");
+        assert!(!none.contains('\u{2696}'));
+
+        // Grade + route, given the room → marker leads, route appended as provenance.
+        let roomy = receipt_detail_line(&font, &with_grade(3, 2, Some("claude")), 200.0);
+        assert_eq!(roomy, "\u{2696} 2/3 trusted \u{00b7} claude");
+
+        // At the REAL 72px card budget the marker + route don't both fit, so the route is
+        // sacrificed and the marker stays intact — grade is the new info, route is nice-to-have.
+        let tight = receipt_detail_line(&font, &with_grade(3, 2, Some("claude")), 72.0);
+        assert_eq!(tight, "\u{2696} 2/3 trusted", "at card width the marker wins; route drops, never truncates");
+
+        // A long route never forces the marker (or its ratio) to truncate, at any budget.
+        let long_route = "anthropic-claude-sonnet-4-5-20260101-preview";
+        let dropped = receipt_detail_line(&font, &with_grade(3, 2, Some(long_route)), 200.0);
+        assert_eq!(dropped, "\u{2696} 2/3 trusted", "marker must never be truncated; route drops first");
+        assert!(!dropped.contains(long_route));
+
+        // Grade, no route → marker alone.
+        assert_eq!(receipt_detail_line(&font, &with_grade(1, 1, None), 72.0), "\u{2696} 1/1 trusted");
     }
 
     #[test]

@@ -79,8 +79,13 @@ const PERIMETER_SIZE: f32 = 20.0;
 const PERIMETER_GAP: f32 = 6.0;
 const SURFACE_BLOOM_W: f32 = 116.0;
 const SURFACE_BLOOM_H: f32 = 24.0;
-const SURFACE_BLOOM_R: f32 = 112.0;
-const SURFACE_BLOOM_MAX_ITEMS: usize = 6;
+/// Vertical gap between stacked pills within a column.
+const SURFACE_BLOOM_GAP: f32 = 8.0;
+/// Horizontal gap between the torso edge and a pill column — keeps the dial OUTSIDE the torso.
+const SURFACE_BLOOM_SIDE_GAP: f32 = 12.0;
+/// The dial blooms into two vertical columns flanking the torso, up to five pills a side.
+const SURFACE_BLOOM_PER_SIDE: usize = 5;
+const SURFACE_BLOOM_MAX_ITEMS: usize = SURFACE_BLOOM_PER_SIDE * 2;
 const RECEIPT_RAIL_PAD: f32 = 8.0;
 const RECEIPT_RAIL_CARD_H: f32 = 28.0;
 const RECEIPT_RAIL_CARD_GAP: f32 = 5.0;
@@ -231,9 +236,226 @@ impl Layout {
     }
 
     pub fn surface_bloom_rects(&self, count: usize) -> Vec<Rect> {
-        debug_assert!(count <= SURFACE_BLOOM_MAX_ITEMS, "surface bloom supports six visible slots");
-        let torso = self.torso_rect();
-        surface_bloom_rects_from_center(torso.x + torso.w / 2.0, torso.y + torso.h / 2.0, count.min(SURFACE_BLOOM_MAX_ITEMS))
+        debug_assert!(count <= SURFACE_BLOOM_MAX_ITEMS, "surface bloom supports ten visible slots (five per side)");
+        surface_bloom_rects_two_columns(self.torso_rect(), count.min(SURFACE_BLOOM_MAX_ITEMS))
+    }
+
+    /// The interior-view rows: the perimeter controls re-laid-out as a vertical list INSIDE
+    /// the torso panel, top-to-bottom in display order. The caller picks which controls to
+    /// fold in (surfaces always; Paste/Review/Edit only while chat is open) and passes the
+    /// count via `rows.len()` — each row is sized to fill the panel height evenly. Returns the
+    /// rows that fit (stretched bodies show all; a very short torso drops the last rows rather
+    /// than overlap). Order is fixed so muscle memory transfers from the perimeter ring.
+    pub fn interior_rows_for(&self, count: usize) -> Vec<Rect> {
+        let panel = self.output_panel_rect();
+        if count == 0 {
+            return Vec::new();
+        }
+        let gap = 3.0;
+        // Evenly size rows to fill the panel height; clamp so a short torso still shows whole rows.
+        let row_h = ((panel.h - gap * (count as f32 - 1.0)) / count as f32).max(0.0).min(20.0);
+        if row_h < 8.0 {
+            // Too short to legibly fit even one row — show nothing rather than a cramped list.
+            // 8px is the floor at which the glyph + label still read; the full chat-open set
+            // (10 rows) fits a default 140px torso at ~9.7px per row.
+            return Vec::new();
+        }
+        (0..count)
+            .map(|i| {
+                let y = panel.y + i as f32 * (row_h + gap);
+                Rect { x: panel.x, y, w: panel.w, h: row_h }
+            })
+            .collect()
+    }
+
+    /// Kept for the closed-chat case (surfaces only, 7 rows). Callers that need the chat
+    /// controls too should build their own list and call `interior_rows_for`.
+    pub fn interior_rows(&self) -> Vec<(PerimeterId, Rect)> {
+        let ids = [
+            PerimeterId::ArrowN,
+            PerimeterId::Quick0,
+            PerimeterId::Quick1,
+            PerimeterId::Quick2,
+            PerimeterId::Quick3,
+            PerimeterId::Add,
+            PerimeterId::ArrowS,
+        ];
+        self.interior_rows_for(ids.len())
+            .into_iter()
+            .zip(ids.iter())
+            .map(|(rect, id)| (*id, rect))
+            .collect()
+    }
+
+    /// Minimum torso stretch so a connect-style panel (many options + credential fields) fits
+    /// without overlapping rows. Callers may bump `body_len` to this when a `panel` cue opens.
+    pub fn min_body_len_for_onboarding(
+        list_rows: usize,
+        field_rows: usize,
+        has_prompt: bool,
+        has_primary: bool,
+    ) -> f32 {
+        let content = Self::min_onboarding_content_h(list_rows, field_rows, has_prompt, has_primary);
+        // output_panel_rect: h = body_len - 16; content: h = panel.h - 8
+        (content + 24.0).clamp(BODY_LEN_MIN, BODY_LEN_MAX)
+    }
+
+    fn min_onboarding_content_h(
+        list_rows: usize,
+        field_rows: usize,
+        has_prompt: bool,
+        has_primary: bool,
+    ) -> f32 {
+        let title = 15.0 + 2.0;
+        let prompt = if has_prompt { 13.0 + 2.0 } else { 0.0 };
+        let primary = if has_primary { 24.0 + 6.0 } else { 0.0 };
+        let gap = 2.0;
+        let section_gap = 4.0;
+        let opt_h = 18.0;
+        let field_h = 16.0;
+        let list_h = if list_rows > 0 {
+            list_rows as f32 * opt_h + (list_rows as f32 - 1.0).max(0.0) * gap + section_gap
+        } else {
+            0.0
+        };
+        let fields_h = if field_rows > 0 {
+            field_rows as f32 * field_h + (field_rows as f32 - 1.0).max(0.0) * gap
+        } else {
+            0.0
+        };
+        title + prompt + list_h + fields_h + primary + 4.0
+    }
+
+    /// Interactive rects for the in-torso onboarding panel (Build C). Shares the torso output
+    /// card with the settings/interior views; reserves the right-edge strip for torso actions.
+    pub fn onboarding_layout(
+        &self,
+        list_rows: usize,
+        field_rows: usize,
+        has_prompt: bool,
+        has_primary: bool,
+    ) -> OnboardingLayout {
+        let panel = self.output_panel_rect();
+        let inset = 4.0;
+        let right_reserve = 22.0;
+        let content = Rect {
+            x: panel.x + inset,
+            y: panel.y + inset,
+            w: (panel.w - inset * 2.0 - right_reserve).max(0.0),
+            h: (panel.h - inset * 2.0).max(0.0),
+        };
+        if content.h < 24.0 {
+            return OnboardingLayout {
+                card: content,
+                title: content,
+                prompt: None,
+                options: Vec::new(),
+                fields: Vec::new(),
+                primary: None,
+            };
+        }
+
+        let title_h = 15.0_f32;
+        let mut y = content.y;
+        let title = Rect { x: content.x, y, w: content.w, h: title_h };
+        y += title_h + 2.0;
+
+        let prompt = if has_prompt {
+            let h = 13.0_f32.min((content.y + content.h - y).max(0.0));
+            let rect = Rect { x: content.x, y, w: content.w, h };
+            y += h + 2.0;
+            Some(rect)
+        } else {
+            None
+        };
+
+        let primary_h = 24.0_f32;
+        let primary_gap = 6.0_f32;
+        let primary = if has_primary {
+            Some(Rect {
+                x: content.x,
+                y: content.y + content.h - primary_h,
+                w: content.w,
+                h: primary_h,
+            })
+        } else {
+            None
+        };
+
+        let bottom = primary.map(|r| r.y - primary_gap).unwrap_or(content.y + content.h);
+        let mid_h = (bottom - y - 2.0).max(0.0);
+        let row_gap = 2.0;
+        let section_gap = 4.0;
+        let field_row_h = 16.0_f32;
+        let fields_total = if field_rows > 0 {
+            field_rows as f32 * field_row_h + (field_rows as f32 - 1.0).max(0.0) * row_gap + section_gap
+        } else {
+            0.0
+        };
+        let list_budget = (mid_h - fields_total).max(0.0);
+
+        let opt_h_detailed = 18.0_f32;
+        let opt_h_compact = 12.0_f32;
+        let option_row_h = if list_rows == 0 {
+            0.0
+        } else if list_budget >= list_rows as f32 * opt_h_detailed + (list_rows as f32 - 1.0).max(0.0) * row_gap {
+            opt_h_detailed
+        } else if list_budget >= list_rows as f32 * opt_h_compact + (list_rows as f32 - 1.0).max(0.0) * row_gap {
+            opt_h_compact
+        } else {
+            ((list_budget - (list_rows as f32 - 1.0).max(0.0) * row_gap) / list_rows as f32)
+                .max(10.0)
+                .min(opt_h_compact)
+        };
+
+        let option_rects = if list_rows > 0 && option_row_h >= 10.0 {
+            (0..list_rows)
+                .map(|i| Rect {
+                    x: content.x,
+                    y: y + i as f32 * (option_row_h + row_gap),
+                    w: content.w,
+                    h: option_row_h,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        let fields_y = if list_rows > 0 {
+            option_rects.last().map(|r| r.y + r.h + section_gap).unwrap_or(y)
+        } else {
+            y
+        };
+        let field_rects = if field_rows > 0 && (bottom - fields_y) >= field_row_h {
+            (0..field_rows)
+                .map(|i| Rect {
+                    x: content.x,
+                    y: fields_y + i as f32 * (field_row_h + row_gap),
+                    w: content.w,
+                    h: field_row_h,
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        let card_top = title.y - 4.0;
+        let card_bottom = primary.map(|r| r.y + r.h + 4.0).unwrap_or(bottom);
+        let card = Rect {
+            x: content.x - 4.0,
+            y: card_top,
+            w: content.w + 8.0,
+            h: (card_bottom - card_top).max(0.0),
+        };
+
+        OnboardingLayout {
+            card,
+            title,
+            prompt,
+            options: option_rects,
+            fields: field_rects,
+            primary,
+        }
     }
 
     pub fn torso_action_rect(&self, action: TorsoAction) -> Rect {
@@ -458,6 +680,46 @@ pub fn torso_action_at(layout: &Layout, px: f64, py: f64) -> Option<TorsoAction>
 /// Radius of the tucked "bump" — smaller than the head so it frees screen space.
 pub const BUMP_R: f32 = 34.0;
 
+// --- tucked "peek" extras (bubble + input drawn beside the bump) -------------------
+//
+// Fixed-size so the rects are pure geometry (no font) and hit-testing/input-region match
+// the drawing exactly. The group (bubble above input) is anchored just inward of the bump
+// on its on-screen side; for left/right edges it straddles the bump centre, for top/bottom
+// it hangs inward from the edge.
+const TUCK_PEEK_W: f32 = 212.0;
+const TUCK_PEEK_BUBBLE_H: f32 = 60.0;
+const TUCK_PEEK_INPUT_H: f32 = 34.0;
+const TUCK_PEEK_GAP: f32 = 6.0;
+
+/// Top-left of the peek group (bubble) and the shared x, clamped onto the surface.
+fn tucked_peek_origin(edge: BumpEdge, w: u32, h: u32) -> (f32, f32) {
+    let (wf, hf) = (w as f32, h as f32);
+    let (cx, cy) = bump_center(edge, w, h);
+    let group_h = TUCK_PEEK_BUBBLE_H + TUCK_PEEK_GAP + TUCK_PEEK_INPUT_H;
+    let clear = BUMP_R + TUCK_PEEK_GAP;
+    let (x, top) = match edge {
+        BumpEdge::Left => (clear, cy - group_h / 2.0),
+        BumpEdge::Right => (wf - clear - TUCK_PEEK_W, cy - group_h / 2.0),
+        BumpEdge::Top => (cx - TUCK_PEEK_W / 2.0, clear),
+        BumpEdge::Bottom => (cx - TUCK_PEEK_W / 2.0, hf - clear - group_h),
+    };
+    let x = x.clamp(4.0, (wf - TUCK_PEEK_W - 4.0).max(4.0));
+    let top = top.clamp(4.0, (hf - group_h - 4.0).max(4.0));
+    (x, top)
+}
+
+/// The peek speech bubble rect (surface-local), beside the bump on its on-screen side.
+pub fn tucked_bubble_rect(edge: BumpEdge, w: u32, h: u32) -> Rect {
+    let (x, top) = tucked_peek_origin(edge, w, h);
+    Rect { x, y: top, w: TUCK_PEEK_W, h: TUCK_PEEK_BUBBLE_H }
+}
+
+/// The peek input field rect (surface-local), directly below the peek bubble.
+pub fn tucked_input_rect(edge: BumpEdge, w: u32, h: u32) -> Rect {
+    let (x, top) = tucked_peek_origin(edge, w, h);
+    Rect { x, y: top + TUCK_PEEK_BUBBLE_H + TUCK_PEEK_GAP, w: TUCK_PEEK_W, h: TUCK_PEEK_INPUT_H }
+}
+
 /// Which screen edge a tucked buddy is parked against. (Render-side mirror of
 /// the presence protocol's edge; `main.rs` maps `presence::Edge` onto it.)
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -491,10 +753,58 @@ pub fn head_rect() -> Rect {
     Rect { x: FIG_CX - HEAD_R, y: HEAD_CY - HEAD_R, w: HEAD_R * 2.0, h: HEAD_R * 2.0 }
 }
 
+/// The bounding box of the whole clay figure (head ∪ torso ∪ arms-at-full-reach ∪ legs ∪
+/// feet) in surface-local coordinates, for a given torso stretch. This is what `clamp_margins`
+/// keeps on-screen so the buddy can never be dragged fully off — the head alone is too
+/// small a guarantee now that the whole body is a drag handle. Matches the reach used by
+/// `point_in_draggable_body` so the clamp protects every grabbable limb.
+pub fn figure_bbox(body_len: f32) -> Rect {
+    let shoulder_x = TORSO_W / 2.0 - 4.0;
+    let half_w = HEAD_R.max(shoulder_x + ARM_UPPER + ARM_FORE + HAND_R + 6.0);
+    let top = HEAD_CY - HEAD_R;
+    let bottom = TORSO_TOP + body_len + LEG_H + FOOT_H;
+    Rect { x: FIG_CX - half_w, y: top, w: half_w * 2.0, h: (bottom - top).max(0.0) }
+}
+
+/// Minimum sliver of the figure that must stay visible on each axis when dragging —
+/// belt-and-suspenders beyond the body-drag handle, so a fast drag can never park the
+/// buddy fully off-screen even if the head slips past an edge.
+pub const DRAG_KEEP_VISIBLE: f32 = 36.0;
+
 pub fn point_in_head(px: f64, py: f64) -> bool {
     let dx = px as f32 - FIG_CX;
     let dy = py as f32 - HEAD_CY;
     dx * dx + dy * dy <= HEAD_R * HEAD_R
+}
+
+/// True if the point is on the clay figure itself — head, torso, arms, or legs. The WHOLE
+/// body is a move handle, not just the head, so a buddy whose head was dragged off-screen can
+/// still be grabbed by a visible arm/torso and pulled back. Spans the torso plus an arm-reach
+/// flank on each side (arm upper + forearm + hand radius + a comfort margin, so the hand
+/// circles at the swing extremes stay grabbable), from above the shoulders (a raised arm sits
+/// above the torso top) down past the feet. Callers check the specific controls (perimeter
+/// buttons, torso actions, input, feet-stretch) FIRST, so this only claims the figure's
+/// non-interactive body and the flanks where the arms swing.
+pub fn point_in_draggable_body(layout: &Layout, px: f64, py: f64) -> bool {
+    if point_in_head(px, py) {
+        return true;
+    }
+    let torso = layout.torso_rect();
+    // Full reach of a swung arm: shoulder offset + upper + fore + hand circle + a few px of
+    // grab comfort so the hand tips never fall outside the move handle.
+    let shoulder_x = TORSO_W / 2.0 - 4.0;
+    let reach = shoulder_x + ARM_UPPER + ARM_FORE + HAND_R + 6.0;
+    // The shoulder sits 14px below the torso top; a raised arm can reach above it, so start
+    // the grab rect at the torso top minus the upper-arm length (clamped so it never goes
+    // above the head, which `point_in_head` already owns).
+    let top = (torso.y - ARM_UPPER).max(HEAD_CY - HEAD_R);
+    let body = Rect {
+        x: FIG_CX - reach,
+        y: top,
+        w: reach * 2.0,
+        h: (torso.y + torso.h + LEG_H + FOOT_H - top).max(0.0),
+    };
+    body.contains(px, py)
 }
 
 // --- pose (the future-animation seam) ---------------------------------------------
@@ -704,6 +1014,112 @@ pub struct SurfaceDialItem<'a> {
     pub label: &'a str,
     pub availability: &'a str,
     pub active: bool,
+    /// `"surface"` (switches the active surface) or `"launcher"` (opens an external tool via
+    /// a reach action_request). Launcher pills render a distinct `→` glyph so they read
+    /// differently from surface-switch pills at a glance.
+    pub kind: &'a str,
+}
+
+/// One row of the interior (in-torso) control list. The perimeter controls fold into this list
+/// when the Torso scroll action toggles the interior view on. `id` is the original perimeter
+/// control (so a tap dispatches through the same `on_perimeter_control` path); `glyph` is the
+/// short perimeter label (N/S/1/2/3/4/+); `text` is the surface label the row shows beside it.
+#[derive(Clone, Copy)]
+pub struct InteriorRow<'a> {
+    pub id: PerimeterId,
+    pub glyph: &'a str,
+    pub text: &'a str,
+    pub dim: bool,
+}
+
+/// One row of the body-local settings panel: a `label` and its current `value`. `editable` rows
+/// (colour, size — genuinely body-local presentation prefs) wear a tap-chip; read-only rows
+/// (posture, buddy — governance/identity the body only *reflects*, AGENTS.md law 7) render plainer
+/// so the user can see at a glance what they can change here versus only view.
+pub struct SettingsRow<'a> {
+    pub label: &'a str,
+    pub value: &'a str,
+    pub editable: bool,
+}
+
+/// The in-torso onboarding panel (Build C) — the native twin of the React `OnboardingWizardPanel`.
+/// Purely a render snapshot of the `panel` cue the wizard Host pushed plus the user's local edits;
+/// the body owns none of the meaning (AGENTS.md law 7). `single_select` distinguishes the connect /
+/// posture pick-one sections from the placement pick-many toggles.
+pub struct OnboardingPanelView<'a> {
+    pub title: &'a str,
+    pub prompt: Option<&'a str>,
+    pub options: &'a [OnboardingOptionView<'a>],
+    pub fields: &'a [OnboardingFieldView<'a>],
+    pub summary_rows: &'a [OnboardingRowView<'a>],
+    pub primary_label: Option<&'a str>,
+    #[allow(dead_code)]
+    /// Connect/posture pick-one vs placement pick-many — reserved for future render hints.
+    pub single_select: bool,
+}
+
+/// One selectable option row (a provider preset, a posture card, a buddy toggle).
+pub struct OnboardingOptionView<'a> {
+    pub label: &'a str,
+    pub detail: Option<&'a str>,
+    pub selected: bool,
+}
+
+/// One input field. `display` is what to paint — already masked to dots for a credential, so the
+/// secret never reaches the render path. `action` labels a tap-chip (e.g. "Paste key") when the
+/// field fills from the clipboard rather than the keyboard.
+pub struct OnboardingFieldView<'a> {
+    pub label: &'a str,
+    pub display: &'a str,
+    pub focused: bool,
+    pub action: Option<&'a str>,
+}
+
+/// One summary receipt row: a setup step and whether its lifecycle receipt has landed yet.
+pub struct OnboardingRowView<'a> {
+    pub label: &'a str,
+    pub recorded: bool,
+}
+
+/// The interactive rects of the onboarding panel, computed once and shared between the renderer and
+/// the body's hit-test so a tap always lands on exactly what was drawn (the same contract the
+/// settings panel keeps via `interior_rows_for`).
+pub struct OnboardingLayout {
+    pub card: Rect,
+    pub title: Rect,
+    pub prompt: Option<Rect>,
+    /// Option / summary rows (the middle list), in order.
+    pub options: Vec<Rect>,
+    pub fields: Vec<Rect>,
+    pub primary: Option<Rect>,
+}
+
+/// A press inside the onboarding panel, if any.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnboardingHit {
+    Option(usize),
+    Field(usize),
+    Primary,
+}
+
+/// Hit-test the onboarding panel using the same layout the renderer drew.
+pub fn onboarding_hit_at(layout: &OnboardingLayout, px: f64, py: f64) -> Option<OnboardingHit> {
+    if let Some(rect) = layout.primary {
+        if rect.contains(px, py) {
+            return Some(OnboardingHit::Primary);
+        }
+    }
+    for (i, rect) in layout.fields.iter().enumerate() {
+        if rect.contains(px, py) {
+            return Some(OnboardingHit::Field(i));
+        }
+    }
+    for (i, rect) in layout.options.iter().enumerate() {
+        if rect.contains(px, py) {
+            return Some(OnboardingHit::Option(i));
+        }
+    }
+    None
 }
 
 #[derive(Clone, Copy)]
@@ -751,6 +1167,10 @@ pub struct BodyView<'a> {
     /// When `Some`, the buddy is tucked against this edge: draw the minimized
     /// bump instead of the full figure.
     pub tucked: Option<BumpEdge>,
+    /// While tucked, also draw the latest speech in a "peek" bubble beside the bump.
+    pub tucked_show_bubble: bool,
+    /// While tucked, also draw a live input field beside the bump (implies the bubble).
+    pub tucked_show_input: bool,
     pub input_text: &'a str,
     pub input_placeholder: &'a str,
     pub input_focused: bool,
@@ -761,9 +1181,6 @@ pub struct BodyView<'a> {
     /// asked for confirmation. Kept distinct from `review_pending` so each act's confirm is its own.
     pub edit_pending: bool,
     pub posture_badge: Option<&'a str>,
-    /// Per-quick-button dim flag (Quick0..3): true when that quick surface is `unwired`, so the
-    /// button renders faded. Availability is soul-pushed (Slice 2a) — the body never derives it.
-    pub dim_quick: [bool; 4],
     /// Hold-to-bloom surface dial items, ordered active-at-12 by the body state machine.
     pub surface_bloom: &'a [SurfaceDialItem<'a>],
     /// Soul-derived route health from `surface_active.route.health`; absent means no ring.
@@ -772,6 +1189,17 @@ pub struct BodyView<'a> {
     pub route_flash: bool,
     /// Expanded-mode receipt rail items, newest first. Empty still draws the rail panel.
     pub receipt_rail: &'a [ReceiptRailItem<'a>],
+    /// The interior view: perimeter controls folded into a labeled list inside the torso,
+    /// toggled by the Torso scroll action. When non-empty, the torso output is hidden and a
+    /// press inside the torso hits a row instead of the body-drag handle. Each item carries
+    /// the control's glyph + its surface label + the dim flag (for unwired quick surfaces).
+    pub interior_rows: &'a [InteriorRow<'a>],
+    /// Body-local settings panel rows. Non-empty only while the settings panel is open, in which
+    /// case it takes the torso over the output/interior view.
+    pub settings: &'a [SettingsRow<'a>],
+    /// Wizard onboarding form section (Build C). When present it owns the torso over settings,
+    /// interior, and torso output.
+    pub onboarding: Option<&'a OnboardingPanelView<'a>>,
     pub layout: Layout,
     pub pinned: Option<PinnedLayout>,
     pub frame: Option<FrameLayout>,
@@ -818,9 +1246,28 @@ impl Sprite {
             return;
         };
 
-        // Tucked: only the minimized bump — a dormant buddy hugging the edge.
+        // Tucked: the minimized bump hugging the edge, plus an optional "peek" (speech bubble,
+        // and an input field) beside it when the user has cycled the tucked view open.
         if let Some(edge) = view.tucked {
             draw_bump(&mut pixmap, edge, w, h, view.color);
+            if let Some(font) = &self.font {
+                if view.tucked_show_bubble {
+                    draw_tucked_bubble(&mut pixmap, font, edge, w, h, view.speech.unwrap_or(""));
+                }
+                if view.tucked_show_input {
+                    draw_tucked_input(
+                        &mut pixmap,
+                        font,
+                        edge,
+                        w,
+                        h,
+                        view.input_text,
+                        view.input_placeholder,
+                        view.input_focused,
+                        view.t,
+                    );
+                }
+            }
             blit_premultiplied_bgra(pixmap.data(), canvas);
             return;
         }
@@ -910,7 +1357,15 @@ fn draw_body_content(
 ) {
     draw_figure(pixmap, &view.layout, view.color, bob, pose, view.route_health, view.route_flash);
     if let Some(font) = font {
-        draw_torso_output(pixmap, font, &view.layout, &view.torso_output);
+        if let Some(panel) = view.onboarding {
+            draw_onboarding_view(pixmap, font, &view.layout, panel, view.color);
+        } else if !view.settings.is_empty() {
+            draw_settings_view(pixmap, font, &view.layout, view.settings, view.color);
+        } else if view.interior_rows.is_empty() {
+            draw_torso_output(pixmap, font, &view.layout, &view.torso_output);
+        } else {
+            draw_interior_view(pixmap, font, &view.layout, view.interior_rows, view.color);
+        }
         if let Some(label) = view.posture_badge {
             draw_posture_badge(pixmap, font, &view.layout, label);
         }
@@ -918,7 +1373,9 @@ fn draw_body_content(
     draw_eyes(pixmap, bob, eye_open, pupil_dy);
     draw_mouth(pixmap, bob, mouth);
     if let Some(font) = font {
-        draw_perimeter_controls(pixmap, font, &view.layout, view.dim_quick);
+        // The external perimeter ring is retired — every perimeter control now lives inside
+        // the torso as a labeled interior row (drawn above, in place of the torso output).
+        // Only the surface bloom dial still paints around the torso, on a long-press.
         draw_surface_bloom(pixmap, font, &view.layout, view.surface_bloom);
     }
 
@@ -939,9 +1396,16 @@ fn draw_body_content(
                 view.input_focused,
                 view.t,
             );
-            draw_paste_button(pixmap, font, &view.layout);
-            draw_governance_button(pixmap, font, view.layout.review_button_rect(), view.review_pending, "Review");
-            draw_governance_button(pixmap, font, view.layout.edit_button_rect(), view.edit_pending, "Edit");
+            // When the interior view is open, Paste/Review/Edit live as labeled rows inside the
+            // torso — don't also draw the standalone perimeter buttons (they'd duplicate and
+            // float outside, exactly what the interior view exists to retire). The onboarding
+            // panel owns the torso too — drawing P/R/E here would overlap the form (law 7: body
+            // only presents; overlapping chrome makes the Host panel unusable).
+            if view.interior_rows.is_empty() && view.onboarding.is_none() {
+                draw_paste_button(pixmap, font, &view.layout);
+                draw_governance_button(pixmap, font, view.layout.review_button_rect(), view.review_pending, "Review");
+                draw_governance_button(pixmap, font, view.layout.edit_button_rect(), view.edit_pending, "Edit");
+            }
         }
     }
 }
@@ -950,6 +1414,10 @@ fn draw_body_content(
 
 fn rgb(c: [u8; 3]) -> Color {
     Color::from_rgba8(c[0], c[1], c[2], 255)
+}
+
+fn rgba(c: [u8; 3], a: u8) -> Color {
+    Color::from_rgba8(c[0], c[1], c[2], a)
 }
 
 /// Multiply toward black (f < 1.0 darkens).
@@ -1414,83 +1882,403 @@ fn draw_paste_button(pixmap: &mut Pixmap, font: &Font, layout: &Layout) {
     draw_line(pixmap, font, label, x, y, PANEL_TEXT_PX, fg);
 }
 
-fn perimeter_label(id: PerimeterId) -> &'static str {
+/// How an interior row reads in the list — drives the glyph-chip colour and the
+/// group separators, so the chat actions, surface switches, and system rows look
+/// like distinct bands instead of one undifferentiated stack.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RowKind {
+    Action,
+    Nav,
+    Surface,
+    System,
+}
+
+fn row_kind(id: PerimeterId) -> RowKind {
     match id {
-        PerimeterId::ArrowN => "N",
-        PerimeterId::ArrowE => "E",
-        PerimeterId::ArrowS => "S",
-        PerimeterId::ArrowW => "W",
-        PerimeterId::Quick0 => "1",
-        PerimeterId::Quick1 => "2",
-        PerimeterId::Quick2 => "3",
-        PerimeterId::Quick3 => "4",
-        PerimeterId::Add => "+",
-        PerimeterId::Paste | PerimeterId::Review | PerimeterId::Edit => "",
+        PerimeterId::Paste | PerimeterId::Review | PerimeterId::Edit => RowKind::Action,
+        PerimeterId::ArrowN | PerimeterId::ArrowS | PerimeterId::ArrowE | PerimeterId::ArrowW => RowKind::Nav,
+        PerimeterId::Quick0 | PerimeterId::Quick1 | PerimeterId::Quick2 | PerimeterId::Quick3 => RowKind::Surface,
+        PerimeterId::Add => RowKind::System,
     }
 }
 
-/// Which quick-button slot (0..3) a perimeter id drives, if any — so the dim flag lines up
-/// with the surface that quick button activates.
-fn quick_slot(id: PerimeterId) -> Option<usize> {
-    match id {
-        PerimeterId::Quick0 => Some(0),
-        PerimeterId::Quick1 => Some(1),
-        PerimeterId::Quick2 => Some(2),
-        PerimeterId::Quick3 => Some(3),
-        _ => None,
+/// Glyph-chip fill + ink for a row, all derived from the buddy's clay colour so the
+/// panel reads as part of the figure. Dim (unwired) rows get a faint chip that lets
+/// the dark screen show through.
+fn chip_palette(kind: RowKind, color: [u8; 3], dim: bool) -> (Color, [u8; 3]) {
+    if dim {
+        return (rgba(lighten(color, 0.82), 70), lighten(color, 0.45));
+    }
+    match kind {
+        // The "+ Customize" action gets the same cyan accent the governance confirm uses.
+        RowKind::System => (rgba([56, 188, 214], 240), [8, 30, 38]),
+        // Chat actions and surface switches share a bright pale-clay chip; nav sits a touch softer.
+        RowKind::Nav => (rgba(lighten(color, 0.62), 235), shade(color, 0.34)),
+        _ => (rgba(lighten(color, 0.82), 245), shade(color, 0.32)),
     }
 }
 
-fn draw_perimeter_controls(pixmap: &mut Pixmap, font: &Font, layout: &Layout, dim_quick: [bool; 4]) {
-    for (id, rect) in layout.perimeter_controls() {
-        if matches!(id, PerimeterId::Paste | PerimeterId::Review | PerimeterId::Edit) {
-            continue;
+fn draw_interior_view(
+    pixmap: &mut Pixmap,
+    font: &Font,
+    layout: &Layout,
+    rows: &[InteriorRow],
+    color: [u8; 3],
+) {
+    let row_rects = layout.interior_rows_for(rows.len());
+    if row_rects.is_empty() {
+        return;
+    }
+    // One cohesive "screen" recessed into the clay torso — the rows live inside it instead
+    // of floating as a stack of identical pills (which is what read as unfinished).
+    let first = row_rects[0];
+    let last = row_rects[row_rects.len() - 1];
+    let card = Rect {
+        x: first.x - 4.0,
+        y: first.y - 4.0,
+        w: first.w + 8.0,
+        h: (last.y + last.h) - first.y + 8.0,
+    };
+    draw_round_rect(pixmap, card, rgba(shade(color, 0.28), 240));
+    if let Some(path) = round_rect_path(card, 9.0) {
+        let mut stroke = Stroke::default();
+        stroke.width = 1.0;
+        pixmap.stroke_path(&path, &solid(rgba(shade(color, 0.5), 200)), &stroke, Transform::identity(), None);
+    }
+
+    let label_ink = lighten(color, 0.86);
+    let dim_ink = lighten(color, 0.5);
+
+    for (i, (row, rect)) in rows.iter().zip(row_rects.iter()).enumerate() {
+        let rect = *rect;
+        let kind = row_kind(row.id);
+        // Hairline between rows; a touch stronger where the category changes so the
+        // action / surface / system groups read as separate bands.
+        if i > 0 {
+            let stronger = row_kind(rows[i - 1].id) != kind;
+            let sep_a = if stronger { 95 } else { 38 };
+            fill_round_rect(
+                pixmap,
+                Rect { x: rect.x + 5.0, y: rect.y - 1.0, w: rect.w - 10.0, h: 1.0 },
+                0.5,
+                &solid(rgba(shade(color, 0.55), sep_a)),
+            );
         }
-        // A quick button for an `unwired` surface renders faded so the dim reads at a glance;
-        // a tap still lands and the body answers "not wired yet" (Slice 2a).
-        let dimmed = quick_slot(id).map(|slot| dim_quick[slot]).unwrap_or(false);
-        let label = perimeter_label(id);
-        let bg = if matches!(id, PerimeterId::Add) {
-            Color::from_rgba8(56, 188, 214, 238)
-        } else if dimmed {
-            Color::from_rgba8(248, 250, 252, 96)
+
+        // Leading glyph chip — the perimeter glyph muscle memory came from, now a real tile.
+        let inset = (rect.h * 0.16).clamp(1.5, 4.0);
+        let chip_h = (rect.h - inset * 2.0).max(0.0);
+        let chip = Rect { x: rect.x + 3.0, y: rect.y + inset, w: chip_h + 4.0, h: chip_h };
+        let (chip_bg, chip_ink) = chip_palette(kind, color, row.dim);
+        draw_round_rect(pixmap, chip, chip_bg);
+        let glyph_px = (chip.h * 0.72).clamp(7.0, 12.0);
+        let gw = measure(font, row.glyph, glyph_px);
+        draw_line(
+            pixmap,
+            font,
+            row.glyph,
+            chip.x + (chip.w - gw) / 2.0,
+            rect.y + rect.h / 2.0 + glyph_px * 0.34,
+            glyph_px,
+            chip_ink,
+        );
+
+        // Label, scaled to the row so big type never overruns a short torso's rows.
+        let text_px = (rect.h * 0.55).clamp(8.0, 12.0);
+        let text_x = chip.x + chip.w + 7.0;
+        let baseline = rect.y + rect.h / 2.0 + text_px * 0.34;
+        let mut right = rect.x + rect.w - 5.0;
+        // Unwired rows say so plainly with a right-aligned "soon" tag, not just a fade.
+        if row.dim {
+            let tag = "soon";
+            let tag_px = (text_px - 1.0).clamp(7.0, 10.0);
+            let tw = measure(font, tag, tag_px);
+            draw_line(pixmap, font, tag, right - tw, baseline, tag_px, lighten(color, 0.42));
+            right -= tw + 6.0;
+        }
+        let ink = if row.dim { dim_ink } else { label_ink };
+        let max_w = (right - text_x).max(0.0);
+        let text = truncate_to_width(font, row.text, text_px, max_w);
+        draw_line(pixmap, font, &text, text_x, baseline, text_px, ink);
+    }
+}
+
+/// The body-local settings panel: the same recessed torso card as the interior view, but each row
+/// is `label …… value`. Editable rows (colour, size) wear a bright tap-chip around the value;
+/// read-only rows (posture, buddy) render the value dimmed and chip-less, so the user can tell at a
+/// glance what they can change here versus only see (AGENTS.md law 7 made visible).
+fn draw_settings_view(
+    pixmap: &mut Pixmap,
+    font: &Font,
+    layout: &Layout,
+    rows: &[SettingsRow],
+    color: [u8; 3],
+) {
+    let row_rects = layout.interior_rows_for(rows.len());
+    if row_rects.is_empty() {
+        return;
+    }
+    let first = row_rects[0];
+    let last = row_rects[row_rects.len() - 1];
+    let card = Rect {
+        x: first.x - 4.0,
+        y: first.y - 4.0,
+        w: first.w + 8.0,
+        h: (last.y + last.h) - first.y + 8.0,
+    };
+    draw_round_rect(pixmap, card, rgba(shade(color, 0.28), 240));
+    if let Some(path) = round_rect_path(card, 9.0) {
+        let mut stroke = Stroke::default();
+        stroke.width = 1.0;
+        pixmap.stroke_path(&path, &solid(rgba(shade(color, 0.5), 200)), &stroke, Transform::identity(), None);
+    }
+
+    let label_ink = lighten(color, 0.86);
+    let dim_ink = lighten(color, 0.5);
+    for (i, (row, rect)) in rows.iter().zip(row_rects.iter()).enumerate() {
+        let rect = *rect;
+        if i > 0 {
+            fill_round_rect(
+                pixmap,
+                Rect { x: rect.x + 5.0, y: rect.y - 1.0, w: rect.w - 10.0, h: 1.0 },
+                0.5,
+                &solid(rgba(shade(color, 0.55), 38)),
+            );
+        }
+        let text_px = (rect.h * 0.55).clamp(8.0, 12.0);
+        let baseline = rect.y + rect.h / 2.0 + text_px * 0.34;
+        // Reserve the right-edge strip the torso action buttons (Expand/Copy/Scroll) occupy, so a
+        // value chip never renders under them — `torso_action_at` wins that strip in hit-testing,
+        // which would otherwise eat clicks meant to cycle the setting.
+        let right_limit = rect.x + rect.w - 26.0;
+        // Label, left.
+        draw_line(pixmap, font, row.label, rect.x + 8.0, baseline, text_px, label_ink);
+        // Value — chipped + bright when editable, plain + dim when read-only — anchored to the
+        // reserved right limit and width-capped so it can't collide with the label.
+        let value = fit_line(font, row.value, text_px, (right_limit - rect.x - 8.0).max(0.0) * 0.7);
+        let vw = measure(font, &value, text_px);
+        if row.editable {
+            let chip_h = (text_px + 6.0).min(rect.h - 2.0);
+            let chip = Rect {
+                x: right_limit - vw - 12.0,
+                y: rect.y + (rect.h - chip_h) / 2.0,
+                w: vw + 12.0,
+                h: chip_h,
+            };
+            draw_round_rect(pixmap, chip, rgba(lighten(color, 0.62), 235));
+            draw_line(pixmap, font, &value, chip.x + 6.0, baseline, text_px, shade(color, 0.34));
         } else {
-            Color::from_rgba8(248, 250, 252, 232)
-        };
-        draw_round_rect(pixmap, rect, bg);
-        if let Some(path) = round_rect_path(rect, 7.0) {
-            let mut stroke = Stroke::default();
-            stroke.width = 1.0;
-            let edge = if dimmed { 48 } else { 100 };
-            pixmap.stroke_path(&path, &solid(Color::from_rgba8(0, 0, 0, edge)), &stroke, Transform::identity(), None);
+            draw_line(pixmap, font, &value, right_limit - vw, baseline, text_px, dim_ink);
         }
-        let tw = measure(font, label, PANEL_TEXT_PX);
-        let text = if dimmed { [120, 130, 146] } else { [18, 28, 46] };
+    }
+}
+
+/// The wizard onboarding panel: soul-pushed section rendered inside the torso card. The body draws
+/// only; confirming emits the Host-stamped `primary_panel` token (AGENTS.md law 7).
+fn draw_onboarding_view(
+    pixmap: &mut Pixmap,
+    font: &Font,
+    layout: &Layout,
+    panel: &OnboardingPanelView,
+    color: [u8; 3],
+) {
+    let list_rows = if panel.summary_rows.is_empty() {
+        panel.options.len()
+    } else {
+        panel.summary_rows.len()
+    };
+    let panel_layout = layout.onboarding_layout(
+        list_rows,
+        panel.fields.len(),
+        panel.prompt.is_some(),
+        panel.primary_label.is_some(),
+    );
+    if panel_layout.card.h < 8.0 {
+        return;
+    }
+
+    draw_round_rect(pixmap, panel_layout.card, rgba(shade(color, 0.28), 240));
+    if let Some(path) = round_rect_path(panel_layout.card, 9.0) {
+        let mut stroke = Stroke::default();
+        stroke.width = 1.0;
+        pixmap.stroke_path(
+            &path,
+            &solid(rgba(shade(color, 0.5), 200)),
+            &stroke,
+            Transform::identity(),
+            None,
+        );
+    }
+
+    let title_px = 11.0;
+    let title_ink = lighten(color, 0.92);
+    draw_line(
+        pixmap,
+        font,
+        panel.title,
+        panel_layout.title.x + 4.0,
+        panel_layout.title.y + title_px,
+        title_px,
+        title_ink,
+    );
+
+    if let (Some(prompt), Some(rect)) = (panel.prompt, panel_layout.prompt) {
+        let prompt_px = 8.5;
+        let text = truncate_to_width(font, prompt, prompt_px, rect.w - 6.0);
+        draw_line(
+            pixmap,
+            font,
+            &text,
+            rect.x + 3.0,
+            rect.y + prompt_px,
+            prompt_px,
+            lighten(color, 0.62),
+        );
+    }
+
+    let label_ink = lighten(color, 0.86);
+    let dim_ink = lighten(color, 0.5);
+
+    if !panel.summary_rows.is_empty() {
+        for (row, rect) in panel.summary_rows.iter().zip(panel_layout.options.iter()) {
+            let text_px = (rect.h * 0.55).clamp(8.0, 11.0);
+            let baseline = rect.y + rect.h / 2.0 + text_px * 0.34;
+            draw_line(pixmap, font, row.label, rect.x + 6.0, baseline, text_px, label_ink);
+            let status = if row.recorded { "Recorded" } else { "Pending" };
+            let sw = measure(font, status, text_px - 1.0);
+            draw_line(
+                pixmap,
+                font,
+                status,
+                rect.x + rect.w - sw - 6.0,
+                baseline,
+                text_px - 1.0,
+                if row.recorded { lighten(color, 0.72) } else { dim_ink },
+            );
+        }
+    } else {
+        for (opt, rect) in panel.options.iter().zip(panel_layout.options.iter()) {
+            let bg = if opt.selected {
+                rgba(lighten(color, 0.58), 235)
+            } else {
+                rgba(shade(color, 0.42), 180)
+            };
+            draw_round_rect(pixmap, *rect, bg);
+            let text_px = (rect.h * 0.55).clamp(8.0, 11.0);
+            let baseline = rect.y + rect.h / 2.0 + text_px * 0.34;
+            draw_line(pixmap, font, opt.label, rect.x + 6.0, baseline, text_px, label_ink);
+            if rect.h >= 14.0 {
+                if let Some(detail) = opt.detail {
+                    let detail_px = (text_px - 1.5).clamp(7.0, 9.0);
+                    let max_w = (rect.w - 12.0).max(0.0);
+                    let text = truncate_to_width(font, detail, detail_px, max_w);
+                    draw_line(
+                        pixmap,
+                        font,
+                        &text,
+                        rect.x + 6.0,
+                        rect.y + rect.h - 3.0,
+                        detail_px,
+                        dim_ink,
+                    );
+                }
+            }
+        }
+    }
+
+    for (field, rect) in panel.fields.iter().zip(panel_layout.fields.iter()) {
+        let text_px = (rect.h * 0.52).clamp(8.0, 10.5);
+        let baseline = rect.y + rect.h / 2.0 + text_px * 0.34;
+        let label_w = (rect.w * 0.34).clamp(36.0, 52.0);
+        draw_line(pixmap, font, field.label, rect.x + 6.0, baseline, text_px, label_ink);
+        let display = if field.display.is_empty() {
+            "—"
+        } else {
+            field.display
+        };
+        let action_px = (text_px - 1.0).clamp(7.0, 9.0);
+        let chip_w = field
+            .action
+            .map(|action| measure(font, action, action_px) + 10.0)
+            .unwrap_or(0.0)
+            .max(0.0);
+        let value_right = rect.x + rect.w - chip_w - 8.0;
+        let max_value_w = (value_right - (rect.x + label_w + 6.0)).max(0.0);
+        let value = truncate_to_width(font, display, text_px, max_value_w);
+        let vw = measure(font, &value, text_px);
+        let value_x = value_right - vw;
+        let ink = if field.focused { lighten(color, 0.95) } else { dim_ink };
+        draw_line(pixmap, font, &value, value_x, baseline, text_px, ink);
+        if let Some(action) = field.action {
+            let aw = measure(font, action, action_px);
+            let chip = Rect {
+                x: rect.x + rect.w - aw - 12.0,
+                y: rect.y + 2.0,
+                w: aw + 8.0,
+                h: (rect.h - 4.0).max(10.0),
+            };
+            draw_round_rect(pixmap, chip, rgba(lighten(color, 0.62), 220));
+            draw_line(
+                pixmap,
+                font,
+                action,
+                chip.x + 4.0,
+                chip.y + chip.h * 0.72,
+                action_px,
+                shade(color, 0.3),
+            );
+        }
+    }
+
+    if let (Some(label), Some(rect)) = (panel.primary_label, panel_layout.primary) {
+        draw_round_rect(pixmap, rect, rgba(lighten(color, 0.68), 245));
+        let text_px = (rect.h * 0.55).clamp(8.0, 11.0);
+        let tw = measure(font, label, text_px);
         draw_line(
             pixmap,
             font,
             label,
             rect.x + (rect.w - tw) / 2.0,
-            rect.y + 13.0,
-            PANEL_TEXT_PX,
-            text,
+            rect.y + rect.h / 2.0 + text_px * 0.34,
+            text_px,
+            shade(color, 0.28),
         );
     }
 }
 
-fn surface_bloom_rects_from_center(cx: f32, cy: f32, count: usize) -> Vec<Rect> {
-    const ANGLES_DEG: [f32; SURFACE_BLOOM_MAX_ITEMS] = [-90.0, -30.0, 30.0, 90.0, 150.0, 210.0];
-    ANGLES_DEG
-        .iter()
-        .take(count.min(SURFACE_BLOOM_MAX_ITEMS))
-        .map(|deg| {
-            let rad = deg.to_radians();
-            Rect {
-                x: cx + rad.cos() * SURFACE_BLOOM_R - SURFACE_BLOOM_W / 2.0,
-                y: cy + rad.sin() * SURFACE_BLOOM_R - SURFACE_BLOOM_H / 2.0,
-                w: SURFACE_BLOOM_W,
-                h: SURFACE_BLOOM_H,
-            }
+/// Lay the bloom pills out as two vertical columns flanking the torso — the dial renders
+/// ENTIRELY OUTSIDE the torso so it never overdraws the interior list. Items fill the left column
+/// top→bottom (the first ceil(count/2)) then the right column top→bottom; each column is centered
+/// on the torso's vertical midline so the two sides stay balanced. Up to five pills a side (ten
+/// total). Returned in item order, so the hit-test/selection index maps straight to a slot.
+fn surface_bloom_rects_two_columns(torso: Rect, count: usize) -> Vec<Rect> {
+    if count == 0 {
+        return Vec::new();
+    }
+    let left_n = (count + 1) / 2;
+    let right_n = count - left_n;
+    let cy = torso.y + torso.h / 2.0;
+    let left_x = torso.x - SURFACE_BLOOM_SIDE_GAP - SURFACE_BLOOM_W;
+    let right_x = torso.x + torso.w + SURFACE_BLOOM_SIDE_GAP;
+    let mut rects = Vec::with_capacity(count);
+    rects.extend(surface_bloom_column(left_x, cy, left_n));
+    rects.extend(surface_bloom_column(right_x, cy, right_n));
+    rects
+}
+
+/// One vertical column of `n` pills at `x`, stacked with `SURFACE_BLOOM_GAP` and centered on `cy`.
+fn surface_bloom_column(x: f32, cy: f32, n: usize) -> Vec<Rect> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let total_h = n as f32 * SURFACE_BLOOM_H + (n as f32 - 1.0) * SURFACE_BLOOM_GAP;
+    let top = cy - total_h / 2.0;
+    (0..n)
+        .map(|i| Rect {
+            x,
+            y: top + i as f32 * (SURFACE_BLOOM_H + SURFACE_BLOOM_GAP),
+            w: SURFACE_BLOOM_W,
+            h: SURFACE_BLOOM_H,
         })
         .collect()
 }
@@ -1509,10 +2297,16 @@ fn draw_surface_bloom(pixmap: &mut Pixmap, font: &Font, layout: &Layout, items: 
     }
     for (item, rect) in items.iter().zip(layout.surface_bloom_rects(items.len())) {
         let unwired = item.availability == "unwired";
+        let launcher = item.kind == "launcher";
         let bg = if item.active {
             Color::from_rgba8(28, 42, 58, 238)
         } else if unwired {
-            Color::from_rgba8(248, 250, 252, 112)
+            // Opaque enough that the muted label + "soon" tag read clearly over the dark desktop —
+            // the faint near-transparent wash made the pill look like an empty grey slot.
+            Color::from_rgba8(232, 235, 240, 214)
+        } else if launcher {
+            // Launchers wear a faint warm wash so they read as "open a tool", not "switch surface".
+            Color::from_rgba8(255, 244, 224, 236)
         } else {
             Color::from_rgba8(248, 250, 252, 236)
         };
@@ -1520,19 +2314,56 @@ fn draw_surface_bloom(pixmap: &mut Pixmap, font: &Font, layout: &Layout, items: 
         if let Some(path) = round_rect_path(rect, 8.0) {
             let mut stroke = Stroke::default();
             stroke.width = if item.active { 2.0 } else { 1.0 };
-            let edge = if item.active { 190 } else if unwired { 54 } else { 118 };
+            let edge = if item.active { 190 } else if unwired { 96 } else if launcher { 150 } else { 118 };
             pixmap.stroke_path(&path, &solid(Color::from_rgba8(0, 0, 0, edge)), &stroke, Transform::identity(), None);
         }
-        let label = fit_line(font, item.label, 9.5, rect.w - 14.0);
-        let tw = measure(font, &label, 9.5);
-        let fg = if item.active {
-            [238, 246, 255]
-        } else if unwired {
-            [118, 126, 140]
+        // Launcher pills lead with a `→` glyph (the reach metaphor: hand off to an external
+        // tool). Surface-switch pills stay label-only, so the two kinds are distinct at a glance.
+        let baseline = rect.y + 15.0;
+        let label_x;
+        let label_text;
+        if launcher {
+            let glyph = "→";
+            let gx = rect.x + 8.0;
+            draw_line(pixmap, font, glyph, gx, baseline, 9.5, fg_for_bloom(item.active, unwired));
+            label_x = gx + measure(font, glyph, 9.5) + 3.0;
+            label_text = item.label;
         } else {
-            [22, 30, 42]
+            label_text = item.label;
+            label_x = rect.x + 4.0;
+        }
+        // An unwired surface isn't actionable yet — say so with a right-aligned "soon" tag (mirrors
+        // the interior list) so the pill never reads as an empty grey slot, and reserve its width.
+        let mut right_budget = rect.x + rect.w - 6.0;
+        if unwired {
+            let tag = "soon";
+            let tag_px = 8.0;
+            let tw = measure(font, tag, tag_px);
+            draw_line(pixmap, font, tag, right_budget - tw, baseline, tag_px, [120, 128, 142]);
+            right_budget -= tw + 6.0;
+        }
+        let label = fit_line(font, label_text, 9.5, (right_budget - label_x).max(0.0));
+        let tw = measure(font, &label, 9.5);
+        let fg = fg_for_bloom(item.active, unwired);
+        // Left-align the label when a "soon" tag shares the row (so they can't collide); otherwise
+        // centre it in the remaining budget as before.
+        let label_draw_x = if unwired {
+            label_x
+        } else {
+            label_x + (right_budget - label_x - tw).max(0.0) / 2.0
         };
-        draw_line(pixmap, font, &label, rect.x + (rect.w - tw) / 2.0, rect.y + 15.0, 9.5, fg);
+        draw_line(pixmap, font, &label, label_draw_x, baseline, 9.5, fg);
+    }
+}
+
+fn fg_for_bloom(active: bool, unwired: bool) -> [u8; 3] {
+    if active {
+        [238, 246, 255]
+    } else if unwired {
+        // Muted slate — clearly legible on the opaque unwired pill, still visibly subdued.
+        [92, 100, 114]
+    } else {
+        [22, 30, 42]
     }
 }
 
@@ -2491,6 +3322,84 @@ fn draw_input(
     }
 }
 
+/// The tucked peek bubble: a fixed-size rounded card carrying the latest speech, wrapped and
+/// truncated to fit (no dynamic growth, so the drawn box matches `tucked_bubble_rect` exactly).
+fn draw_tucked_bubble(pixmap: &mut Pixmap, font: &Font, edge: BumpEdge, w: u32, h: u32, text: &str) {
+    let rect = tucked_bubble_rect(edge, w, h);
+    let pad_x = 12.0;
+    let pad_top = 18.0;
+    let bg = Color::from_rgba8(247, 251, 255, 245);
+    let border = solid(Color::from_rgba8(0, 0, 0, 175));
+    draw_round_rect(pixmap, rect, bg);
+    if let Some(path) = round_rect_path(rect, 14.0) {
+        let mut stroke = Stroke::default();
+        stroke.width = 1.0;
+        pixmap.stroke_path(&path, &border, &stroke, Transform::identity(), None);
+    }
+    let max_lines = (((rect.h - pad_top - 6.0) / LINE_H).floor() as i32).max(1) as usize;
+    let lines = if text.is_empty() {
+        Vec::new()
+    } else {
+        wrap(font, text, TEXT_PX, rect.w - pad_x * 2.0, max_lines)
+    };
+    let mut baseline = rect.y + pad_top;
+    if lines.is_empty() {
+        draw_line(pixmap, font, "…", rect.x + pad_x, baseline, TEXT_PX, [130, 138, 150]);
+    } else {
+        for line in &lines {
+            draw_line(pixmap, font, line, rect.x + pad_x, baseline, TEXT_PX, [16, 24, 44]);
+            baseline += LINE_H;
+        }
+    }
+}
+
+/// The tucked peek input: a single-line rounded field, focusable and submittable like the
+/// full-figure chat input, so the user can talk to a tucked buddy without summoning it.
+#[allow(clippy::too_many_arguments)]
+fn draw_tucked_input(
+    pixmap: &mut Pixmap,
+    font: &Font,
+    edge: BumpEdge,
+    w: u32,
+    h: u32,
+    text: &str,
+    placeholder: &str,
+    focused: bool,
+    t: f32,
+) {
+    let rect = tucked_input_rect(edge, w, h);
+    let pad = 12.0;
+    let bg = if focused {
+        Color::from_rgba8(255, 255, 255, 250)
+    } else {
+        Color::from_rgba8(232, 226, 220, 235)
+    };
+    let border = solid(Color::from_rgba8(0, 0, 0, 175));
+    draw_round_rect(pixmap, rect, bg);
+    if let Some(path) = round_rect_path(rect, 14.0) {
+        let mut stroke = Stroke::default();
+        stroke.width = 1.0;
+        pixmap.stroke_path(&path, &border, &stroke, Transform::identity(), None);
+    }
+    let baseline = rect.y + rect.h / 2.0 + TEXT_PX / 2.0 - 2.0;
+    let is_placeholder = text.is_empty();
+    let display = if is_placeholder { placeholder } else { text };
+    let shown = fit_line(font, display, TEXT_PX, rect.w - pad * 2.0);
+    if is_placeholder {
+        if !focused {
+            draw_line(pixmap, font, &shown, rect.x + pad, baseline, TEXT_PX, [130, 122, 114]);
+        }
+    } else {
+        draw_line(pixmap, font, &shown, rect.x + pad, baseline, TEXT_PX, [30, 22, 16]);
+    }
+    if focused && ((t * 1.4) as i32) % 2 == 0 {
+        let measured = if is_placeholder { 0.0 } else { measure(font, &shown, TEXT_PX) };
+        let caret_x = rect.x + pad + measured + 2.0;
+        let caret = Rect { x: caret_x, y: baseline - TEXT_PX, w: 2.0, h: TEXT_PX + 4.0 };
+        draw_round_rect(pixmap, caret, Color::from_rgba8(201, 109, 60, 255));
+    }
+}
+
 // --- primitives ---------------------------------------------------------------------
 
 fn draw_round_rect(pixmap: &mut Pixmap, rect: Rect, color: Color) {
@@ -2699,6 +3608,26 @@ fn measure(font: &Font, text: &str, px: f32) -> f32 {
     text.chars().map(|ch| font.metrics(ch, px).advance_width).sum()
 }
 
+/// Longest prefix of `text` (with an ellipsis) that fits in `max_w` at `px`. Returns the input
+/// unchanged if it already fits, or `""` if even one char + ellipsis won't fit.
+fn truncate_to_width(font: &Font, text: &str, px: f32, max_w: f32) -> String {
+    if measure(font, text, px) <= max_w {
+        return text.to_string();
+    }
+    let mut out = String::new();
+    for ch in text.chars() {
+        let candidate = format!("{out}{ch}…");
+        if measure(font, &candidate, px) > max_w {
+            break;
+        }
+        out.push(ch);
+    }
+    if !out.is_empty() {
+        out.push('…');
+    }
+    out
+}
+
 fn draw_line(pixmap: &mut Pixmap, font: &Font, text: &str, x: f32, baseline: f32, px: f32, color: [u8; 3]) {
     let w = pixmap.width() as i32;
     let h = pixmap.height() as i32;
@@ -2886,6 +3815,74 @@ mod tests {
     }
 
     #[test]
+    fn figure_bbox_contains_head_torso_arms_and_feet() {
+        // The drag-clamp relies on this bbox covering every grabbable part of the figure,
+        // so a buddy dragged by any limb can never slip fully off-screen.
+        let bbox = figure_bbox(BODY_LEN_DEFAULT);
+        // Head circle sits inside the bbox horizontally and vertically.
+        let head = head_rect();
+        assert!(bbox.x <= head.x && bbox.x + bbox.w >= head.x + head.w);
+        assert!(bbox.y <= head.y && bbox.y + bbox.h >= head.y + head.h);
+        // Torso fits inside, and the bbox reaches past the arms-at-reach flank on each side.
+        let torso = Layout { facing: Facing::Right, body_len: BODY_LEN_DEFAULT }.torso_rect();
+        assert!(bbox.x <= torso.x && bbox.x + bbox.w >= torso.x + torso.w);
+        let arm_reach = ARM_UPPER + ARM_FORE;
+        assert!(bbox.w >= TORSO_W + arm_reach * 2.0);
+        // Bottom of the bbox reaches the feet (hips + leg + foot), so a feet-grab is covered.
+        let hips = TORSO_TOP + BODY_LEN_DEFAULT;
+        assert!(bbox.y + bbox.h >= hips + LEG_H + FOOT_H);
+    }
+
+    #[test]
+    fn figure_bbox_grows_with_body_stretch() {
+        let short = figure_bbox(BODY_LEN_MIN);
+        let tall = figure_bbox(BODY_LEN_MAX);
+        assert!(tall.h > short.h, "a stretched torso must produce a taller figure bbox");
+        // Width is independent of stretch.
+        assert_eq!(short.w, tall.w);
+    }
+
+    #[test]
+    fn figure_and_receipt_rail_fit_within_requested_surface_at_max_stretch() {
+        // The summon-from-tuck clip bug: when the body is fully expanded the receipt rail is
+        // visible, so the surface must be SURFACE_W + RECEIPT_RAIL_W wide. The figure bbox
+        // lives in the SURFACE_W half (offset by RECEIPT_RAIL_W when the rail is drawn), so
+        // it must fit inside SURFACE_W — otherwise summoning from a tuck clips the rail or
+        // the figure. This pins both invariants together.
+        let bbox = figure_bbox(BODY_LEN_MAX);
+        assert!(receipt_rail_visible_for_body_len(BODY_LEN_MAX));
+        assert!(bbox.x >= 0.0 && bbox.x + bbox.w <= SURFACE_W as f32,
+            "figure bbox must fit in the SURFACE_W half so the rail never clips it");
+        assert_eq!(SURFACE_W + RECEIPT_RAIL_W, 560 + 160,
+            "requested surface width at max stretch is SURFACE_W + RECEIPT_RAIL_W");
+    }
+
+    #[test]
+    fn draggable_body_covers_the_hand_circles_at_full_arm_reach() {
+        // The hands are the part a user actually tries to grab to pull a buddy back on-screen,
+        // so the move handle must cover the hand circle at the arm's full swing — not just the
+        // upper+fore limb length. Compute the worst-case hand position the renderer can draw
+        // (shoulder 90°, elbow 0°) and assert the hand center AND its outer edge are grabbable.
+        let layout = Layout::initial();
+        let shoulder_x = TORSO_W / 2.0 - 4.0;
+        let max_hand_offset = shoulder_x + ARM_UPPER + ARM_FORE; // shoulder out, arm straight
+        let hand_right = FIG_CX + max_hand_offset;
+        let hand_left = FIG_CX - max_hand_offset;
+        let shoulder_y = TORSO_TOP + 14.0;
+        // Hand center at full extension (shoulder 90° → arm horizontal): same y as the shoulder.
+        assert!(point_in_draggable_body(&layout, hand_right as f64, shoulder_y as f64),
+            "right hand center at full reach must be grabbable");
+        assert!(point_in_draggable_body(&layout, hand_left as f64, shoulder_y as f64),
+            "left hand center at full reach must be grabbable");
+        // The outer edge of the hand circle (HAND_R past the center) must also be inside the
+        // handle — this is the "grab area on the hands is too small" regression guard.
+        assert!(point_in_draggable_body(&layout, (hand_right + HAND_R) as f64, shoulder_y as f64),
+            "right hand outer edge must be grabbable");
+        assert!(point_in_draggable_body(&layout, (hand_left - HAND_R) as f64, shoulder_y as f64),
+            "left hand outer edge must be grabbable");
+    }
+
+    #[test]
     fn input_expands_with_lines_up_to_cap() {
         let l = Layout::initial();
         let one = l.input_rect(1).h;
@@ -2942,14 +3939,242 @@ mod tests {
     }
 
     #[test]
-    fn unwired_quick_button_renders_fainter_than_wired() {
+    fn interior_rows_fit_inside_the_torso_panel_and_stack_in_order() {
+        let l = Layout { facing: Facing::Right, body_len: BODY_LEN_DEFAULT };
+        let panel = l.output_panel_rect();
+        let rows = l.interior_rows();
+        // Seven perimeter controls fold into the interior list.
+        assert_eq!(rows.len(), 7, "ArrowN, Quick0..3, Add, ArrowS");
+        let mut prev_bottom = -f32::INFINITY;
+        for (_id, rect) in &rows {
+            // Every row lives inside the output panel.
+            assert!(rect.x >= panel.x - 0.5 && rect.x + rect.w <= panel.x + panel.w + 0.5,
+                "row x span {}..{} outside panel {}..{}", rect.x, rect.x + rect.w, panel.x, panel.x + panel.w);
+            assert!(rect.y >= panel.y - 0.5 && rect.y + rect.h <= panel.y + panel.h + 0.5,
+                "row y span {}..{} outside panel {}..{}", rect.y, rect.y + rect.h, panel.y, panel.y + panel.h);
+            // Rows stack top-to-bottom without overlap.
+            assert!(rect.y >= prev_bottom - 0.5, "row at y={} overlaps previous bottom {}", rect.y, prev_bottom);
+            prev_bottom = rect.y + rect.h;
+        }
+        // Order is the muscle-memory order from the perimeter ring.
+        let ids: Vec<_> = rows.iter().map(|(id, _)| *id).collect();
+        assert_eq!(ids, vec![
+            PerimeterId::ArrowN,
+            PerimeterId::Quick0,
+            PerimeterId::Quick1,
+            PerimeterId::Quick2,
+            PerimeterId::Quick3,
+            PerimeterId::Add,
+            PerimeterId::ArrowS,
+        ]);
+    }
+
+    #[test]
+    fn interior_rows_empty_when_torso_too_short_to_fit_a_row() {
+        // A near-zero body length can't legibly fit even one row — fail closed rather than draw
+        // a cramped, unreadable list.
+        let l = Layout { facing: Facing::Right, body_len: BODY_LEN_MIN };
+        let rows = l.interior_rows();
+        // BODY_LEN_MIN is small enough that row_h clamps below the 10px legibility floor.
+        assert!(rows.is_empty(), "expected no interior rows at BODY_LEN_MIN, got {}", rows.len());
+    }
+
+    #[test]
+    fn interior_rows_for_fills_the_panel_evenly_and_caps_row_height() {
+        let l = Layout { facing: Facing::Right, body_len: BODY_LEN_DEFAULT };
+        let panel = l.output_panel_rect();
+        // 10 rows (the full chat-open set) should still fit a default torso and stay in-panel.
+        let rects = l.interior_rows_for(10);
+        assert_eq!(rects.len(), 10);
+        for r in &rects {
+            assert!(r.x >= panel.x - 0.5 && r.x + r.w <= panel.x + panel.w + 0.5);
+            assert!(r.y >= panel.y - 0.5 && r.y + r.h <= panel.y + panel.h + 0.5);
+            assert!(r.h <= 20.5, "row height should cap at 20px, got {}", r.h);
+        }
+        // Rows are evenly spaced (equal height + equal gaps).
+        let heights: Vec<f32> = rects.iter().map(|r| r.h).collect();
+        assert!(heights.iter().all(|h| (h - heights[0]).abs() < 0.01));
+    }
+
+    #[test]
+    fn interior_rows_for_zero_count_returns_empty() {
+        let l = Layout { facing: Facing::Right, body_len: BODY_LEN_DEFAULT };
+        assert!(l.interior_rows_for(0).is_empty());
+    }
+
+    #[test]
+    fn onboarding_layout_degenerate_when_content_too_short() {
+        // onboarding_layout returns empty interactive rects when content.h < 24; use a torso
+        // short enough that output_panel_rect().h - 16 < 24 (body_len < ~48).
+        let l = Layout {
+            facing: Facing::Right,
+            body_len: 40.0,
+        };
+        let panel = l.output_panel_rect();
+        assert!(panel.h < 32.0, "test fixture must exercise content.h < 24, got panel.h {}", panel.h);
+        let layout = l.onboarding_layout(3, 2, true, true);
+        assert!(layout.options.is_empty());
+        assert!(layout.fields.is_empty());
+        assert!(layout.primary.is_none());
+    }
+
+    #[test]
+    fn onboarding_layout_fits_inside_torso_and_hit_test_matches_primary() {
+        let l = Layout { facing: Facing::Right, body_len: BODY_LEN_DEFAULT };
+        let panel = l.output_panel_rect();
+        let layout = l.onboarding_layout(3, 2, true, true);
+        assert!(layout.card.x >= panel.x);
+        assert!(layout.card.y >= panel.y);
+        assert_eq!(layout.options.len(), 3);
+        assert_eq!(layout.fields.len(), 2);
+        let primary = layout.primary.expect("primary button");
+        assert_eq!(
+            onboarding_hit_at(&layout, f64::from(primary.x + 2.0), f64::from(primary.y + 2.0)),
+            Some(OnboardingHit::Primary),
+        );
+        let opt = layout.options[1];
+        assert_eq!(
+            onboarding_hit_at(&layout, f64::from(opt.x + 2.0), f64::from(opt.y + 2.0)),
+            Some(OnboardingHit::Option(1)),
+        );
+    }
+
+    #[test]
+    fn connect_panel_layout_fits_at_recommended_body_len() {
+        let body_len = Layout::min_body_len_for_onboarding(4, 2, true, true);
+        assert!(
+            body_len > BODY_LEN_DEFAULT,
+            "connect needs more than default stretch, got {body_len}"
+        );
+        let l = Layout { facing: Facing::Right, body_len };
+        let layout = l.onboarding_layout(4, 2, true, true);
+        assert_eq!(layout.options.len(), 4);
+        assert_eq!(layout.fields.len(), 2);
+        assert!(layout.primary.is_some());
+        for (i, rect) in layout.options.iter().enumerate() {
+            assert!(rect.h >= 12.0, "option row {i} too short: {}", rect.h);
+        }
+        for (i, rect) in layout.fields.iter().enumerate() {
+            assert!(rect.h >= 14.0, "field row {i} too short: {}", rect.h);
+        }
+        if let Some(primary) = layout.primary {
+            for field in &layout.fields {
+                assert!(field.y + field.h <= primary.y - 2.0, "field overlaps primary");
+            }
+        }
+    }
+
+    #[test]
+    fn interior_view_replaces_torso_output_and_hides_the_perimeter_ring() {
+        // The whole point of the interior view: outside buttons come inside, so the outside
+        // ring must not render, and the interior rows must paint into the torso panel.
         let layout = Layout::initial();
         let w = SURFACE_W;
         let h = layout.surface_h();
         let sprite = Sprite::new();
 
-        let paint = |dim: [bool; 4]| {
+        let paint = |interior: &[InteriorRow]| -> Vec<u8> {
             let mut canvas = vec![0_u8; (w * h * 4) as usize];
+            let view = BodyView {
+                t: 0.0,
+                emotion: Emotion::Neutral,
+                speech: None,
+                torso_output: TorsoOutput::Session(SessionCard {
+                    name: "B",
+                    provider: "echo",
+                    model: "m",
+                    gateway: "g",
+                    status: "s",
+                    note: "should not appear",
+                }),
+                chat_open: false,
+                tucked: None,
+                tucked_show_bubble: false,
+                tucked_show_input: false,
+                input_text: "",
+                input_placeholder: "",
+                input_focused: false,
+                review_pending: false,
+                edit_pending: false,
+                posture_badge: None,
+                surface_bloom: &[],
+                route_health: None,
+                route_flash: false,
+                receipt_rail: &[],
+                interior_rows: interior,
+                settings: &[],
+                onboarding: None,
+                layout,
+                pinned: None,
+                frame: None,
+                color: [255, 107, 107],
+            };
+            sprite.paint(&mut canvas, w, h, &view);
+            canvas
+        };
+
+        let closed = paint(&[]);
+        let open_rows: Vec<InteriorRow> = layout.interior_rows().into_iter().map(|(id, _)| InteriorRow {
+            id,
+            glyph: "X",
+            text: "Row label",
+            dim: false,
+        }).collect();
+        let open = paint(&open_rows);
+
+        // The external perimeter ring is RETIRED — both the closed and open views must leave
+        // the space just outside the torso transparent. (Previously the ring painted there.)
+        let torso = layout.torso_rect();
+        let sample = |canvas: &[u8], x: f32, y: f32| {
+            let xi = x as usize;
+            let yi = y as usize;
+            let i = (yi * (w as usize) + xi) * 4;
+            (canvas[i], canvas[i + 1], canvas[i + 2], canvas[i + 3])
+        };
+        let perimeter_pt = (torso.x - PERIMETER_SIZE - PERIMETER_GAP + 2.0, torso.y - PERIMETER_SIZE - PERIMETER_GAP + 2.0);
+        assert_eq!(sample(&closed, perimeter_pt.0, perimeter_pt.1), (0, 0, 0, 0),
+            "closed view must NOT render the retired perimeter ring");
+        assert_eq!(sample(&open, perimeter_pt.0, perimeter_pt.1), (0, 0, 0, 0),
+            "open view must NOT render the retired perimeter ring");
+
+        // An interior row paints opaque ink inside the torso panel.
+        let first_row = layout.interior_rows()[0].1;
+        let ink_pt = (first_row.x + 8.0, first_row.y + first_row.h / 2.0);
+        let open_ink = sample(&open, ink_pt.0, ink_pt.1);
+        assert!(open_ink.3 > 0, "interior row should paint ink inside the torso");
+    }
+
+    #[test]
+    fn unwired_interior_row_renders_fainter_than_wired() {
+        // The external perimeter ring is gone; the unwired-wired dim contrast now lives in the
+        // interior list. An unwired quick-surface row paints lower alpha than a wired one.
+        let layout = Layout::initial();
+        let w = SURFACE_W;
+        let h = layout.surface_h();
+        let sprite = Sprite::new();
+
+        let paint = |dim_q0: bool| -> Vec<u8> {
+            let mut canvas = vec![0_u8; (w * h * 4) as usize];
+            // Build the full 7-row interior so Quick0 lands in its real slot (row index 1).
+            let interior: Vec<InteriorRow> = layout
+                .interior_rows()
+                .iter()
+                .map(|(id, _)| InteriorRow {
+                    id: *id,
+                    glyph: match *id {
+                        PerimeterId::Quick0 => "1",
+                        PerimeterId::Quick1 => "2",
+                        PerimeterId::Quick2 => "3",
+                        PerimeterId::Quick3 => "4",
+                        PerimeterId::Add => "+",
+                        PerimeterId::ArrowN => "<",
+                        PerimeterId::ArrowS => ">",
+                        _ => "",
+                    },
+                    text: "Session",
+                    dim: *id == PerimeterId::Quick0 && dim_q0,
+                })
+                .collect();
             let view = BodyView {
                 t: 0.0,
                 emotion: Emotion::Neutral,
@@ -2964,17 +4189,21 @@ mod tests {
                 }),
                 chat_open: false,
                 tucked: None,
+                tucked_show_bubble: false,
+                tucked_show_input: false,
                 input_text: "",
                 input_placeholder: "",
                 input_focused: false,
                 review_pending: false,
                 edit_pending: false,
                 posture_badge: None,
-                dim_quick: dim,
                 surface_bloom: &[],
                 route_health: None,
                 route_flash: false,
                 receipt_rail: &[],
+                interior_rows: &interior,
+                settings: &[],
+                onboarding: None,
                 layout,
                 pinned: None,
                 frame: None,
@@ -2984,23 +4213,29 @@ mod tests {
             canvas
         };
 
-        let bright = paint([false; 4]);
-        let dimmed = paint([true, false, false, false]);
+        let bright = paint(false);
+        let dimmed = paint(true);
 
-        // Total alpha over the Quick0 button area: the dimmer fill paints lower coverage.
-        let rect = layout.perimeter_rect(PerimeterId::Quick0);
-        let alpha_sum = |canvas: &[u8]| -> u64 {
-            let mut acc = 0_u64;
-            for y in (rect.y as u32)..((rect.y + rect.h) as u32) {
-                for x in (rect.x as u32)..((rect.x + rect.w) as u32) {
-                    acc += canvas[((y * w + x) * 4 + 3) as usize] as u64;
-                }
-            }
-            acc
+        let rect = layout
+            .interior_rows()
+            .into_iter()
+            .find(|(id, _)| *id == PerimeterId::Quick0)
+            .unwrap()
+            .1;
+        // The contrast now lives in the leading glyph chip: a wired row paints a bright
+        // pale-clay chip (high R) while an unwired row paints it at low alpha so the dark
+        // recessed screen shows through (lower R). Sample the chip, just inside its left edge
+        // at the row's vertical center.
+        let mid_y = (rect.y + rect.h / 2.0) as u32;
+        let chip_x = (rect.x + 6.0) as u32;
+        let red_at = |canvas: &[u8]| -> u32 {
+            canvas[((mid_y * w as u32 + chip_x) * 4) as usize] as u32
         };
+        let bright_red = red_at(&bright);
+        let dimmed_red = red_at(&dimmed);
         assert!(
-            alpha_sum(&dimmed) < alpha_sum(&bright),
-            "an unwired Quick0 button should paint fainter than a wired one",
+            dimmed_red < bright_red,
+            "an unwired interior Quick0 row should paint a fainter chip (lower R) than a wired one (bright={bright_red}, dimmed={dimmed_red})",
         );
     }
 
@@ -3013,36 +4248,60 @@ mod tests {
     }
 
     #[test]
-    fn surface_bloom_slots_follow_clock_positions() {
+    fn surface_bloom_blooms_two_columns_outside_the_torso() {
         let layout = Layout::initial();
         let torso = layout.torso_rect();
-        let center = (torso.x + torso.w / 2.0, torso.y + torso.h / 2.0);
-        let rects = layout.surface_bloom_rects(6);
+        let center_y = torso.y + torso.h / 2.0;
 
-        assert_eq!(rects.len(), 6);
-        let mid = |rect: Rect| (rect.x + rect.w / 2.0, rect.y + rect.h / 2.0);
-        let slot0 = mid(rects[0]);
-        let slot1 = mid(rects[1]);
-        let slot3 = mid(rects[3]);
-        let slot5 = mid(rects[5]);
+        // Ten items split five-a-side into two columns flanking the torso.
+        let rects = layout.surface_bloom_rects(10);
+        assert_eq!(rects.len(), 10);
+        let (left, right) = rects.split_at(5);
 
-        assert!((slot0.0 - center.0).abs() < 0.5, "active slot should be centered at 12");
-        assert!(slot0.1 < center.1, "active slot should sit above the torso center");
-        assert!(slot1.0 > center.0 && slot1.1 < center.1, "next slot should sit at 2 o'clock");
-        assert!(slot5.0 < center.0 && slot5.1 < center.1, "previous slot should sit at 10 o'clock");
-        assert!(slot3.1 > center.1, "opposite slot should sit at 6 o'clock");
+        // The left column sits entirely left of the torso; the right column entirely right of it —
+        // so the torso (and its interior list) stays readable while the dial is active.
+        for r in left {
+            assert!(r.x + r.w <= torso.x, "left column must render outside (left of) the torso");
+        }
+        for r in right {
+            assert!(r.x >= torso.x + torso.w, "right column must render outside (right of) the torso");
+        }
+
+        // Each column is evenly spaced (constant pitch) and vertically centered on the torso.
+        for col in [left, right] {
+            let pitch = col[1].y - col[0].y;
+            assert!((pitch - (SURFACE_BLOOM_H + SURFACE_BLOOM_GAP)).abs() < 0.01, "pills evenly spaced");
+            for win in col.windows(2) {
+                assert!((win[1].y - win[0].y - pitch).abs() < 0.01, "even spacing down the column");
+            }
+            let col_mid = (col.first().unwrap().y + col.last().unwrap().y + SURFACE_BLOOM_H) / 2.0;
+            assert!((col_mid - center_y).abs() < 0.5, "column centered on the torso midline");
+        }
+    }
+
+    #[test]
+    fn surface_bloom_balances_an_odd_count_across_the_two_columns() {
+        let layout = Layout::initial();
+        // Five items → three on the left (ceil), two on the right (floor).
+        let rects = layout.surface_bloom_rects(5);
+        assert_eq!(rects.len(), 5);
+        let torso = layout.torso_rect();
+        let left = rects.iter().filter(|r| r.x + r.w <= torso.x).count();
+        let right = rects.iter().filter(|r| r.x >= torso.x + torso.w).count();
+        assert_eq!((left, right), (3, 2));
     }
 
     #[test]
     fn surface_bloom_hit_maps_each_pill_to_its_index() {
         let layout = Layout::initial();
-        let rects = layout.surface_bloom_rects(6);
+        // Exercise the full two-column spread.
+        let rects = layout.surface_bloom_rects(10);
         for (idx, rect) in rects.iter().enumerate() {
             let x = (rect.x + rect.w / 2.0) as f64;
             let y = (rect.y + rect.h / 2.0) as f64;
-            assert_eq!(surface_bloom_hit(&layout, 6, x, y), Some(idx));
+            assert_eq!(surface_bloom_hit(&layout, 10, x, y), Some(idx));
         }
-        assert_eq!(surface_bloom_hit(&layout, 6, 1.0, 1.0), None);
+        assert_eq!(surface_bloom_hit(&layout, 10, 1.0, 1.0), None);
     }
 
     #[test]
@@ -3082,6 +4341,122 @@ mod tests {
         let fitted = fit_line(&font, long, 10.0, 70.0);
         assert!(fitted.ends_with('…'), "truncated text must signal the clip");
         assert!(measure(&font, &fitted, 10.0) <= 70.0, "truncated text must fit the budget");
+    }
+
+    #[test]
+    fn bloom_launcher_pill_is_visually_distinct_from_surface_pill() {
+        // A launcher pill must read differently from a surface-switch pill — the reach metaphor
+        // (open an external tool) is a different action than switching the active surface, so
+        // identical rendering would be a trust-legibility bug. We assert it two ways: the
+        // launcher pill's background tint differs, and the `→` glyph adds pixels a surface pill
+        // never draws.
+        let Some(font) = load_font() else { return };
+        let layout = Layout::initial();
+        // Draw each pill alone into its own pixmap — with one item, both land at rects[0], so
+        // we sample the same slot for a clean apples-to-apples comparison.
+        let rects = layout.surface_bloom_rects(1);
+        let pill_rect = rects[0];
+
+        let surface_item = SurfaceDialItem { label: "Session", availability: "available", active: false, kind: "surface" };
+        let launcher_item = SurfaceDialItem { label: "Open in Cursor", availability: "gated", active: false, kind: "launcher" };
+
+        let mut surface_px = Pixmap::new(SURFACE_W, layout.surface_h()).unwrap();
+        draw_surface_bloom(&mut surface_px, &font, &layout, &[surface_item]);
+        let mut launcher_px = Pixmap::new(SURFACE_W, layout.surface_h()).unwrap();
+        draw_surface_bloom(&mut launcher_px, &font, &layout, &[launcher_item]);
+
+        // Sample the background tint along the pill's top edge (y = pill top + 2) — text sits
+        // on a baseline lower in the pill, so this row reads the fill, not glyphs or label.
+        let cx = (pill_rect.x + pill_rect.w / 2.0) as i32;
+        let cy = (pill_rect.y + 2.0) as i32;
+        let s = sample_argb(&surface_px, cx, cy);
+        let l = sample_argb(&launcher_px, cx, cy);
+        assert!(s != l, "launcher pill background ({:?}) must differ from surface pill ({:?})", l, s);
+        // The launcher wash is warm (R > B); the surface wash is cool (B >= R).
+        assert!(l.0 > l.2, "launcher pill should be warm-tinted (r>b), got {:?}", l);
+        assert!(s.2 >= s.0, "surface pill should be cool-tinted (b>=r), got {:?}", s);
+
+        // The `→` glyph: the launcher pill has dark glyph pixels near its left that the surface
+        // pill (label-only, centered) does not. Count pixels in the leftmost band that are
+        // significantly darker than the pill fill — those are glyph strokes, not background.
+        let lp = count_dark_in_rect(&launcher_px, (pill_rect.x + 6.0) as i32, (pill_rect.y + 3.0) as i32, 22, 18);
+        let sp = count_dark_in_rect(&surface_px, (pill_rect.x + 6.0) as i32, (pill_rect.y + 3.0) as i32, 22, 18);
+        assert!(lp > sp, "launcher pill should draw a leading glyph the surface pill lacks ({} vs {} dark px)", lp, sp);
+    }
+
+    #[test]
+    fn unwired_bloom_pill_renders_label_and_soon_tag_not_blank() {
+        // The regression guard for the empty-grey-slot bug: an unwired pill must draw its label
+        // AND a right-aligned "soon" tag, so it never reads as a blank pill. The unwired ink is
+        // muted slate (sum ≈ 306–390), well above count_dark's near-black threshold but clearly
+        // darker than the opaque pill fill (sum ≈ 707), so count pixels below a mid threshold.
+        let Some(font) = load_font() else { return };
+        let layout = Layout::initial();
+        let rect = layout.surface_bloom_rects(1)[0];
+
+        let item = SurfaceDialItem { label: "Live Hermes", availability: "unwired", active: false, kind: "surface" };
+        let mut px = Pixmap::new(SURFACE_W, layout.surface_h()).unwrap();
+        draw_surface_bloom(&mut px, &font, &layout, &[item]);
+
+        let count_ink = |x0: i32, w: i32| -> usize {
+            let pw = px.width() as i32;
+            let data = px.data();
+            let mut n = 0;
+            for dy in 0..18 {
+                for dx in 0..w {
+                    let (x, y) = (x0 + dx, rect.y as i32 + 3 + dy);
+                    if x < 0 || y < 0 || x >= pw || y >= px.height() as i32 {
+                        continue;
+                    }
+                    let i = ((y * pw + x) * 4) as usize;
+                    if data[i + 3] > 80
+                        && (data[i] as i32 + data[i + 1] as i32 + data[i + 2] as i32) < 560
+                    {
+                        n += 1;
+                    }
+                }
+            }
+            n
+        };
+        // Label ink on the left of the pill.
+        let label_ink = count_ink(rect.x as i32 + 4, 60);
+        assert!(label_ink > 0, "unwired pill must draw its label, not a blank slot ({label_ink} ink px)");
+        // "soon" tag ink in the right band of the pill.
+        let tag_ink = count_ink((rect.x + rect.w) as i32 - 34, 30);
+        assert!(tag_ink > 0, "unwired pill must draw a 'soon' tag ({tag_ink} ink px)");
+    }
+
+    fn sample_argb(p: &Pixmap, x: i32, y: i32) -> (u8, u8, u8, u8) {
+        let w = p.width() as i32;
+        let data = p.data();
+        let i = ((y * w + x) * 4) as usize;
+        (data[i], data[i + 1], data[i + 2], data[i + 3])
+    }
+
+    /// Count pixels darker than the pill fill — glyph strokes (the `→` and the label) are dark
+    /// ink, so this isolates text/glyph pixels from the warm/cool background wash.
+    fn count_dark_in_rect(p: &Pixmap, x0: i32, y0: i32, w: i32, h: i32) -> usize {
+        let pw = p.width() as i32;
+        let ph = p.height() as i32;
+        let data = p.data();
+        let mut n = 0;
+        for dy in 0..h {
+            for dx in 0..w {
+                let x = x0 + dx;
+                let y = y0 + dy;
+                if x < 0 || y < 0 || x >= pw || y >= ph {
+                    continue;
+                }
+                let i = ((y * pw + x) * 4) as usize;
+                let a = data[i + 3] as i32;
+                // Only count where ink has actually landed (alpha) AND the channel values are
+                // dark — the pill fills are bright (≥200), glyph strokes drop well below 90.
+                if a > 80 && (data[i] as i32 + data[i + 1] as i32 + data[i + 2] as i32) < 270 {
+                    n += 1;
+                }
+            }
+        }
+        n
     }
 
     #[test]
@@ -3152,6 +4527,22 @@ mod tests {
     }
 
     #[test]
+    fn tucked_peek_input_sits_below_the_bubble_and_clear_of_the_bump() {
+        // Full-figure surface (the size a tuck keeps), bump on the right edge.
+        let (w, h) = (SURFACE_W, 320);
+        let bubble = tucked_bubble_rect(BumpEdge::Right, w, h);
+        let input = tucked_input_rect(BumpEdge::Right, w, h);
+        // Input is stacked directly below the bubble, no overlap.
+        assert!(input.y >= bubble.y + bubble.h);
+        // Both share the same column and stay on the surface.
+        assert_eq!(bubble.x, input.x);
+        assert!(bubble.x >= 0.0 && bubble.x + bubble.w <= w as f32);
+        assert!(input.y + input.h <= h as f32);
+        // Clear of the bump: the right-edge bump occupies the rightmost BUMP_R; the peek sits left of it.
+        assert!(bubble.x + bubble.w <= w as f32 - BUMP_R);
+    }
+
+    #[test]
     fn bump_survives_tiny_transient_surface() {
         let rect = bump_rect(BumpEdge::Left, 40, 40);
         assert!(rect.x >= 0.0);
@@ -3202,17 +4593,21 @@ mod tests {
             }),
             chat_open: false,
             tucked: None,
+            tucked_show_bubble: false,
+            tucked_show_input: false,
             input_text: "",
             input_placeholder: "Ask Border Wizard...",
             input_focused: false,
             review_pending: false,
             edit_pending: false,
             posture_badge: None,
-            dim_quick: [false; 4],
             surface_bloom: &[],
             route_health: None,
             route_flash: false,
             receipt_rail: &[],
+            interior_rows: &[],
+            settings: &[],
+            onboarding: None,
             layout: Layout::initial(),
             pinned: None,
             frame: Some(frame),

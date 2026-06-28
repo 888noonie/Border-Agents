@@ -9,6 +9,14 @@ The project makes AI trust boundaries visible and inspectable via friendly "Bord
 
 **Current reality check**: The desktop overlay + buddy UX is advanced and Linux-hardened. The core governance primitives (MemoryPacket, MemoryGrader, SafeContextFrame, receipts, PurposePolicy) exist only in specs/docs — **not yet implemented in code**. UI contains placeholder "memoryMode" settings. Per AGENTS.md, prove the grading primitive before expanding.
 
+**⚠️ Staleness banner (2026-06-26)**: Most of this map below describes the original
+**Tauri + WebKitGTK** desktop stack, which the overlay rebuild retired. The live desktop
+surface is now the **pure-Rust `desktop-body/`** presence body (tiny-skia on wlr-layer-shell)
+driven by a soul over the presence protocol, with a soul-gated `commandeer` screen effector and a
+body-local settings panel. For current build state read **AGENTS.md → "Where the build is"** and
+**`docs/STEP4_WIRE_THE_SOUL_PLAN.md`** first; treat the sections below as historical context until
+this map is rewritten.
+
 **Live status update (2026-06-07)**: The first Hermes UX concept is working. Desktop Hermes can be interacted with through the border overlay, the local gateway can route real OpenAI-compatible provider replies, and the browser preview/extension path can connect to the same Hermes gateway. Significant UI extraction work has occurred since this map was written (new `components/buddy/BuddySurface.tsx`, `BuddyPanel.tsx`, `BuddyUiBubble.tsx` etc. with their own `measureHitboxes` + layout-driven reporting). The big `BorderDock.tsx` is no longer quite as monolithic. See [docs/FIX_LIST.md](./FIX_LIST.md) for the resolved blocker history and remaining polish.
 
 **Current top blocker**: No code implementation yet for the v0.1 deterministic memory grading primitive (MemoryPacket, PurposePolicy, MemoryGrader, SafeContextFrame, PromptRenderer, GradeReceipt). The UX proof is now strong enough to return focus to the AGENTS.md law: prove the grading primitive before expanding into a general agent framework.
@@ -124,7 +132,7 @@ Border Agents/                                    # Parent folder (no .git — d
     │   └── (duplicates profile/settings/placement concerns)
     │
     ├── assets/                                   # Marketing/screenshots
-    ├── .vscode/tasks.json                        # "BB start", "BB gateway", "BB stop", "BB clean cache", "BB browser preview"
+    ├── .vscode/tasks.json                        # BB start | BB start full | BB spawn | BB stop (+ debug pieces)
     │
     └── (build artifacts ignored: dist/, node_modules/, src-tauri/target/)
 ```

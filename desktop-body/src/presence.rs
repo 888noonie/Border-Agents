@@ -197,6 +197,42 @@ pub fn clicked_json(buddy: &str, x: f64, y: f64) -> String {
     to_soul("clicked", buddy, json!({ "button": "primary", "at": free_at(x, y) }))
 }
 
+/// Choices the body reports alongside a panel confirm (Build C Slice 4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PanelClickChoices {
+    pub selected_option_ids: Vec<String>,
+    pub field_values: Vec<(String, String)>,
+}
+
+/// The user confirmed an onboarding panel section: a `clicked` carrying the Host-stamped
+/// `primary_panel` token plus the user's draft picks (Build C Slice 4). The Host reads the token
+/// as `panel:<token>` to advance the act and applies `panelChoices` to its draft — the body never
+/// invents the token (AGENTS.md law 7).
+pub fn clicked_panel_json(buddy: &str, panel: &str, choices: Option<&PanelClickChoices>) -> String {
+    match choices {
+        None => to_soul("clicked", buddy, json!({ "button": "primary", "panel": panel })),
+        Some(choices) => {
+            let field_values: serde_json::Map<String, Value> = choices
+                .field_values
+                .iter()
+                .map(|(key, value)| (key.clone(), json!(value)))
+                .collect();
+            to_soul(
+                "clicked",
+                buddy,
+                json!({
+                    "button": "primary",
+                    "panel": panel,
+                    "panelChoices": {
+                        "selectedOptionIds": choices.selected_option_ids,
+                        "fieldValues": field_values,
+                    }
+                }),
+            )
+        }
+    }
+}
+
 /// The user began dragging the buddy (emitted once, when travel crosses the click slop).
 pub fn grabbed_json(buddy: &str, x: f64, y: f64) -> String {
     to_soul("grabbed", buddy, json!({ "at": free_at(x, y) }))
@@ -322,6 +358,32 @@ pub fn action_request_intent_json(
         fields["requestId"] = json!(id);
     }
     to_soul("action_request", buddy, fields)
+}
+
+/// The body's right-click P/M/C menu asking the soul to run the act-floored `commandeer`
+/// effector on a tracked native window. AGENTS.md law 7: the body only NAMES the target and
+/// the mode — it never raises or types into the window itself. The soul authorizes through the
+/// action gate and, on `allow`, dispatches the world-effect (activate / type) to the frame
+/// driver. `mode` is `monitor` | `control`; `pin` is a local presentation toggle and is never
+/// routed here. The window rides as a `command` target so the soul lifts it to
+/// `intent.target.path`, which `dispatchCommandeer` reads as the `targetId`. `confirmed` is the
+/// follow-up after the act-floor's `needs_confirmation`.
+pub fn commandeer_request_json(
+    buddy: &str,
+    mode: &str,
+    target_id: &str,
+    name: &str,
+    confirmed: bool,
+) -> String {
+    let summary = format!("{mode} {name}");
+    let intent = ActionIntent {
+        operation: mode,
+        target_kind: "command",
+        target_value: Some(target_id),
+        summary: Some(&summary),
+        payload_digest: None,
+    };
+    action_request_intent_json(buddy, "commandeer", &intent, confirmed, None)
 }
 
 /// The user asked to enter/switch to a governed surface. The body only names the desired
@@ -458,6 +520,21 @@ pub enum Cue {
         /// nested object so the passport row and a future route ring read the same shape.
         route: Option<SurfaceRoute>,
     },
+    /// An onboarding form section the wizard Host wants rendered in the torso panel (Build C).
+    /// The native twin of the React `OnboardingWizardPanel`: the Host owns the act→section mapping
+    /// and the words (law 7); the body draws the title/prompt/options/fields and reports a
+    /// `clicked{panel: primary_panel}` on confirm — it never invents the token. `section == "none"`
+    /// carries no form and tells the body to close the panel.
+    Panel {
+        section: String,
+        title: String,
+        prompt: Option<String>,
+        options: Vec<PanelOption>,
+        fields: Vec<PanelField>,
+        rows: Vec<PanelRow>,
+        primary_label: Option<String>,
+        primary_panel: Option<String>,
+    },
     /// Border-target tracking (the "Morph Frame" seam): a platform driver tells the body
     /// where a native OS window is so it can wrap its hollow torso around it. Split three
     /// ways so the renderer binds distinct behavior to the lifecycle; every cue carries
@@ -466,15 +543,75 @@ pub enum Cue {
     TargetAcquired { target_id: String, title: String, app_id: String, bounds: TargetBounds },
     TargetMoved { target_id: String, bounds: TargetBounds },
     TargetLost { target_id: String, reason: TargetLostReason },
+    /// The full enumerated window list the platform driver can act on — the data behind the
+    /// right-click commandeer picker's first phase. Unlike the `Target*` lifecycle (which tracks
+    /// the ONE pinned window), this is the menu of everything available to pin/monitor/control.
+    /// The body only renders it as choices; selecting one emits a soul-gated `commandeer` request
+    /// (AGENTS.md law 7 — the body never raises or types into any of these itself).
+    TargetsAvailable { targets: Vec<TargetEntry> },
+}
+
+/// One selectable window in the commandeer picker, mirroring the driver's `targets_available`
+/// entries. Carries only identity + labels — never geometry or content; the body shows it as a
+/// choice and reports the user's pick, nothing more.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetEntry {
+    pub target_id: String,
+    pub title: String,
+    pub app_id: String,
+}
+
+/// One selectable row in a `Panel` section (a posture/placement choice, a provider preset).
+/// Mirrors the TS `PresencePanelOption`. `selected` is the Host's default highlight on first
+/// paint; after the user picks, the body reports the actual selection via `panelChoices` on
+/// confirm (law 7).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PanelOption {
+    pub id: String,
+    pub label: String,
+    pub detail: Option<String>,
+    pub selected: bool,
+}
+
+/// One input field in a `Panel` section. Mirrors the TS `PresencePanelField`: `control` is the
+/// closed set `paste_key | text | select` (`paste_key` is the masked clipboard credential
+/// affordance); `masked` echoes the value as dots.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PanelField {
+    pub key: String,
+    pub label: String,
+    pub control: String,
+    pub masked: bool,
+    pub value: Option<String>,
+}
+
+/// One receipt row in the summary section. Mirrors the TS `PresencePanelRow`: `status` is the
+/// closed set `recorded | pending`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PanelRow {
+    pub label: String,
+    pub status: String,
 }
 
 /// One entry in the `hydrate` surface list. Mirrors the TS `PresenceSurfaceDescriptor`:
 /// `availability` is the closed set `available | unwired | gated` — `unwired` renders dimmed.
+/// `kind` is `surface` (default — switches the active surface) or `launcher` (opens an external
+/// tool via a reach `action_request`); a launcher carries the `effector` id to request. Both new
+/// fields are additive: an absent `kind` parses as `surface` so older soul snapshots still load.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SurfaceDescriptor {
     pub id: String,
     pub label: String,
     pub availability: String,
+    pub kind: String,
+    pub effector: Option<String>,
+}
+
+impl SurfaceDescriptor {
+    /// A launcher opens a tool (action_request) instead of switching the active surface.
+    pub fn is_launcher(&self) -> bool {
+        self.kind == "launcher"
+    }
 }
 
 /// The route an active surface is riding. Mirrors the TS `SurfaceRoute`: `locality` is the
@@ -660,7 +797,71 @@ fn parse_surfaces(value: &Value) -> Option<Vec<SurfaceDescriptor>> {
         if !matches!(availability.as_str(), "available" | "unwired" | "gated") {
             return None;
         }
-        out.push(SurfaceDescriptor { id, label, availability });
+        // Additive (Slice 0 launchers): `kind` defaults to "surface"; `effector` names the
+        // reach effector a launcher requests. A present-but-unknown `kind` drops the cue.
+        let kind = item.get("kind").and_then(|v| v.as_str()).unwrap_or("surface").to_string();
+        if !matches!(kind.as_str(), "surface" | "launcher") {
+            return None;
+        }
+        let effector = item.get("effector").and_then(|v| v.as_str()).map(|s| s.to_string());
+        out.push(SurfaceDescriptor { id, label, availability, kind, effector });
+    }
+    Some(out)
+}
+
+/// Parse the optional `options` list on a `Panel`. Each entry needs a non-empty `id` and a
+/// string `label`; `detail`/`selected` are optional. A present-but-malformed list drops the
+/// whole cue (`?`), mirroring the TS `isPanelOptionArray` guard.
+fn parse_panel_options(value: &Value) -> Option<Vec<PanelOption>> {
+    let arr = value.as_array()?;
+    let mut out = Vec::with_capacity(arr.len());
+    for item in arr {
+        out.push(PanelOption {
+            id: nonempty(item.get("id"))?,
+            label: item.get("label")?.as_str()?.to_string(),
+            detail: item.get("detail").and_then(|s| s.as_str()).map(String::from),
+            selected: item.get("selected").and_then(|s| s.as_bool()).unwrap_or(false),
+        });
+    }
+    Some(out)
+}
+
+/// Parse the optional `fields` list on a `Panel`. Each entry needs a non-empty `key`, a string
+/// `label`, and a `control` in the closed set `paste_key | text | select` — anything else drops
+/// the whole cue (mirrors the TS `isPanelFieldArray` guard).
+fn parse_panel_fields(value: &Value) -> Option<Vec<PanelField>> {
+    let arr = value.as_array()?;
+    let mut out = Vec::with_capacity(arr.len());
+    for item in arr {
+        let control = item.get("control")?.as_str()?.to_string();
+        if !matches!(control.as_str(), "paste_key" | "text" | "select") {
+            return None;
+        }
+        out.push(PanelField {
+            key: nonempty(item.get("key"))?,
+            label: item.get("label")?.as_str()?.to_string(),
+            control,
+            masked: item.get("masked").and_then(|s| s.as_bool()).unwrap_or(false),
+            value: item.get("value").and_then(|s| s.as_str()).map(String::from),
+        });
+    }
+    Some(out)
+}
+
+/// Parse the optional `rows` list on a `Panel` (summary receipts). Each entry needs a string
+/// `label` and a `status` in the closed set `recorded | pending`.
+fn parse_panel_rows(value: &Value) -> Option<Vec<PanelRow>> {
+    let arr = value.as_array()?;
+    let mut out = Vec::with_capacity(arr.len());
+    for item in arr {
+        let status = item.get("status")?.as_str()?.to_string();
+        if !matches!(status.as_str(), "recorded" | "pending") {
+            return None;
+        }
+        out.push(PanelRow {
+            label: item.get("label")?.as_str()?.to_string(),
+            status,
+        });
     }
     Some(out)
 }
@@ -681,6 +882,22 @@ fn parse_bounds(value: &Value) -> Option<TargetBounds> {
         h: value.get("h")?.as_f64()?,
         scale_factor: value.get("scaleFactor")?.as_f64()?,
     })
+}
+
+/// Parse the `targets_available` window list. Each entry needs a non-empty `targetId` and string
+/// `title`/`appId` (which may be empty — an untitled window still picks). A present-but-malformed
+/// list drops the whole cue (`?`), mirroring the strict-guard discipline of the other parsers.
+fn parse_target_entries(value: &Value) -> Option<Vec<TargetEntry>> {
+    let arr = value.as_array()?;
+    let mut out = Vec::with_capacity(arr.len());
+    for item in arr {
+        out.push(TargetEntry {
+            target_id: nonempty(item.get("targetId"))?,
+            title: item.get("title")?.as_str()?.to_string(),
+            app_id: item.get("appId")?.as_str()?.to_string(),
+        });
+    }
+    Some(out)
 }
 
 fn parse_lost_reason(value: &str) -> Option<TargetLostReason> {
@@ -773,6 +990,40 @@ pub fn parse_to_body(text: &str) -> Option<ToBody> {
                 route,
             }
         }
+        "panel" => {
+            let section = v.get("section")?.as_str()?.to_string();
+            if !matches!(
+                section.as_str(),
+                "connect" | "posture" | "placement" | "summary" | "none"
+            ) {
+                return None;
+            }
+            Cue::Panel {
+                section,
+                title: v.get("title")?.as_str()?.to_string(),
+                prompt: v.get("prompt").and_then(|s| s.as_str()).map(String::from),
+                // Absent → empty (valid); present-but-malformed → `?` drops the cue.
+                options: match v.get("options") {
+                    None => Vec::new(),
+                    Some(o) => parse_panel_options(o)?,
+                },
+                fields: match v.get("fields") {
+                    None => Vec::new(),
+                    Some(f) => parse_panel_fields(f)?,
+                },
+                rows: match v.get("rows") {
+                    None => Vec::new(),
+                    Some(r) => parse_panel_rows(r)?,
+                },
+                primary_label: v.get("primaryLabel").and_then(|s| s.as_str()).map(String::from),
+                // Absent → None (valid); present must be a non-empty string, else `?` drops the
+                // cue (mirrors the TS `isNonEmptyString(raw.primaryPanel)` guard).
+                primary_panel: match v.get("primaryPanel") {
+                    None => None,
+                    Some(p) => Some(nonempty(Some(p))?),
+                },
+            }
+        }
         "target_acquired" => Cue::TargetAcquired {
             target_id: nonempty(v.get("targetId"))?,
             title: v.get("title")?.as_str()?.to_string(),
@@ -786,6 +1037,9 @@ pub fn parse_to_body(text: &str) -> Option<ToBody> {
         "target_lost" => Cue::TargetLost {
             target_id: nonempty(v.get("targetId"))?,
             reason: parse_lost_reason(v.get("reason")?.as_str()?)?,
+        },
+        "targets_available" => Cue::TargetsAvailable {
+            targets: parse_target_entries(v.get("targets")?)?,
         },
         // attention (reserved) and all to-soul kinds are not body cues.
         _ => return None,
@@ -890,6 +1144,35 @@ mod tests {
     }
 
     #[test]
+    fn hydrate_parses_launcher_descriptor_and_defaults_kind_to_surface() {
+        let base = r#"{"protocol":"presence","v":0,"kind":"hydrate","buddy":"h","ts":1,"surfaces":"#;
+        // A surface with no `kind` defaults to "surface" and is not a launcher (back-compat).
+        let surface = format!("{base}[{{\"id\":\"session\",\"label\":\"Session\",\"availability\":\"available\"}}]}}");
+        match parse_to_body(&surface).unwrap().cue {
+            Cue::Hydrate { surfaces, .. } => {
+                assert_eq!(surfaces[0].kind, "surface");
+                assert!(!surfaces[0].is_launcher());
+                assert_eq!(surfaces[0].effector, None);
+            }
+            other => panic!("expected hydrate, got {other:?}"),
+        }
+        // A launcher carries kind + effector and reads back as a launcher.
+        let launcher = format!(
+            "{base}[{{\"id\":\"open_cursor\",\"label\":\"Open in Cursor\",\"availability\":\"gated\",\"kind\":\"launcher\",\"effector\":\"open_cursor\"}}]}}"
+        );
+        match parse_to_body(&launcher).unwrap().cue {
+            Cue::Hydrate { surfaces, .. } => {
+                assert!(surfaces[0].is_launcher());
+                assert_eq!(surfaces[0].effector.as_deref(), Some("open_cursor"));
+            }
+            other => panic!("expected hydrate, got {other:?}"),
+        }
+        // An unknown `kind` drops the whole cue, mirroring the TS guard.
+        let bad_kind = format!("{base}[{{\"id\":\"x\",\"label\":\"X\",\"availability\":\"gated\",\"kind\":\"bogus\"}}]}}");
+        assert!(parse_to_body(&bad_kind).is_none());
+    }
+
+    #[test]
     fn parses_output_image_fixture() {
         let output = parse_to_body(&fixture("output")).unwrap();
         assert_eq!(output.buddy, "hermes");
@@ -925,6 +1208,74 @@ mod tests {
             lost.cue,
             Cue::TargetLost { target_id: "win-42".into(), reason: TargetLostReason::Closed }
         );
+    }
+
+    #[test]
+    fn parses_targets_available_window_list() {
+        // The driver's enumerated window list (the picker's first-phase data). Matches the wire
+        // shape emitted by frame_driver's emit_targets_available.
+        let raw = r#"{"protocol":"presence","v":0,"kind":"targets_available","buddy":"forge","ts":7,"targets":[{"targetId":"win-1","title":"Firefox","appId":"org.mozilla.firefox"},{"targetId":"win-2","title":"","appId":"com.system76.CosmicTerm"}]}"#;
+        match parse_to_body(raw).unwrap().cue {
+            Cue::TargetsAvailable { targets } => {
+                assert_eq!(targets.len(), 2);
+                assert_eq!(targets[0], TargetEntry {
+                    target_id: "win-1".into(),
+                    title: "Firefox".into(),
+                    app_id: "org.mozilla.firefox".into(),
+                });
+                // An untitled window is still a valid pick (empty title allowed).
+                assert_eq!(targets[1].target_id, "win-2");
+                assert_eq!(targets[1].title, "");
+            }
+            other => panic!("expected targets_available, got {other:?}"),
+        }
+        // An empty list is valid (no windows to act on yet).
+        let empty = r#"{"protocol":"presence","v":0,"kind":"targets_available","buddy":"forge","ts":7,"targets":[]}"#;
+        assert!(matches!(parse_to_body(empty).unwrap().cue, Cue::TargetsAvailable { targets } if targets.is_empty()));
+        // A missing targetId drops the whole cue (strict guard).
+        let bad = r#"{"protocol":"presence","v":0,"kind":"targets_available","buddy":"forge","ts":7,"targets":[{"targetId":"","title":"x","appId":"y"}]}"#;
+        assert!(parse_to_body(bad).is_none());
+    }
+
+    #[test]
+    fn parses_panel_connect_fixture() {
+        // The shared golden fixture's `panel` is a connect section (options + a masked paste_key
+        // field + a Host-owned primary token) — the cross-language contract for Build C.
+        let panel = parse_to_body(&fixture("panel")).unwrap();
+        assert_eq!(panel.buddy, "hermes");
+        match panel.cue {
+            Cue::Panel { section, title, options, fields, primary_panel, .. } => {
+                assert_eq!(section, "connect");
+                assert_eq!(title, "Connect a provider");
+                assert_eq!(options.len(), 2);
+                assert!(options[0].selected);
+                assert_eq!(options[0].id, "xai");
+                // The credential field arrives as a masked paste_key control.
+                let key = fields.iter().find(|f| f.key == "apiKey").unwrap();
+                assert_eq!(key.control, "paste_key");
+                assert!(key.masked);
+                assert_eq!(primary_panel.as_deref(), Some("connection_ok"));
+            }
+            other => panic!("expected panel, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn panel_validation_mirrors_ts() {
+        // `none` carries no form — the minimal close signal still parses.
+        assert!(matches!(
+            parse_to_body(r#"{"protocol":"presence","v":0,"kind":"panel","buddy":"host","ts":1,"section":"none","title":""}"#).unwrap().cue,
+            Cue::Panel { .. }
+        ));
+        // Unknown section is dropped (closed set, not a free string).
+        assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"panel","buddy":"host","ts":1,"section":"billing","title":"x"}"#).is_none());
+        // Unknown field control is dropped.
+        assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"panel","buddy":"host","ts":1,"section":"connect","title":"x","fields":[{"key":"apiKey","label":"API key","control":"biometric"}]}"#).is_none());
+        // Unknown summary row status is dropped.
+        assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"panel","buddy":"host","ts":1,"section":"summary","title":"x","rows":[{"label":"Posture","status":"halfway"}]}"#).is_none());
+        // An option missing its id, and a present-but-empty primaryPanel, both drop the cue.
+        assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"panel","buddy":"host","ts":1,"section":"posture","title":"x","options":[{"label":"Work"}]}"#).is_none());
+        assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"panel","buddy":"host","ts":1,"section":"connect","title":"x","primaryPanel":""}"#).is_none());
     }
 
     #[test]
@@ -1149,6 +1500,34 @@ mod tests {
     }
 
     #[test]
+    fn commandeer_request_builder_emits_gated_command_intent() {
+        // Monitor: a `commandeer` action_request carrying the window as a `command` target and the
+        // mode as the operation — exactly what the soul lifts to intent.target.path + operation
+        // for dispatchCommandeer. No `text`: control-text is the soul's to add, never the body's.
+        let m: Value =
+            serde_json::from_str(&commandeer_request_json("forge", "monitor", "win-42", "Firefox", false))
+                .unwrap();
+        assert_eq!(m["protocol"], "presence");
+        assert_eq!(m["kind"], "action_request");
+        assert_eq!(m["buddy"], "forge");
+        assert_eq!(m["effector"], "commandeer");
+        assert_eq!(m["intent"]["operation"], "monitor");
+        assert_eq!(m["intent"]["target"]["kind"], "command");
+        assert_eq!(m["intent"]["target"]["value"], "win-42");
+        assert_eq!(m["intent"]["summary"], "monitor Firefox");
+        assert!(m.get("confirmed").is_none(), "confirmed omitted when false");
+        assert!(m["intent"].get("payloadDigest").is_none());
+
+        // Control confirm follow-up carries confirmed:true and the same command target.
+        let c: Value =
+            serde_json::from_str(&commandeer_request_json("forge", "control", "win-7", "Editor", true))
+                .unwrap();
+        assert_eq!(c["confirmed"], true);
+        assert_eq!(c["intent"]["operation"], "control");
+        assert_eq!(c["intent"]["target"]["value"], "win-7");
+    }
+
+    #[test]
     fn surface_request_builder_emits_valid_envelope() {
         let a: Value = serde_json::from_str(&surface_request_json("aether", "private_local_chat")).unwrap();
         assert_eq!(a["protocol"], "presence");
@@ -1199,6 +1578,15 @@ mod tests {
         assert_eq!(c["kind"], "clicked");
         assert_eq!(c["button"], "primary");
         assert_eq!(c["at"]["mode"], "free");
+
+        let panel_click = PanelClickChoices {
+            selected_option_ids: vec!["ollama".into()],
+            field_values: vec![("apiKey".into(), "secret".into())],
+        };
+        let p: Value = serde_json::from_str(&clicked_panel_json("host", "connection_ok", Some(&panel_click))).unwrap();
+        assert_eq!(p["panel"], "connection_ok");
+        assert_eq!(p["panelChoices"]["selectedOptionIds"][0], "ollama");
+        assert_eq!(p["panelChoices"]["fieldValues"]["apiKey"], "secret");
 
         let d: Value = serde_json::from_str(&dropped_json("hermes", 3.0, 4.0)).unwrap();
         assert_eq!(d["kind"], "dropped");

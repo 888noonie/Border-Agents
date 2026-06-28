@@ -70,6 +70,17 @@ describe("capability manifests", () => {
     expect(BUDDY_PROFILES.crab.capabilities.inputs.commands.length).toBe(0);
     expect(BUDDY_PROFILES.owl.capabilities.inputs.commands.length).toBe(0);
     expect(BUDDY_PROFILES.fox.capabilities.inputs.commands.length).toBe(0);
+    // Forge is the governance identity's own body profile (reads "Forge", not "Claw"); it
+    // shares the crab persona's conversational capabilities.
+    expect(BUDDY_PROFILES.forge.capabilities.inputs.commands.length).toBe(0);
+  });
+
+  it("forge is the forge governance identity's body profile, distinct from the crab persona", () => {
+    expect(BUDDY_PROFILES.forge.identity.id).toBe("forge");
+    expect(BUDDY_PROFILES.forge.identity.name).toBe("Forge");
+    expect(BUDDY_PROFILES.forge.identity.shortName).toBe("Forge");
+    // Same clay colour as the crab persona — only the display identity differs.
+    expect(BUDDY_PROFILES.forge.appearance.color).toBe(BUDDY_PROFILES.crab.appearance.color);
   });
 });
 

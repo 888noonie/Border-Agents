@@ -35,6 +35,9 @@ tiny-skia = "0.11"
 fontdue = "0.9"
 wayland-client = "0.31"
 wayland-protocols = { version = "0.32", features = ["client", "unstable", "staging"] }
+# zwp_virtual_keyboard_v1 lives here, not in wayland-protocols. Used by the commandeer
+# effector in src/bin/frame_driver.rs (control mode types into the pinned window).
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
 # COSMIC toplevel-info: the geometry source the frame driver tracks (cosmic-comp only).
 cosmic-protocols = { version = "0.2", default-features = false, features = ["client"] }
 # Presence WebSocket client (Step 4). Blocking, no async runtime; ws:// only, so no

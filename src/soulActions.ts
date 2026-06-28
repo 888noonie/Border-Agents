@@ -194,6 +194,11 @@ function summarize(receipt: ActionReceipt, label: string, execution?: ExecutionR
       if (execution && execution.executor_called && execution.outcome === "ok") {
         return `Ran "${label}" via ${execution.route.provider}.`;
       }
+      // Authorized, executor ran, but the world effect failed (e.g. the CLI is not on PATH).
+      // Surface the executor's own detail so the bubble says what went wrong, not "Running…".
+      if (execution && execution.outcome === "error") {
+        return `"${label}" authorized, but it didn't run: ${execution.detail ?? "the tool reported an error"}.`;
+      }
       if (execution && execution.outcome === "skipped") {
         return `"${label}" authorized; ${execution.detail ?? "not executed on this surface"}.`;
       }

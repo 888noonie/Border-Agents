@@ -22,7 +22,21 @@ export BB_LOG_EVENTS
 bb_begin_session_log
 bb_tee_session
 
-bb_banner "Border Buddies start (gateway + desktop)"
+# Which soul process backs the body. Defaults to the real governance soul (soul-server,
+# which returns live ActionReceipts). Set BB_SOUL_SCRIPT=gateway:dev for the old provider-chat
+# dev gateway (stub governance) as an escape hatch until the unified soul lands (Slice 1).
+BB_SOUL_SCRIPT="${BB_SOUL_SCRIPT:-soul:dev}"
+export BB_SOUL_SCRIPT
+
+# The on-screen buddy. Defaults to "crab" — the body PERSONA that wears the Forge governance
+# identity (resolveManifestId("crab") → "forge"). Using the persona id (not the governance id
+# "forge", which has no body profile) gives the proper sprite/colour AND the launcher reach
+# grants (open_vscode/open_cursor/open_terminal) the bloom dial opens. Override with
+# BB_BUDDY=hermes for the wizard/onboarding persona. The code-level default (desktop-body) stays
+# hermes, so a direct `npm run body:dev` is unaffected.
+export BB_BUDDY="${BB_BUDDY:-crab}"
+
+bb_banner "Border Buddies start (${BB_SOUL_SCRIPT} + desktop)"
 bb_log "After a crash/freeze run: npm run report   (or Cursor: Terminal → Run Task → BB report)"
 bb_log "Logs folder: ${ROOT}/.bb-logs/"
 bb_log "Workspace: ${ROOT}"
@@ -35,7 +49,7 @@ desktop_exit_code=0
 
 cleanup() {
   if [[ "${gateway_started_by_us}" -eq 1 && -n "${gateway_pid}" ]] && kill -0 "${gateway_pid}" 2>/dev/null; then
-    bb_log "Stopping dev gateway (pid ${gateway_pid})"
+    bb_log "Stopping soul (pid ${gateway_pid})"
     kill "${gateway_pid}" 2>/dev/null || true
   fi
 }
@@ -60,22 +74,22 @@ on_exit() {
 trap on_exit EXIT INT TERM
 
 if bb_port_listening 17387; then
-  bb_log "Gateway already listening on ws://127.0.0.1:17387/border-buddies"
+  bb_log "Soul already listening on ws://127.0.0.1:17387/border-buddies"
 else
-  bb_log "Starting Hermes dev gateway..."
-  npm run gateway:dev >>"$BB_LOG_SESSION" 2>&1 &
+  bb_log "Starting soul (npm run ${BB_SOUL_SCRIPT})..."
+  npm run "${BB_SOUL_SCRIPT}" >>"$BB_LOG_SESSION" 2>&1 &
   gateway_pid=$!
   gateway_started_by_us=1
-  bb_log "Gateway process pid: ${gateway_pid}"
+  bb_log "Soul process pid: ${gateway_pid}"
 
   if ! bb_wait_for_port 17387 40; then
-    bb_warn "Gateway is not listening yet; desktop will still start."
+    bb_warn "Soul is not listening yet; desktop will still start."
     if ! kill -0 "${gateway_pid}" 2>/dev/null; then
-      bb_error "Gateway process exited early. Recent gateway output:"
-      tail -n 20 "$BB_LOG_SESSION" 2>/dev/null | sed 's/^/[BB gateway] /' || true
+      bb_error "Soul process exited early. Recent soul output:"
+      tail -n 20 "$BB_LOG_SESSION" 2>/dev/null | sed 's/^/[BB soul] /' || true
     fi
   else
-    bb_log "Gateway ready at ws://127.0.0.1:17387/border-buddies"
+    bb_log "Soul ready at ws://127.0.0.1:17387/border-buddies"
   fi
 fi
 

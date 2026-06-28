@@ -204,6 +204,33 @@ export interface PresenceSurfaceDescriptor {
   id: string;
   label: string;
   availability: PresenceSurfaceAvailability;
+  /**
+   * `surface` (default) cycles/switches the active surface. `launcher` opens an external tool
+   * via a reach `action_request` for `effector`, instead of becoming the active surface. Additive
+   * (Slice 0): an absent `kind` means `surface`, so older snapshots and fixtures remain valid.
+   */
+  kind?: PresenceSurfaceDescriptorKind;
+  /** For a `launcher`, the reach effector id the body requests (e.g. "open_cursor"). */
+  effector?: string;
+}
+
+export type PresenceSurfaceDescriptorKind = "surface" | "launcher";
+
+/**
+ * Wizard handoff payload shipped on Hermes `hydrate` after onboarding completes (Build C
+ * Slice 5). Carries the connect draft in-process, memory-only — never logged or persisted.
+ * The native body ignores unknown hydrate fields today; the soul retains the credential for
+ * provider routing.
+ */
+export interface PresenceHermesHydrateDraft {
+  provider: string;
+  apiBase: string;
+  apiKey: string;
+  model: string;
+  systemPrompt: string;
+  posture: UserPosture;
+  enabledBuddyIds: string[];
+  buddyEdges: Record<string, string>;
 }
 
 /**
@@ -219,6 +246,8 @@ export type PresenceHydrate = PresenceEnvelope<
     speech?: string;
     platform?: PresencePlatform;
     surfaces?: PresenceSurfaceDescriptor[];
+    /** Present on wizard→Hermes handoff; carries the connect draft including `apiKey`. */
+    hermesDraft?: PresenceHermesHydrateDraft;
   }
 >;
 
@@ -358,6 +387,79 @@ export type PresenceSurfaceActive = PresenceEnvelope<
   }
 >;
 
+/**
+ * Which onboarding form section the body should render in its torso panel, soul-pushed
+ * (Build C). The wizard Host owns the act→section mapping (law 7); the body never derives
+ * it. `none` closes the panel (Act 0/1/handoff carry no form). The four form sections mirror
+ * the React `OnboardingPanelSection` so the two bodies render the same script.
+ */
+export type PresencePanelSection = "connect" | "posture" | "placement" | "summary" | "none";
+
+export const PRESENCE_PANEL_SECTIONS: readonly PresencePanelSection[] = [
+  "connect",
+  "posture",
+  "placement",
+  "summary",
+  "none",
+];
+
+/** One selectable row in a panel section (a posture/placement choice, a provider preset). */
+export interface PresencePanelOption {
+  id: string;
+  label: string;
+  detail?: string;
+  /** Default highlight the body shows before the user picks; never authoritative (law 7). */
+  selected?: boolean;
+}
+
+/**
+ * One input field the body renders. `paste_key` is the credential affordance: the body pulls
+ * from the clipboard and echoes it masked (it never round-trips the secret to the screen). `text`
+ * is a plain editable line; `select` defers to the section's `options`. `masked` hides the value.
+ */
+export interface PresencePanelField {
+  key: string;
+  label: string;
+  control: "paste_key" | "text" | "select";
+  masked?: boolean;
+  value?: string;
+}
+
+export type PresencePanelFieldControl = PresencePanelField["control"];
+
+export const PRESENCE_PANEL_FIELD_CONTROLS: readonly PresencePanelFieldControl[] = [
+  "paste_key",
+  "text",
+  "select",
+];
+
+/** One receipt row in the summary section: a lifecycle step and whether it's recorded yet. */
+export interface PresencePanelRow {
+  label: string;
+  status: "recorded" | "pending";
+}
+
+/**
+ * The onboarding form section to render, soul-pushed by the wizard Host (Build C). This is the
+ * native body's in-torso twin of the React `OnboardingWizardPanel`: the Host renders the current
+ * section's title/prompt/options/fields and the body draws + reports. The primary action emits
+ * `clicked{panel: primaryPanel}` — the Host decides the token, the body never invents it (law 7).
+ * `section: "none"` carries no form and tells the body to close the panel.
+ */
+export type PresencePanel = PresenceEnvelope<
+  "panel",
+  {
+    section: PresencePanelSection;
+    title: string;
+    prompt?: string;
+    options?: PresencePanelOption[];
+    fields?: PresencePanelField[];
+    rows?: PresencePanelRow[];
+    primaryLabel?: string;
+    primaryPanel?: string;
+  }
+>;
+
 export type PresenceToBodyMessage =
   | PresenceMoveTo
   | PresenceExpress
@@ -367,6 +469,7 @@ export type PresenceToBodyMessage =
   | PresenceOutput
   | PresenceActionResult
   | PresenceSurfaceActive
+  | PresencePanel
   | PresenceTargetAcquired
   | PresenceTargetMoved
   | PresenceTargetLost;
@@ -386,9 +489,32 @@ export type PresenceAttached = PresenceEnvelope<
   { at?: PresencePosition; capabilities?: readonly string[] }
 >;
 
+/**
+ * The user's in-progress onboarding picks, reported alongside `clicked{panel:*}` (Build C
+ * Slice 4). The body echoes what the user selected/typed; the Host applies it to the draft
+ * and writes settings/receipts. Additive optional field — absent on ordinary taps.
+ */
+export interface PresencePanelChoices {
+  /** Selected option ids (one for single-select sections; many for placement). */
+  selectedOptionIds?: readonly string[];
+  /** Field key → draft value. The soul must never log or receipt secret values. */
+  fieldValues?: Readonly<Record<string, string>>;
+}
+
+/**
+ * `panel` is an additive (v0), optional discriminator the onboarding settings panel
+ * sets when a form section is satisfied (e.g. `panel: "connection_ok"`). The wizard
+ * Host reads it as a `panel:<name>` advancing event; an absent `panel` is an ordinary
+ * buddy tap. `panelChoices` carries the user's draft alongside a panel confirm.
+ */
 export type PresenceClicked = PresenceEnvelope<
   "clicked",
-  { button?: PresencePointer; at?: PresencePosition }
+  {
+    button?: PresencePointer;
+    at?: PresencePosition;
+    panel?: string;
+    panelChoices?: PresencePanelChoices;
+  }
 >;
 
 export type PresenceGrabbed = PresenceEnvelope<"grabbed", { at: PresencePosition }>;
@@ -490,6 +616,7 @@ export const PRESENCE_TO_BODY_KINDS: readonly PresenceToBodyMessage["kind"][] = 
   "output",
   "action_result",
   "surface_active",
+  "panel",
   "target_acquired",
   "target_moved",
   "target_lost",
@@ -667,9 +794,108 @@ function isSurfaceDescriptorArray(value: unknown): value is PresenceSurfaceDescr
         isObject(item) &&
         isNonEmptyString(item.id) &&
         typeof item.label === "string" &&
-        isSurfaceAvailability(item.availability),
+        isSurfaceAvailability(item.availability) &&
+        // Additive (Slice 0 launchers): both fields optional. A present-but-bad `kind`/`effector`
+        // drops the whole cue, mirroring the Rust `parse_surfaces` guard.
+        (item.kind === undefined || item.kind === "surface" || item.kind === "launcher") &&
+        (item.effector === undefined || typeof item.effector === "string"),
     )
   );
+}
+
+function isPanelSection(value: unknown): value is PresencePanelSection {
+  return (PRESENCE_PANEL_SECTIONS as readonly unknown[]).includes(value);
+}
+
+function isPanelChoices(value: unknown): value is PresencePanelChoices {
+  if (!isObject(value)) {
+    return false;
+  }
+  if (
+    value.selectedOptionIds !== undefined &&
+    (!Array.isArray(value.selectedOptionIds) ||
+      !value.selectedOptionIds.every((id) => isNonEmptyString(id)))
+  ) {
+    return false;
+  }
+  if (value.fieldValues !== undefined) {
+    if (!isObject(value.fieldValues)) {
+      return false;
+    }
+    for (const fieldValue of Object.values(value.fieldValues)) {
+      if (typeof fieldValue !== "string") {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+function isPanelOptionArray(value: unknown): value is PresencePanelOption[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (item) =>
+        isObject(item) &&
+        isNonEmptyString(item.id) &&
+        typeof item.label === "string" &&
+        (item.detail === undefined || typeof item.detail === "string") &&
+        (item.selected === undefined || typeof item.selected === "boolean"),
+    )
+  );
+}
+
+function isPanelFieldArray(value: unknown): value is PresencePanelField[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (item) =>
+        isObject(item) &&
+        isNonEmptyString(item.key) &&
+        typeof item.label === "string" &&
+        (PRESENCE_PANEL_FIELD_CONTROLS as readonly unknown[]).includes(item.control) &&
+        (item.masked === undefined || typeof item.masked === "boolean") &&
+        (item.value === undefined || typeof item.value === "string"),
+    )
+  );
+}
+
+function isPanelRowArray(value: unknown): value is PresencePanelRow[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (item) =>
+        isObject(item) &&
+        typeof item.label === "string" &&
+        (item.status === "recorded" || item.status === "pending"),
+    )
+  );
+}
+
+function isBuddyEdge(value: unknown): boolean {
+  return value === "top" || value === "right" || value === "bottom" || value === "left";
+}
+
+function isHermesHydrateDraft(value: unknown): value is PresenceHermesHydrateDraft {
+  if (!isObject(value)) {
+    return false;
+  }
+  if (
+    typeof value.provider !== "string" ||
+    typeof value.apiBase !== "string" ||
+    typeof value.apiKey !== "string" ||
+    typeof value.model !== "string" ||
+    typeof value.systemPrompt !== "string" ||
+    !isUserPosture(value.posture) ||
+    !Array.isArray(value.enabledBuddyIds) ||
+    !value.enabledBuddyIds.every((id) => typeof id === "string" && id.length > 0)
+  ) {
+    return false;
+  }
+  if (!isObject(value.buddyEdges)) {
+    return false;
+  }
+  return Object.values(value.buddyEdges).every(isBuddyEdge);
 }
 
 function isPlatform(value: unknown): value is PresencePlatform {
@@ -757,7 +983,8 @@ function isValidForKind(kind: PresenceKind, raw: Record<string, unknown>): boole
         (raw.emotion === undefined || isEmotion(raw.emotion)) &&
         (raw.speech === undefined || typeof raw.speech === "string") &&
         (raw.platform === undefined || isPlatform(raw.platform)) &&
-        (raw.surfaces === undefined || isSurfaceDescriptorArray(raw.surfaces))
+        (raw.surfaces === undefined || isSurfaceDescriptorArray(raw.surfaces)) &&
+        (raw.hermesDraft === undefined || isHermesHydrateDraft(raw.hermesDraft))
       );
     case "output":
       return isValidOutputPayload(raw);
@@ -780,6 +1007,17 @@ function isValidForKind(kind: PresenceKind, raw: Record<string, unknown>): boole
         (raw.providerLabel === undefined || typeof raw.providerLabel === "string") &&
         (raw.route === undefined || isSurfaceRoute(raw.route))
       );
+    case "panel":
+      return (
+        isPanelSection(raw.section) &&
+        typeof raw.title === "string" &&
+        (raw.prompt === undefined || typeof raw.prompt === "string") &&
+        (raw.options === undefined || isPanelOptionArray(raw.options)) &&
+        (raw.fields === undefined || isPanelFieldArray(raw.fields)) &&
+        (raw.rows === undefined || isPanelRowArray(raw.rows)) &&
+        (raw.primaryLabel === undefined || typeof raw.primaryLabel === "string") &&
+        (raw.primaryPanel === undefined || isNonEmptyString(raw.primaryPanel))
+      );
     case "target_acquired":
       return (
         isNonEmptyString(raw.targetId) &&
@@ -799,7 +1037,10 @@ function isValidForKind(kind: PresenceKind, raw: Record<string, unknown>): boole
     case "clicked":
       return (
         (raw.button === undefined || raw.button === "primary" || raw.button === "secondary") &&
-        (raw.at === undefined || isPosition(raw.at))
+        (raw.at === undefined || isPosition(raw.at)) &&
+        // Additive (v0): a present-but-bad `panel` drops the whole cue, never widens it.
+        (raw.panel === undefined || isNonEmptyString(raw.panel)) &&
+        (raw.panelChoices === undefined || isPanelChoices(raw.panelChoices))
       );
     case "grabbed":
     case "dragged":
@@ -933,6 +1174,7 @@ export const presence = {
       speech?: string;
       platform?: PresencePlatform;
       surfaces?: PresenceSurfaceDescriptor[];
+      hermesDraft?: PresenceHermesHydrateDraft;
     },
     opts: EnvelopeOptions = {},
   ): PresenceHydrate {
@@ -980,6 +1222,22 @@ export const presence = {
   ): PresenceSurfaceActive {
     return envelope("surface_active", buddy, { ...payload }, opts) as PresenceSurfaceActive;
   },
+  panel(
+    buddy: string,
+    payload: {
+      section: PresencePanelSection;
+      title: string;
+      prompt?: string;
+      options?: PresencePanelOption[];
+      fields?: PresencePanelField[];
+      rows?: PresencePanelRow[];
+      primaryLabel?: string;
+      primaryPanel?: string;
+    },
+    opts: EnvelopeOptions = {},
+  ): PresencePanel {
+    return envelope("panel", buddy, { ...payload }, opts) as PresencePanel;
+  },
   targetAcquired(
     buddy: string,
     target: { targetId: string; title: string; appId: string; bounds: TargetBounds },
@@ -1010,10 +1268,15 @@ export const presence = {
   },
   clicked(
     buddy: string,
-    opts: { button?: PresencePointer; at?: PresencePosition } & EnvelopeOptions = {},
+    opts: {
+      button?: PresencePointer;
+      at?: PresencePosition;
+      panel?: string;
+      panelChoices?: PresencePanelChoices;
+    } & EnvelopeOptions = {},
   ): PresenceClicked {
-    const { button, at, ts } = opts;
-    return envelope("clicked", buddy, { button, at }, { ts }) as PresenceClicked;
+    const { button, at, panel, panelChoices, ts } = opts;
+    return envelope("clicked", buddy, { button, at, panel, panelChoices }, { ts }) as PresenceClicked;
   },
   grabbed(buddy: string, at: PresencePosition, opts: EnvelopeOptions = {}): PresenceGrabbed {
     return envelope("grabbed", buddy, { at }, opts) as PresenceGrabbed;

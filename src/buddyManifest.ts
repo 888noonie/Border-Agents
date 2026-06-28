@@ -140,6 +140,9 @@ export type EffectorId =
   | "open_gmail"
   | "open_calendar"
   | "open_vscode"
+  | "open_cursor"
+  | "open_claude_code"
+  | "open_agent_zero"
   // research — reach: surface sources and receipts, don't fabricate them
   | "web_search"
   | "open_source"
@@ -149,9 +152,12 @@ export type EffectorId =
   | "doc_build"
   | "slides_build"
   | "file_export"
-  // coding — act: touch the project
+  // coding — reach: open the tool; act: touch the project
+  | "open_terminal"
   | "terminal"
   | "repo_edit"
+  // connectors/coding — act: drive a native window the user already has open (pin/monitor/control)
+  | "commandeer"
   // voice — reach/act split on the device
   | "voice_in"
   | "voice_out"
@@ -194,7 +200,15 @@ export const EFFECTOR_SPECS: Record<EffectorId, EffectorSpec> = {
   open_github: reach("open_github", "Open GitHub", "Open a GitHub view; read-only until repo write is separately granted.", true),
   open_gmail: reach("open_gmail", "Open Gmail", "Open Gmail; drafting only, never send without explicit confirmation.", true),
   open_calendar: reach("open_calendar", "Open Calendar", "Open the calendar; propose events, never create without confirmation.", true),
-  open_vscode: reach("open_vscode", "Open in VS Code", "Open files/folders in the editor; no edits applied by this effector."),
+  // Launcher reach effectors — open a tool the user already has. Gated through
+  // GATED_WIRED_REACH_EFFECTORS below; the executor only spawns the app (detached),
+  // it never edits a file or runs a command.
+  open_vscode: { ...reach("open_vscode", "Open in VS Code", "Open files/folders in the editor; no edits applied by this effector."), wired: true },
+  open_cursor: { ...reach("open_cursor", "Open in Cursor", "Open files/folders in Cursor; no edits applied by this effector."), wired: true },
+  // CLI-agent launchers — spawn the user's own coding agent at the workspace, detached.
+  // Reach: they hand off to the real tool, never edit a file or run a command themselves.
+  open_claude_code: { ...reach("open_claude_code", "Claude Code", "Launch the user's Claude Code CLI at the workspace; runs no command itself, applies no edits."), wired: true },
+  open_agent_zero: { ...reach("open_agent_zero", "Agent Zero", "Launch the user's Agent Zero CLI at the workspace; runs no command itself, applies no edits."), wired: true },
   web_search: reach("web_search", "Web search", "Query the web and return sources; surface citations, do not assert unsourced facts."),
   open_source: reach("open_source", "Open source", "Open a cited source in the browser for the user to read."),
   // First live effector — read-only, gated. See GATED_WIRED_EFFECTORS below.
@@ -203,11 +217,17 @@ export const EFFECTOR_SPECS: Record<EffectorId, EffectorSpec> = {
   doc_build: act("doc_build", "Build document", "Assemble a document artifact; user reviews before any export or share."),
   slides_build: act("slides_build", "Build slides", "Assemble a slide deck; user reviews before any export or share."),
   file_export: act("file_export", "Export file", "Write an artifact to disk at a user-confirmed path. Confirm overwrite."),
+  open_terminal: { ...reach("open_terminal", "Open Terminal", "Launch a terminal window; runs no shell command by this effector. Distinct from the `terminal` act effector."), wired: true },
   terminal: act("terminal", "Run terminal command", "Execute a shell command. Highest-risk effector: requires per-command confirmation."),
   // First true `act` effector behind the membrane — gated through GATED_WIRED_ACT_EFFECTORS.
   // The gate authorizes the EFFECT (typed intent + target), not just the grant; protected
   // targets (AGENTS.md, src/core, deps, .git) are hard-blocked even after confirmation.
   repo_edit: { ...act("repo_edit", "Edit repository", "Apply code changes via a typed ActionIntent; protected targets are hard-blocked; surface a reviewable diff before writing."), wired: true },
+  // Drive a native window the user already has open. The frame driver carries out the mechanism
+  // (raise via toplevel-manager; type via virtual-keyboard) — neither has an OS consent dialog,
+  // so this gate IS the only safety boundary. High-power: pin (follow) / monitor (raise+read) /
+  // control (raise+type). Authorized as a typed intent (operation = mode, target = the window).
+  commandeer: { ...act("commandeer", "Commandeer window", "Pin/monitor/control a native window via the frame driver; keystroke injection has no OS consent, so confirmation + posture + receipts are load-bearing here."), wired: true },
   voice_in: reach("voice_in", "Listen (voice)", "Capture microphone input on an explicit push-to-talk; no always-on listening.", true),
   voice_out: act("voice_out", "Speak (voice)", "Synthesize speech output. User controls volume and can mute instantly."),
   summarize_long: act("summarize_long", "Summarise long context", "Condense text the user already has; never invent content not in the source."),
@@ -235,6 +255,12 @@ export type BuddyManifestEntry = {
   persona?: string;
 };
 
+// Granted to EVERY buddy. On-device private local chat is a universal capability — any buddy
+// can drop into a local, nothing-leaves-the-machine conversation regardless of its role. It is
+// a `reach` effector to a local provider (no effect applied, data stays on the machine), so it
+// is safe to hand to all. New buddies inherit it automatically via the spread below.
+export const UNIVERSAL_EFFECTORS: readonly EffectorId[] = ["local_chat"];
+
 export const BUDDY_MANIFEST: Record<string, BuddyManifestEntry> = {
   forge: {
     schemaVersion: 1,
@@ -243,7 +269,7 @@ export const BUDDY_MANIFEST: Record<string, BuddyManifestEntry> = {
     role: "Build & Code",
     capability: "coding",
     routes: { primary: ["claude", "codex"], fallback: ["gpt"], local: ["lm_studio"] },
-    effectors: ["open_github", "open_vscode", "repo_edit", "terminal"],
+    effectors: [...UNIVERSAL_EFFECTORS, "open_github", "open_vscode", "open_cursor", "open_claude_code", "open_agent_zero", "open_terminal", "repo_edit", "terminal", "commandeer"],
     reachFirst: true,
     persona: "crab",
   },
@@ -254,7 +280,7 @@ export const BUDDY_MANIFEST: Record<string, BuddyManifestEntry> = {
     role: "Check & Verify",
     capability: "research",
     routes: { primary: ["gpt", "grok", "web"], fallback: ["claude", "gemini"] },
-    effectors: ["web_search", "open_source", "receipt_review"],
+    effectors: [...UNIVERSAL_EFFECTORS, "web_search", "open_source", "receipt_review"],
     reachFirst: true,
     persona: "owl",
   },
@@ -265,8 +291,9 @@ export const BUDDY_MANIFEST: Record<string, BuddyManifestEntry> = {
     role: "Create & Package",
     capability: "creative",
     routes: { primary: ["gpt", "gemini"], fallback: ["claude"] },
-    effectors: ["image_gen", "doc_build", "slides_build", "file_export"],
-    reachFirst: false, // creation is inherently `act`; no reach effectors expected
+    // Creation is inherently `act`; the only reach grant is the universal private-chat one.
+    effectors: [...UNIVERSAL_EFFECTORS, "image_gen", "doc_build", "slides_build", "file_export"],
+    reachFirst: false,
   },
   nexus: {
     schemaVersion: 1,
@@ -276,6 +303,7 @@ export const BUDDY_MANIFEST: Record<string, BuddyManifestEntry> = {
     capability: "connectors",
     routes: { primary: ["openrouter"], fallback: ["custom"] },
     effectors: [
+      ...UNIVERSAL_EFFECTORS,
       "open_chatgpt",
       "open_claude",
       "open_grok",
@@ -294,7 +322,7 @@ export const BUDDY_MANIFEST: Record<string, BuddyManifestEntry> = {
     role: "Summarise & Explain",
     capability: "writing",
     routes: { primary: ["gpt"], fallback: ["claude"], local: ["lm_studio", "ollama"] },
-    effectors: ["summarize_long", "voice_out", "local_chat"],
+    effectors: [...UNIVERSAL_EFFECTORS, "summarize_long", "voice_out"],
     reachFirst: false, // transforms text the user already has
   },
 };
@@ -310,7 +338,24 @@ export const BUDDY_MANIFEST: Record<string, BuddyManifestEntry> = {
 //                intent schema and an execution-outcome receipt (and the gate/soul suites
 //                prove the no-execute-on-block invariant). This is the only way an `act`
 //                effector goes live — never by flipping a spec in place.
-export const GATED_WIRED_REACH_EFFECTORS: ReadonlySet<EffectorId> = new Set<EffectorId>(["receipt_review", "local_chat"]);
+// Launcher reach effectors — spawn a GUI app or CLI agent the user already has, detached.
+// The single source of truth for "this reach effector opens an external tool" (consumed by
+// the soul-server executors, the confirm-once-per-session set, and the surface hydration that
+// tags a launcher surface kind on the wire). A subset of the reach lane below.
+export const LAUNCHER_REACH_EFFECTORS: ReadonlySet<EffectorId> = new Set<EffectorId>([
+  "open_vscode",
+  "open_cursor",
+  "open_claude_code",
+  "open_agent_zero",
+  "open_terminal",
+]);
+
+export const GATED_WIRED_REACH_EFFECTORS: ReadonlySet<EffectorId> = new Set<EffectorId>([
+  "receipt_review",
+  "local_chat",
+  // Launchers — open a tool the user already has, detached. Read-only hand-off.
+  ...LAUNCHER_REACH_EFFECTORS,
+]);
 
 export interface GatedActEffector {
   id: EffectorId;
@@ -322,6 +367,7 @@ export interface GatedActEffector {
 
 export const GATED_WIRED_ACT_EFFECTORS: readonly GatedActEffector[] = [
   { id: "repo_edit", requiresIntentSchema: true, requiresOutcomeReceipt: true },
+  { id: "commandeer", requiresIntentSchema: true, requiresOutcomeReceipt: true },
 ];
 
 // The union of both lanes — every effector allowed to ship `wired: true`.

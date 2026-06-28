@@ -306,6 +306,12 @@ effectors?: { id: string; granted: boolean }[];
 
 **Status (2026-06-25): Slices 1–4 + Phase C are DONE, Opus-audited, and LANDED on `main`** (PRs #6–#11 merged; `main` tree-identical to the former `slice-4` tip; `tsc` clean, vitest 222 green). **Slice 5 remains charter (design intent), not committed scope, until the next fork is explicitly chosen. Phase C protocol fields are frozen — COMPASS additive fields must not break golden fixtures or Playwright specs.**
 
+**Update (2026-06-26):** On the presence/Step-4 track (not a COMPASS slice), the soul-gated
+`commandeer` screen effector landed end to end (driver enumerate/activate/type ·
+`targets_available`/`commandeer` wire · soul act gate · body two-phase P/M/C picker), plus a
+body-local settings panel (Colour/Size editable; Posture/Buddy read-only). Counts moved with it:
+vitest **236**, `desktop-body` cargo test **84**. See `docs/STEP4_WIRE_THE_SOUL_PLAN.md` §0c.
+
 **Phase C browser proof (landed):** `e2e/governance-act-effector.spec.ts` proves the live Forge execution membrane for `repo_edit`: protected target blocked, traversal blocked, safe target without action-backing blocked, and the same safe target with action-backing flowing `needs_confirmation → Confirm → allow` with an execution receipt. Gate: full Playwright suite **12 passed**.
 
 | Slice | Deliverable | Tests gate | Status |

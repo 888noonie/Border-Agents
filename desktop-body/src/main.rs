@@ -17,13 +17,13 @@
 //!       BB_OUTPUT_INDEX=1 cargo run     # second monitor
 //!       BB_MARGIN_LEFT=400 BB_MARGIN_TOP=200 cargo run
 //!       BB_COLOR="#7c5cff" cargo run    # recolour the clay
-//! Drag the head to move/dock; click the head to chat; drag the feet to stretch.
+//! Drag the body to move/dock; click the head to chat; drag the feet to stretch.
 
 mod presence;
 mod render;
 
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     io::Write,
     process::{Command, Stdio},
     time::{Duration, Instant},
@@ -33,7 +33,7 @@ use calloop::channel::Event as ChannelEvent;
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{EventLoop, LoopSignal};
 use calloop_wayland_source::WaylandSource;
-use render::{BodyView, BumpEdge, Emotion, Facing, PerimeterId, Sprite, TorsoAction};
+use render::{BodyView, BumpEdge, Emotion, Facing, OnboardingHit, PerimeterId, Sprite, TorsoAction};
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState, Region},
     delegate_compositor, delegate_keyboard, delegate_layer, delegate_output, delegate_pointer,
@@ -93,7 +93,9 @@ fn next_cyclable_index(order: &[presence::SurfaceDescriptor], start: usize, delt
     let start = start as isize;
     for step in 1..=len {
         let idx = (start + delta * step).rem_euclid(len) as usize;
-        if order[idx].availability != "unwired" {
+        // Skip unwired surfaces (can't activate) and launchers (those open a tool, not a
+        // surface — reachable only via the bloom dial, never the arrow cycle).
+        if order[idx].availability != "unwired" && !order[idx].is_launcher() {
             return Some(idx);
         }
     }
@@ -143,6 +145,107 @@ fn buddy_env_key(buddy: &str, suffix: &str) -> String {
 
 fn buddy_env(buddy: &str, suffix: &str) -> Option<String> {
     std::env::var(buddy_env_key(buddy, suffix)).ok().map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
+
+/// Body-local clay palette the settings panel cycles. Pure presentation (AGENTS.md law 7) — the
+/// soul has no say in the buddy's colour. The first entry is the Morph terracotta default.
+const COLOR_SWATCHES: &[([u8; 3], &str)] = &[
+    ([201, 109, 60], "Terracotta"),
+    ([96, 140, 180], "Slate"),
+    ([120, 168, 110], "Sage"),
+    ([176, 116, 180], "Plum"),
+    ([214, 168, 78], "Amber"),
+    ([196, 92, 92], "Rust"),
+];
+
+/// Body-local size presets the settings panel cycles (body_len in px). Mirrors what feet-drag does,
+/// just as discrete steps. Values stay within `render::BODY_LEN_MIN..=BODY_LEN_MAX`.
+const SIZE_PRESETS: &[(f32, &str)] = &[(90.0, "Compact"), (140.0, "Default"), (220.0, "Tall")];
+
+/// Name of the swatch matching `color`, or "Custom" when it came from `BB_COLOR` off-palette.
+fn color_swatch_name(color: [u8; 3]) -> &'static str {
+    COLOR_SWATCHES.iter().find(|(c, _)| *c == color).map(|(_, n)| *n).unwrap_or("Custom")
+}
+
+/// The next swatch after `color` (wrapping); an off-palette colour jumps to the first swatch.
+fn next_color(color: [u8; 3]) -> [u8; 3] {
+    let next = match COLOR_SWATCHES.iter().position(|(c, _)| *c == color) {
+        Some(i) => (i + 1) % COLOR_SWATCHES.len(),
+        None => 0,
+    };
+    COLOR_SWATCHES[next].0
+}
+
+/// Name of the size preset matching `body_len`, or "Custom" (e.g. a feet-drag length).
+fn size_preset_name(body_len: f32) -> &'static str {
+    SIZE_PRESETS.iter().find(|(v, _)| (*v - body_len).abs() < 0.5).map(|(_, n)| *n).unwrap_or("Custom")
+}
+
+/// The next size preset after the one nearest `body_len` (wrapping), so cycling from a custom
+/// feet-drag length lands on a sensible step rather than jumping arbitrarily.
+fn next_size(body_len: f32) -> f32 {
+    let nearest = SIZE_PRESETS
+        .iter()
+        .enumerate()
+        .min_by(|a, b| {
+            (a.1 .0 - body_len).abs().partial_cmp(&(b.1 .0 - body_len).abs()).unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    SIZE_PRESETS[(nearest + 1) % SIZE_PRESETS.len()].0
+}
+
+/// Title-cased posture label for display ("work" → "Work").
+fn posture_label(posture: &str) -> String {
+    render::title_case(posture)
+}
+
+/// Pure margin clamp for the figure bounding box: returns the (left, top) margins that keep at
+/// least `keep` pixels of `fig` visible inside a screen of size `(sw, sh)`. Margins may go
+/// negative to reach the left/top edges. When the screen is smaller than `keep`, the valid
+/// range collapses so the result still degrades to a sane in-bounds value. Extracted from
+/// `App::clamp_margins` so the geometry is unit-testable without a live `App`.
+fn clamp_figure_margins(
+    margin_left: f64,
+    margin_top: f64,
+    fig: render::Rect,
+    (sw, sh): (f64, f64),
+    keep: f64,
+) -> (f64, f64) {
+    let min_left = keep - (fig.x + fig.w) as f64;
+    let max_left = (sw - keep - fig.x as f64).max(min_left);
+    let min_top = keep - (fig.y + fig.h) as f64;
+    let max_top = (sh - keep - fig.y as f64).max(min_top);
+    (margin_left.clamp(min_left, max_left), margin_top.clamp(min_top, max_top))
+}
+
+/// Pure tuck-edge selector: returns the nearest screen edge whose gap to the figure bbox is
+/// below `threshold`, or `None`. Symmetric across all four edges because it measures to the
+/// figure bbox (which the drag clamp keeps on-screen), not the head — so the right/top/bottom
+/// edges tuck just as eagerly as the left always did. Extracted from
+/// `App::nearest_edge_within_threshold` for unit testing without a live `App`.
+fn nearest_tuck_edge(
+    margin_left: f64,
+    margin_top: f64,
+    fig: render::Rect,
+    (sw, sh): (f64, f64),
+    threshold: f64,
+) -> Option<presence::Edge> {
+    let left = margin_left + fig.x as f64;
+    let top = margin_top + fig.y as f64;
+    let right = sw - (margin_left + (fig.x + fig.w) as f64);
+    let bottom = sh - (margin_top + (fig.y + fig.h) as f64);
+    let candidates = [
+        (presence::Edge::Left, left),
+        (presence::Edge::Right, right),
+        (presence::Edge::Top, top),
+        (presence::Edge::Bottom, bottom),
+    ];
+    candidates
+        .into_iter()
+        .filter(|(_, d)| *d < threshold)
+        .min_by(|a, b| a.1.total_cmp(&b.1))
+        .map(|(edge, _)| edge)
 }
 
 fn copy_to_clipboard(text: &str) -> Result<(), String> {
@@ -422,6 +525,37 @@ fn classify_torso_surface(text: &str) -> TorsoSurface {
     }
 }
 
+/// The bubble line for `text` that has been loaded into the torso: a short pointer for the
+/// surfaces that live there, or the text itself when it is small enough to read inline.
+fn loaded_bubble(text: &str) -> String {
+    match classify_torso_surface(text) {
+        TorsoSurface::Image { .. } => "Image ready in torso.".to_string(),
+        TorsoSurface::ImageStub { .. } => {
+            "Here is your picture. Click to open. Tell me what next?".to_string()
+        }
+        TorsoSurface::FileStub { .. } => "File stub ready in torso.".to_string(),
+        TorsoSurface::Text { .. } => {
+            if text.len() > 56 || text.contains('\n') {
+                "Reply ready in torso.".to_string()
+            } else {
+                text.to_string()
+            }
+        }
+        TorsoSurface::Session => text.to_string(),
+    }
+}
+
+/// The bubble line for a `say`. When a reply was awaited the text was loaded into the torso, so the
+/// bubble may point at it; otherwise nothing was loaded and the bubble must carry the text itself —
+/// it must never promise a torso reply that is not there.
+fn reply_bubble(awaiting_reply: bool, text: &str) -> String {
+    if awaiting_reply {
+        loaded_bubble(text)
+    } else {
+        text.to_string()
+    }
+}
+
 trait IfEmpty {
     fn if_empty(self, fallback: &str) -> String;
 }
@@ -507,10 +641,13 @@ fn main() {
         exit: false,
         presence_out: None,
         tucked: None,
+        tucked_view: TuckedView::HeadOnly,
         frame_target: None,
         pinned_to_target: false,
         pinned_offset: None,
         pinned_bubble_w: env_i32("BB_PINNED_BUBBLE_W", 248) as f32,
+        pending_commandeer: None,
+        pin_on_target: None,
         keyboard: None,
         modifiers: Modifiers::default(),
         input_text: String::new(),
@@ -521,6 +658,14 @@ fn main() {
         active_surface: "session".to_string(),
         surfaces: Vec::new(),
         surface_bloom_open: false,
+        picker: None,
+        available_targets: Vec::new(),
+        settings_open: false,
+        onboarding_panel: None,
+        // The interior control list is the primary surface for perimeter controls now — the
+        // external ring is gone, so the labeled in-torso list shows by default. Torso scroll
+        // toggles it away to reveal the torso output panel.
+        interior_open: true,
         active_posture: "work".to_string(),
         active_provider: None,
         active_locality: None,
@@ -574,7 +719,7 @@ fn main() {
     app.layer = Some(layer);
 
     eprintln!(
-        "[bb-desktop-body] clay figure up: {}x{} @ margin(L={}, T={}){} — drag the head to move; click to chat; drag the feet to stretch",
+        "[bb-desktop-body] clay figure up: {}x{} @ margin(L={}, T={}){} — drag the body to move/dock; click the head to chat; drag the feet to stretch",
         app.width,
         app.height,
         app.margin_left as i32,
@@ -634,16 +779,172 @@ struct PressState {
     bloom_started: bool,
 }
 
+/// Local mirror of the wizard Host's `panel` cue plus the user's in-progress picks. The body
+/// stores draft state for rendering only; confirming emits the Host-stamped `primary_panel` token
+/// without inventing it (AGENTS.md law 7).
+struct OnboardingPanelState {
+    section: String,
+    title: String,
+    prompt: Option<String>,
+    options: Vec<presence::PanelOption>,
+    fields: Vec<presence::PanelField>,
+    rows: Vec<presence::PanelRow>,
+    primary_label: Option<String>,
+    primary_panel: Option<String>,
+    option_selected: Vec<bool>,
+    field_drafts: Vec<String>,
+    focused_field: Option<usize>,
+}
+
+impl OnboardingPanelState {
+    fn from_cue(
+        section: String,
+        title: String,
+        prompt: Option<String>,
+        options: Vec<presence::PanelOption>,
+        fields: Vec<presence::PanelField>,
+        rows: Vec<presence::PanelRow>,
+        primary_label: Option<String>,
+        primary_panel: Option<String>,
+    ) -> Self {
+        Self {
+            option_selected: options.iter().map(|o| o.selected).collect(),
+            field_drafts: fields
+                .iter()
+                .map(|f| f.value.clone().unwrap_or_default())
+                .collect(),
+            focused_field: None,
+            section,
+            title,
+            prompt,
+            options,
+            fields,
+            rows,
+            primary_label,
+            primary_panel,
+        }
+    }
+
+    fn apply_cue(
+        previous: Option<Self>,
+        section: String,
+        title: String,
+        prompt: Option<String>,
+        options: Vec<presence::PanelOption>,
+        fields: Vec<presence::PanelField>,
+        rows: Vec<presence::PanelRow>,
+        primary_label: Option<String>,
+        primary_panel: Option<String>,
+    ) -> Self {
+        if let Some(mut panel) = previous {
+            if panel.section == section {
+                panel.merge_metadata(title, prompt, options, fields, rows, primary_label, primary_panel);
+                return panel;
+            }
+        }
+        Self::from_cue(
+            section,
+            title,
+            prompt,
+            options,
+            fields,
+            rows,
+            primary_label,
+            primary_panel,
+        )
+    }
+
+    fn merge_metadata(
+        &mut self,
+        title: String,
+        prompt: Option<String>,
+        options: Vec<presence::PanelOption>,
+        fields: Vec<presence::PanelField>,
+        rows: Vec<presence::PanelRow>,
+        primary_label: Option<String>,
+        primary_panel: Option<String>,
+    ) {
+        let prior_selected: HashMap<String, bool> = self
+            .options
+            .iter()
+            .zip(self.option_selected.iter())
+            .map(|(option, selected)| (option.id.clone(), *selected))
+            .collect();
+        let prior_fields: HashMap<String, String> = self
+            .fields
+            .iter()
+            .zip(self.field_drafts.iter())
+            .map(|(field, draft)| (field.key.clone(), draft.clone()))
+            .collect();
+
+        self.title = title;
+        self.prompt = prompt;
+        self.options = options;
+        self.fields = fields;
+        self.rows = rows;
+        self.primary_label = primary_label;
+        self.primary_panel = primary_panel;
+        self.option_selected = self
+            .options
+            .iter()
+            .map(|option| prior_selected.get(&option.id).copied().unwrap_or(option.selected))
+            .collect();
+        self.field_drafts = self
+            .fields
+            .iter()
+            .map(|field| {
+                prior_fields
+                    .get(&field.key)
+                    .cloned()
+                    .unwrap_or_else(|| field.value.clone().unwrap_or_default())
+            })
+            .collect();
+    }
+
+    fn click_choices(&self) -> presence::PanelClickChoices {
+        let selected_option_ids = self
+            .options
+            .iter()
+            .zip(self.option_selected.iter())
+            .filter_map(|(option, selected)| (*selected).then(|| option.id.clone()))
+            .collect();
+        let field_values = self
+            .fields
+            .iter()
+            .zip(self.field_drafts.iter())
+            .map(|(field, draft)| (field.key.clone(), draft.clone()))
+            .collect();
+        presence::PanelClickChoices {
+            selected_option_ids,
+            field_values,
+        }
+    }
+
+    fn single_select(&self) -> bool {
+        matches!(self.section.as_str(), "connect" | "posture")
+    }
+}
+
 #[derive(Clone, Copy, PartialEq)]
 enum PressTarget {
     Head,
+    /// The clay body (torso, arms, legs) outside any control — a move handle like the head,
+    /// so a buddy whose head was dragged off-screen can still be grabbed and pulled back. Unlike
+    /// the head, a tap here does NOT toggle chat (only a drag moves the buddy).
+    Body,
     Input,
-    Paste,
-    /// The on-body Review / Confirm governance button (visible while chat is open).
-    Review,
-    /// The on-body Edit / Confirm governance button — emits a typed `repo_edit` intent.
-    Edit,
-    Perimeter(PerimeterId),
+    /// A row of the interior (in-torso) control list — toggled by the Torso scroll action.
+    /// Every perimeter control now lives here: surfaces always, Paste/Review/Edit when chat is
+    /// open. Dispatches through `on_perimeter_control` (surfaces) or the chat-control handlers.
+    Interior(PerimeterId),
+    /// A row of the body-local settings panel (colour/size editable; posture/buddy read-only).
+    SettingsRow(usize),
+    /// A selectable row in the wizard onboarding panel (provider/posture/buddy toggle).
+    OnboardingOption(usize),
+    /// A field row in the onboarding panel (paste-key credential, model display).
+    OnboardingField(usize),
+    /// The onboarding panel's primary confirm button (emits `clicked{panel:*}`).
+    OnboardingPrimary,
     ReceiptRail(usize),
     SurfaceBloom(usize),
     TorsoAction(TorsoAction),
@@ -653,14 +954,121 @@ enum PressTarget {
     Outside,
 }
 
+/// The right-click commandeer picker, reusing the surface-bloom dial wholesale (zero render
+/// changes): only the descriptor list and the selection routing differ. Two phases — first pick
+/// WHICH window (from the driver's `targets_available`), then pick WHAT to do with it (P/M/C).
+/// Held in `App::picker`; `None` means the dial (if open) is the surface switcher instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PickerPhase {
+    /// Choose a window to act on, one pill per `available_targets` entry.
+    Windows,
+    /// Choose Pin / Monitor / Control for the already-chosen `target_id`.
+    Modes { target_id: String, name: String },
+}
+
+/// What selecting a P/M/C entry does. The law-7 boundary in one testable place: `LocalPin` is
+/// pure presentation (unpinning the currently-pinned window — no soul, no gate), while every
+/// other mode (`pin`/`monitor`/`control`) is a screen *action* (retarget / raise / type) that
+/// MUST be requested as the soul-gated `commandeer` effector — the body never touches the window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommandeerRoute {
+    /// Local presentation toggle — only used to UNPIN the currently-pinned window.
+    LocalUnpin,
+    /// Soul-gated `commandeer` effector request, carrying the mode the driver will carry out.
+    Gated(&'static str),
+}
+
+/// Classify a P/M/C menu choice for a chosen window. `pin` on the window we are CURRENTLY pinned
+/// to is a local unpin (the driver has no unpin verb); every other choice — including pinning a
+/// different window — routes through the soul-gated `commandeer` effector. Unknown modes route
+/// nowhere (defensive — the menu only ever emits these three ids).
+fn commandeer_route(mode: &str, is_currently_pinned_target: bool) -> Option<CommandeerRoute> {
+    match mode {
+        "pin" if is_currently_pinned_target => Some(CommandeerRoute::LocalUnpin),
+        "pin" => Some(CommandeerRoute::Gated("pin")),
+        "monitor" => Some(CommandeerRoute::Gated("monitor")),
+        "control" => Some(CommandeerRoute::Gated("control")),
+        _ => None,
+    }
+}
+
+/// The picker's first phase as bloom descriptors: one pill per enumerable window. Synthetic
+/// `window:<targetId>` ids the selection handler advances on; label is the title (falling back to
+/// the app id for untitled windows). All `available` — they are all actionable. NOTE: the dial
+/// caps at `SURFACE_BLOOM_MAX_ITEMS` (10 — five per side) pills, so only the first ten windows
+/// show; this is the accepted cost of reusing the dial wholesale (paging is a later refinement).
+fn window_picker_descriptors(targets: &[presence::TargetEntry]) -> Vec<presence::SurfaceDescriptor> {
+    targets
+        .iter()
+        .map(|t| presence::SurfaceDescriptor {
+            id: format!("window:{}", t.target_id),
+            label: if t.title.trim().is_empty() { t.app_id.clone() } else { t.title.clone() },
+            availability: "available".to_string(),
+            kind: "surface".to_string(),
+            effector: None,
+        })
+        .collect()
+}
+
+/// The picker's second phase as bloom descriptors: P/M/C for the chosen window. Synthetic
+/// `commandeer:<mode>` ids the selection handler routes on. Pin reads as a surface-switch pill;
+/// Monitor/Control wear the launcher styling (the "reach / act" affordance), matching that they
+/// hand a gated effect to the soul. The Pin entry shows "Unpin" only when the chosen window is
+/// the one currently pinned.
+fn commandeer_mode_descriptors(chosen_is_pinned: bool) -> Vec<presence::SurfaceDescriptor> {
+    let pin_label = if chosen_is_pinned { "Unpin" } else { "Pin" };
+    [
+        ("commandeer:pin", pin_label, "surface"),
+        ("commandeer:monitor", "Monitor", "launcher"),
+        ("commandeer:control", "Control", "launcher"),
+    ]
+    .into_iter()
+    .map(|(id, label, kind)| presence::SurfaceDescriptor {
+        id: id.to_string(),
+        label: label.to_string(),
+        availability: "available".to_string(),
+        kind: kind.to_string(),
+        effector: None,
+    })
+    .collect()
+}
+
+/// How much of a tucked buddy peeks out, cycled by right-clicking the bump. `HeadOnly` is the
+/// resting tuck (just the sleeping bump); `Bubble` adds the latest speech beside it; `BubbleInput`
+/// also opens an input field so you can talk to the buddy without fully summoning it. Right-click
+/// advances HeadOnly → Bubble → BubbleInput → HeadOnly (the order the user reads them in).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TuckedView {
+    HeadOnly,
+    Bubble,
+    BubbleInput,
+}
+
+impl TuckedView {
+    fn next(self) -> Self {
+        match self {
+            TuckedView::HeadOnly => TuckedView::Bubble,
+            TuckedView::Bubble => TuckedView::BubbleInput,
+            TuckedView::BubbleInput => TuckedView::HeadOnly,
+        }
+    }
+    fn shows_bubble(self) -> bool {
+        matches!(self, TuckedView::Bubble | TuckedView::BubbleInput)
+    }
+    fn shows_input(self) -> bool {
+        matches!(self, TuckedView::BubbleInput)
+    }
+}
+
 fn is_surface_bloom_press(target: PressTarget) -> bool {
+    // The hold-to-bloom surface dial opens from a surface control press. The external perimeter
+    // ring is retired, so the trigger fires from the same controls living inside the torso as
+    // interior rows.
     matches!(
         target,
-        PressTarget::Perimeter(
+        PressTarget::Interior(
             PerimeterId::ArrowN
-                | PerimeterId::ArrowE
                 | PerimeterId::ArrowS
-                | PerimeterId::ArrowW
                 | PerimeterId::Quick0
                 | PerimeterId::Quick1
                 | PerimeterId::Quick2
@@ -732,6 +1140,10 @@ struct App {
     session_note: String,
     awaiting_reply: bool,
     chat_open: bool,
+    /// The "interior" view: perimeter controls re-laid-out as a labeled list INSIDE the torso
+    /// panel, toggled by the Torso scroll action. While open, the torso output is hidden and a
+    /// press inside the torso hits a labeled row instead of the body-drag handle.
+    interior_open: bool,
     configured: bool,
     press: Option<PressState>,
     drag: bool,
@@ -742,6 +1154,9 @@ struct App {
     /// When `Some`, the buddy is tucked against this edge — shown as a minimized bump,
     /// input shrunk to the bump, clicking it summons the buddy back out.
     tucked: Option<presence::Edge>,
+    /// How much the tucked buddy peeks out (head-only / +bubble / +input). Right-clicking the
+    /// bump cycles it; only meaningful while `tucked` is `Some`. Reset to head-only on each tuck.
+    tucked_view: TuckedView,
     /// When `Some`, a platform driver has identified a native OS window that Hermes
     /// can be pinned to. This is tracking state only; right-click toggles presentation.
     frame_target: Option<FrameTarget>,
@@ -752,6 +1167,13 @@ struct App {
     pinned_offset: Option<(f64, f64)>,
     /// Resizable pinned bubble width; env-tunable now, drag handle later.
     pinned_bubble_w: f32,
+    /// The `(target_id, mode)` of the commandeer request currently in flight, set when the
+    /// body asks the soul and read when the `allow` returns. Lets the body act on the
+    /// authorized intent (e.g. engage pin) without the body ever deciding authority itself.
+    pending_commandeer: Option<(String, String)>,
+    /// A soul-authorized `pin` whose target window has not yet been acquired by the driver.
+    /// When the matching `target_acquired` arrives the body engages pinned presentation.
+    pin_on_target: Option<String>,
     /// Keyboard, acquired when the seat advertises the capability. Drives the on-body
     /// text input that replaces the old "Say hello" button.
     keyboard: Option<wl_keyboard::WlKeyboard>,
@@ -781,6 +1203,18 @@ struct App {
     surfaces: Vec<presence::SurfaceDescriptor>,
     /// Local hold-to-bloom dial state; selection still emits `surface_request`.
     surface_bloom_open: bool,
+    /// When the open dial is the right-click commandeer picker (not the surface switcher), which
+    /// phase it is in. `None` → the dial shows surfaces. Reuses the bloom render/hit-test path.
+    picker: Option<PickerPhase>,
+    /// Body-local settings panel open over the torso (colour/size editable; posture/buddy shown
+    /// read-only). Reached from the dial's Customize entry. Pure presentation state (law 7).
+    settings_open: bool,
+    /// Wizard onboarding form section soul-pushed via `panel` cues (Build C). When present it owns
+    /// the torso over settings, interior, and output views.
+    onboarding_panel: Option<OnboardingPanelState>,
+    /// The full enumerable window list pushed by the driver's `targets_available`, the data behind
+    /// the picker's first phase. The body only renders these as choices (AGENTS.md law 7).
+    available_targets: Vec<presence::TargetEntry>,
     active_posture: String,
     active_provider: Option<String>,
     /// `local | cloud` from the last `surface_active.route.locality`, drives the passport
@@ -809,14 +1243,6 @@ fn edge_to_bump(edge: presence::Edge) -> BumpEdge {
         presence::Edge::Bottom => BumpEdge::Bottom,
         presence::Edge::Left => BumpEdge::Left,
     }
-}
-
-fn active_perimeter_controls_for(chat_open: bool, layout: render::Layout) -> Vec<(PerimeterId, render::Rect)> {
-    layout
-        .perimeter_controls()
-        .into_iter()
-        .filter(|(id, _)| chat_open || !matches!(id, PerimeterId::Paste | PerimeterId::Review | PerimeterId::Edit))
-        .collect()
 }
 
 fn pick_output(app: &App) -> Option<wl_output::WlOutput> {
@@ -991,7 +1417,124 @@ impl App {
         for (slot, id) in SURFACE_QUICK.iter().take(4).enumerate() {
             dim_quick[slot] = self.surface_availability(id) == "unwired";
         }
-        let bloom_order = self.surface_bloom_surfaces();
+        // The interior list mirrors the perimeter ring: each row is a perimeter control plus
+        // a label. Built only when the interior view is toggled on. When chat is open, the
+        // chat-only controls (Paste/Review/Edit) are prepended so they come inside too — the
+        // whole perimeter ring lives in the torso, never stranded outside. Label strings are
+        // owned in `interior_texts` and borrowed by `interior_rows` for the render view's
+        // lifetime.
+        let interior_texts: Vec<String> = if self.interior_open {
+            let surfaces = self.ordered_surfaces();
+            let specs = Self::interior_row_specs(self.chat_open);
+            specs
+                .iter()
+                .map(|(id, _)| match *id {
+                    PerimeterId::Paste => "Paste".to_string(),
+                    PerimeterId::Review => "Review".to_string(),
+                    PerimeterId::Edit => "Edit".to_string(),
+                    PerimeterId::ArrowN => "Surfaces".to_string(),
+                    PerimeterId::ArrowS => "Surfaces".to_string(),
+                    PerimeterId::Add => "Customize".to_string(),
+                    PerimeterId::Quick0 | PerimeterId::Quick1 | PerimeterId::Quick2 | PerimeterId::Quick3 => {
+                        let idx = match id {
+                            PerimeterId::Quick0 => 0,
+                            PerimeterId::Quick1 => 1,
+                            PerimeterId::Quick2 => 2,
+                            PerimeterId::Quick3 => 3,
+                            _ => 0,
+                        };
+                        SURFACE_QUICK
+                            .get(idx)
+                            .and_then(|sid| surfaces.iter().find(|s| s.id == *sid))
+                            .map(|s| s.label.clone())
+                            .unwrap_or_else(|| (*SURFACE_QUICK.get(idx).unwrap_or(&"")).to_string())
+                    }
+                    _ => String::new(),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let interior_rows: Vec<render::InteriorRow<'_>> = if self.interior_open {
+            let specs = Self::interior_row_specs(self.chat_open);
+            specs
+                .iter()
+                .zip(interior_texts.iter())
+                .map(|((id, glyph), text)| {
+                    let dim = match *id {
+                        PerimeterId::Quick0 => dim_quick[0],
+                        PerimeterId::Quick1 => dim_quick[1],
+                        PerimeterId::Quick2 => dim_quick[2],
+                        PerimeterId::Quick3 => dim_quick[3],
+                        _ => false,
+                    };
+                    render::InteriorRow { id: *id, glyph, text: text.as_str(), dim }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
+        // Body-local settings panel rows (owned values, then borrowed into SettingsRow like the
+        // interior texts above). Editable: colour + size; read-only: posture + buddy (law 7).
+        let settings_data: Vec<(&'static str, String, bool)> = if self.settings_open {
+            vec![
+                ("Colour", color_swatch_name(self.color).to_string(), true),
+                ("Size", size_preset_name(self.body_len).to_string(), true),
+                ("Posture", posture_label(&self.active_posture), false),
+                ("Buddy", self.name_label.clone(), false),
+            ]
+        } else {
+            Vec::new()
+        };
+        let settings_rows: Vec<render::SettingsRow<'_>> = settings_data
+            .iter()
+            .map(|(label, value, editable)| render::SettingsRow { label, value: value.as_str(), editable: *editable })
+            .collect();
+        let mut onboarding_option_views = Vec::new();
+        let mut onboarding_field_displays = Vec::new();
+        let mut onboarding_field_views = Vec::new();
+        let mut onboarding_row_views = Vec::new();
+        let onboarding_view = self.onboarding_panel.as_ref().map(|panel| {
+            for (i, opt) in panel.options.iter().enumerate() {
+                onboarding_option_views.push(render::OnboardingOptionView {
+                    label: opt.label.as_str(),
+                    detail: opt.detail.as_deref(),
+                    selected: panel.option_selected.get(i).copied().unwrap_or(opt.selected),
+                });
+            }
+            for (i, field) in panel.fields.iter().enumerate() {
+                let draft = panel.field_drafts.get(i).map(String::as_str).unwrap_or("");
+                onboarding_field_displays.push(self.mask_onboarding_field_display(field, draft));
+            }
+            for (i, field) in panel.fields.iter().enumerate() {
+                onboarding_field_views.push(render::OnboardingFieldView {
+                    label: field.label.as_str(),
+                    display: onboarding_field_displays.get(i).map(String::as_str).unwrap_or(""),
+                    focused: panel.focused_field == Some(i),
+                    action: if field.control == "paste_key" {
+                        Some("Paste key")
+                    } else {
+                        None
+                    },
+                });
+            }
+            for row in &panel.rows {
+                onboarding_row_views.push(render::OnboardingRowView {
+                    label: row.label.as_str(),
+                    recorded: row.status == "recorded",
+                });
+            }
+            render::OnboardingPanelView {
+                title: panel.title.as_str(),
+                prompt: panel.prompt.as_deref(),
+                options: &onboarding_option_views,
+                fields: &onboarding_field_views,
+                summary_rows: &onboarding_row_views,
+                primary_label: panel.primary_label.as_deref(),
+                single_select: panel.single_select(),
+            }
+        });
+        let bloom_order = self.bloom_descriptors();
         let bloom_items: Vec<render::SurfaceDialItem<'_>> = if self.surface_bloom_open {
             bloom_order
                 .iter()
@@ -999,6 +1542,7 @@ impl App {
                     label: surface.label.as_str(),
                     availability: surface.availability.as_str(),
                     active: surface.id == self.active_surface,
+                    kind: surface.kind.as_str(),
                 })
                 .collect()
         } else {
@@ -1018,17 +1562,21 @@ impl App {
             torso_output: torso_output.as_render(torso_image),
             chat_open: self.chat_open,
             tucked: self.tucked.map(edge_to_bump),
+            tucked_show_bubble: self.tucked.is_some() && self.tucked_view.shows_bubble(),
+            tucked_show_input: self.tucked.is_some() && self.tucked_view.shows_input(),
             input_text: &input_text,
             input_placeholder: &input_placeholder,
             input_focused: self.input_focused,
             review_pending: self.pending_effector.as_deref() == Some("receipt_review"),
             edit_pending: self.pending_effector.as_deref() == Some("repo_edit"),
             posture_badge,
-            dim_quick,
             surface_bloom: &bloom_items,
             route_health: route_health.as_deref(),
             route_flash,
             receipt_rail: &receipt_rail_items,
+            interior_rows: if onboarding_view.is_some() { &[] } else { &interior_rows },
+            settings: if onboarding_view.is_some() { &[] } else { &settings_rows },
+            onboarding: onboarding_view.as_ref(),
             layout,
             pinned,
             frame: None,
@@ -1180,22 +1728,16 @@ impl App {
         self.update_input_region();
     }
 
-    fn bubble_for_surface(&self, text: &str) -> String {
-        match classify_torso_surface(text) {
-            TorsoSurface::Image { .. } => "Image ready in torso.".to_string(),
-            TorsoSurface::ImageStub { .. } => {
-                "Here is your picture. Click to open. Tell me what next?".to_string()
-            }
-            TorsoSurface::FileStub { .. } => "File stub ready in torso.".to_string(),
-            TorsoSurface::Text { .. } => {
-                if text.len() > 56 || text.contains('\n') {
-                    "Reply ready in torso.".to_string()
-                } else {
-                    text.to_string()
-                }
-            }
-            TorsoSurface::Session => text.to_string(),
+    fn say(&mut self, text: impl Into<String>) {
+        let text = text.into();
+        if self.awaiting_reply {
+            // A reply the buddy promised: load it into the torso and let the bubble point at it.
+            self.show_reply_in_torso(&text);
         }
+        // The bubble may never point at an empty torso: only say "…in torso" when something was
+        // actually loaded there (a reply was awaited); otherwise carry the text itself.
+        self.speech = Some(reply_bubble(self.awaiting_reply, &text));
+        self.update_input_region();
     }
 
     /// Reposition by rewriting anchor margins — a compositor texture move, never a
@@ -1271,22 +1813,23 @@ impl App {
         }
     }
 
-    /// Keep the buddy *head* fully on-screen — not just the surface edge — so it can
-    /// never slide off (the head sits centered inside a wider, mostly-transparent
-    /// surface). Margins are allowed to go negative to reach the left/top edges.
+    /// Keep the buddy figure on-screen — not just the head — so it can never be dragged
+    /// fully off (the whole clay body is a drag handle now, not only the head). At least
+    /// `DRAG_KEEP_VISIBLE` pixels of the figure bounding box must stay visible on each axis;
+    /// margins may go negative to reach the left/top edges. On a screen smaller than the
+    /// keep-visible sliver, the range collapses so the clamp still degrades sanely.
     fn clamp_margins(&mut self) {
-        let head = render::head_rect();
         let (sw, sh) = self.screen.unwrap_or((f64::MAX, f64::MAX));
-        let min_left = -(head.x as f64);
-        let max_left = (sw - (head.x + head.w) as f64).max(min_left);
-        let min_top = -(head.y as f64);
-        let max_top = (sh - (head.y + head.h) as f64).max(min_top);
-        self.margin_left = self.margin_left.clamp(min_left, max_left);
-        self.margin_top = self.margin_top.clamp(min_top, max_top);
-    }
-
-    fn active_perimeter_controls(&self, layout: render::Layout) -> Vec<(PerimeterId, render::Rect)> {
-        active_perimeter_controls_for(self.chat_open, layout)
+        let fig = render::figure_bbox(self.body_len);
+        let (left, top) = clamp_figure_margins(
+            self.margin_left,
+            self.margin_top,
+            fig,
+            (sw, sh),
+            render::DRAG_KEEP_VISIBLE as f64,
+        );
+        self.margin_left = left;
+        self.margin_top = top;
     }
 
     /// Input region = only the parts that should catch the pointer; everywhere else
@@ -1298,7 +1841,17 @@ impl App {
         // Tucked: only the bump catches the pointer — everything else is click-through,
         // so the screen space the buddy stepped aside from is truly freed.
         let rects = if let Some(edge) = self.tucked {
-            vec![self.tucked_bump_rect(edge).as_i32()]
+            let bump = edge_to_bump(edge);
+            let mut rects = vec![self.tucked_bump_rect(edge).as_i32()];
+            // The peek bubble/input must catch the pointer when shown, or they are click-through
+            // (the input never receives a press, and clicks fall to the window behind).
+            if self.tucked_view.shows_bubble() {
+                rects.push(render::tucked_bubble_rect(bump, self.width, self.height).as_i32());
+            }
+            if self.tucked_view.shows_input() {
+                rects.push(render::tucked_input_rect(bump, self.width, self.height).as_i32());
+            }
+            rects
         } else if let Some(pinned) = self.pinned_layout() {
             let mut rects = vec![pinned.head_rect().as_i32()];
             if self.speech.is_some() {
@@ -1318,11 +1871,10 @@ impl App {
             }
             rects.push(self.offset_rect_for_body(render::head_rect()).as_i32());
             rects.push(self.offset_rect_for_body(layout.feet_rect()).as_i32());
-            for (_, rect) in self.active_perimeter_controls(layout) {
-                rects.push(self.offset_rect_for_body(rect).as_i32());
-            }
+            // The external perimeter ring is retired — its controls live inside the torso as
+            // interior rows (added below when the interior view is open). No perimeter rects.
             if self.surface_bloom_open {
-                for rect in layout.surface_bloom_rects(self.surface_bloom_surfaces().len()) {
+                for rect in layout.surface_bloom_rects(self.bloom_descriptors().len()) {
                     rects.push(self.offset_rect_for_body(rect).as_i32());
                 }
             }
@@ -1331,6 +1883,23 @@ impl App {
             }
             if self.chat_open {
                 rects.push(self.offset_rect_for_body(layout.input_region_rect()).as_i32());
+            }
+            if self.interior_open {
+                for (_, rect) in layout.interior_rows() {
+                    rects.push(self.offset_rect_for_body(rect).as_i32());
+                }
+            }
+            // Settings panel rows must catch the pointer too, or the whole panel is click-through
+            // and its buttons never receive a press (the input region gates delivery).
+            if self.settings_open {
+                for rect in layout.interior_rows_for(self.settings_row_count()) {
+                    rects.push(self.offset_rect_for_body(rect).as_i32());
+                }
+            }
+            if self.onboarding_panel.is_some() {
+                for rect in self.onboarding_panel_rects(&layout) {
+                    rects.push(self.offset_rect_for_body(rect).as_i32());
+                }
             }
             rects.push(self.offset_rect_for_body(layout.torso_action_rect(TorsoAction::Expand)).as_i32());
             rects.push(self.offset_rect_for_body(layout.torso_action_rect(TorsoAction::Copy)).as_i32());
@@ -1415,6 +1984,26 @@ impl App {
                     .receipt_selected
                     .map(|i| i + 1)
                     .filter(|&i| i < self.receipt_rail.len());
+                // A soul-authorized commandeer can carry a body-side follow-through: `pin` engages
+                // pinned presentation on the chosen window (the body follows; it never decides). A
+                // block clears the in-flight intent; needs_confirmation keeps it for the confirm.
+                if effector == "commandeer" {
+                    match decision.as_str() {
+                        "allow" => {
+                            if let Some((target, mode)) = self.pending_commandeer.take() {
+                                if mode == "pin" {
+                                    self.pin_on_target = Some(target);
+                                    self.engage_armed_pin();
+                                }
+                            }
+                        }
+                        "blocked" => {
+                            self.pending_commandeer = None;
+                            self.pin_on_target = None;
+                        }
+                        _ => {}
+                    }
+                }
                 self.pending_effector = (decision == "needs_confirmation").then_some(effector);
                 self.set_emotion(Emotion::for_decision(&decision));
                 if let Some(text) = summary {
@@ -1450,11 +2039,14 @@ impl App {
                     return;
                 }
                 eprintln!("[bb-presence] tracked target {target_id} ({app_id} — {title:?})");
-                if !self.pinned_to_target {
+                let awaiting_pin = self.pin_on_target.as_deref() == Some(target_id.as_str());
+                if !self.pinned_to_target && !awaiting_pin {
                     self.speech = Some(format!("Right-click {} to pin to {app_id}.", self.name_label));
                     self.pinned_offset = None;
                 }
                 self.frame_target = Some(FrameTarget { id: target_id, title, app_id, bounds });
+                // A soul-authorized pin waiting on this exact window engages now that it exists.
+                self.engage_armed_pin();
                 self.sync_pinned_surface();
             }
             presence::Cue::TargetMoved { target_id, bounds } => {
@@ -1477,6 +2069,55 @@ impl App {
                     self.speech = Some("Released the window.".to_string());
                     self.sync_pinned_surface();
                 }
+                // A pin armed for a window that vanished before it was acquired can never land.
+                if self.pin_on_target.as_deref() == Some(target_id.as_str()) {
+                    self.pin_on_target = None;
+                }
+            }
+            presence::Cue::TargetsAvailable { targets } => {
+                // The driver's enumerated window list — the commandeer picker's first-phase data.
+                // Stored only; the body shows it as choices when the user right-clicks (law 7).
+                self.available_targets = targets;
+                // A window vanishing mid-pick would leave the Windows phase showing a stale list;
+                // the selection handler already cancels cleanly on an unknown id, so just refresh.
+                if matches!(self.picker, Some(PickerPhase::Windows)) {
+                    self.update_input_region();
+                }
+            }
+            presence::Cue::Panel {
+                section,
+                title,
+                prompt,
+                options,
+                fields,
+                rows,
+                primary_label,
+                primary_panel,
+            } => {
+                if section == "none" {
+                    self.onboarding_panel = None;
+                } else {
+                    self.onboarding_panel = Some(OnboardingPanelState::apply_cue(
+                        self.onboarding_panel.take(),
+                        section,
+                        title,
+                        prompt,
+                        options,
+                        fields,
+                        rows,
+                        primary_label,
+                        primary_panel,
+                    ));
+                    self.settings_open = false;
+                    self.interior_open = false;
+                    self.chat_open = false;
+                    self.input_text.clear();
+                    self.input_focused = false;
+                    self.surface_bloom_open = false;
+                    self.picker = None;
+                    self.ensure_onboarding_body_len();
+                }
+                self.update_input_region();
             }
         }
     }
@@ -1527,15 +2168,6 @@ impl App {
         self.emotion = emotion;
     }
 
-    fn say(&mut self, text: impl Into<String>) {
-        let text = text.into();
-        if self.awaiting_reply {
-            self.show_reply_in_torso(&text);
-        }
-        self.speech = Some(self.bubble_for_surface(&text));
-        self.update_input_region();
-    }
-
     /// Open/close the chat input. Opening focuses it immediately (click head →
     /// type). No local mood buttons here: expression belongs to the soul, which
     /// drives it through `express` cues — the user talks, the buddy feels.
@@ -1547,6 +2179,21 @@ impl App {
             self.speech = None;
             // Closing the chat drops any half-typed input and the caret.
             self.input_focused = false;
+            self.input_text.clear();
+        }
+        self.update_input_region();
+    }
+
+    /// Right-click on a tucked bump: advance how much peeks out (head-only → bubble →
+    /// bubble+input → head-only). The input field is live only in `BubbleInput`, so focus
+    /// follows the view — you can type to the buddy without summoning it back out.
+    fn cycle_tucked_view(&mut self) {
+        if self.tucked.is_none() {
+            return;
+        }
+        self.tucked_view = self.tucked_view.next();
+        self.input_focused = self.tucked_view.shows_input();
+        if !self.input_focused {
             self.input_text.clear();
         }
         self.update_input_region();
@@ -1566,11 +2213,19 @@ impl App {
             return;
         }
 
-        let Some(target) = self.frame_target.as_ref() else {
+        if self.frame_target.is_none() {
             self.speech = Some("No active target to pin yet.".to_string());
             self.update_input_region();
             return;
-        };
+        }
+        self.engage_pin();
+    }
+
+    /// Engage pinned presentation on the currently tracked target: the surface follows the
+    /// window. Shared by the local right-click toggle and the soul-authorized `pin` path so
+    /// both pin identically. No-op without a tracked target.
+    fn engage_pin(&mut self) {
+        let Some(target) = self.frame_target.as_ref() else { return };
         self.pinned_to_target = true;
         self.pinned_offset = None;
         self.chat_open = false;
@@ -1578,6 +2233,17 @@ impl App {
         let name = if target.title.trim().is_empty() { target.app_id.as_str() } else { target.title.as_str() };
         self.speech = Some(format!("Pinned to {name}."));
         self.sync_pinned_surface();
+    }
+
+    /// If a soul-authorized `pin` is waiting on its target, engage it once the driver has
+    /// acquired that exact window. Matching by id avoids snapping onto a stale auto-tracked
+    /// target before the chosen one arrives.
+    fn engage_armed_pin(&mut self) {
+        let Some(id) = self.pin_on_target.clone() else { return };
+        if self.frame_target.as_ref().is_some_and(|f| f.id == id) {
+            self.pin_on_target = None;
+            self.engage_pin();
+        }
     }
 
     /// Handle a keystroke while the input box is focused: submit on Enter, edit on
@@ -1670,13 +2336,20 @@ impl App {
         }
         if self.surface_bloom_open {
             self.surface_bloom_open = false;
+            self.picker = None;
             self.update_input_region();
         }
         // While tucked, the only live target is the bump; a click on it summons the
         // buddy back out. The bump is not draggable in v1.
         if let Some(edge) = self.tucked {
+            let bump = edge_to_bump(edge);
             let target = if self.point_in_tucked_bump(edge, x, y) {
                 PressTarget::Bump
+            } else if self.tucked_view.shows_input()
+                && render::tucked_input_rect(bump, self.width, self.height).contains(x, y)
+            {
+                // The peek input field catches the pointer so a click focuses it (and keeps focus).
+                PressTarget::Input
             } else {
                 PressTarget::Outside
             };
@@ -1695,29 +2368,53 @@ impl App {
             }
         } else if render::point_in_head(body_x, y) {
             PressTarget::Head
-        } else if let Some((id, _)) = self
-            .active_perimeter_controls(layout)
-            .into_iter()
-            .find(|(_, rect)| rect.contains(body_x, y))
+        } else if self.onboarding_panel.is_some()
+            && layout.output_panel_rect().contains(body_x, y)
+            && render::torso_action_at(&layout, body_x, y).is_none()
         {
-            match id {
-                PerimeterId::Paste => PressTarget::Paste,
-                PerimeterId::Review => PressTarget::Review,
-                PerimeterId::Edit => PressTarget::Edit,
-                other => PressTarget::Perimeter(other),
-            }
+            self.onboarding_hit(body_x, y)
+                .map(|hit| match hit {
+                    OnboardingHit::Option(i) => PressTarget::OnboardingOption(i),
+                    OnboardingHit::Field(i) => PressTarget::OnboardingField(i),
+                    OnboardingHit::Primary => PressTarget::OnboardingPrimary,
+                })
+                .unwrap_or(PressTarget::Body)
+        } else if self.settings_open
+            && layout.output_panel_rect().contains(body_x, y)
+            && render::torso_action_at(&layout, body_x, y).is_none()
+        {
+            // The settings panel owns the torso while open: a press hits a settings row, else the
+            // body-drag handle (so the buddy is still movable behind the panel).
+            self.settings_row_at(body_x, y)
+                .map(PressTarget::SettingsRow)
+                .unwrap_or(PressTarget::Body)
+        } else if self.interior_open
+            && layout.output_panel_rect().contains(body_x, y)
+            && render::torso_action_at(&layout, body_x, y).is_none()
+        {
+            // Interior view owns the torso panel: a press inside hits a labeled row. The
+            // Torso scroll/expand/copy buttons stay hit-testable so the view can be closed
+            // again; a press on empty panel space falls through to the body-drag handle.
+            layout
+                .interior_rows()
+                .into_iter()
+                .find(|(_, rect)| rect.contains(body_x, y))
+                .map(|(id, _)| PressTarget::Interior(id))
+                .unwrap_or(PressTarget::Body)
         } else if self.chat_open && layout.input_region_rect().contains(body_x, y) {
             PressTarget::Input
         } else if let Some(action) = render::torso_action_at(&layout, body_x, y) {
             PressTarget::TorsoAction(action)
         } else if layout.feet_rect().contains(body_x, y) {
             PressTarget::Feet
+        } else if render::point_in_draggable_body(&layout, body_x, y) {
+            PressTarget::Body
         } else {
             PressTarget::Outside
         };
 
         self.press = Some(PressState { target, secondary, started_at: Instant::now(), dist: 0.0, grabbed_sent: false, bloom_started: false });
-        if primary && target == PressTarget::Head && !self.pinned_to_target {
+        if primary && matches!(target, PressTarget::Head | PressTarget::Body) && !self.pinned_to_target {
             self.drag = true;
         }
     }
@@ -1730,6 +2427,7 @@ impl App {
         let close_bloom = press.dist > CLICK_SLOP && self.surface_bloom_open && !press.bloom_started;
         if close_bloom {
             self.surface_bloom_open = false;
+            self.picker = None;
             press.bloom_started = false;
         }
         if self.pinned_to_target && press.target == PressTarget::Head {
@@ -1792,39 +2490,63 @@ impl App {
         if let PressTarget::SurfaceBloom(idx) = press.target {
             self.surface_bloom_open = false;
             if press.dist <= CLICK_SLOP {
-                if let Some(surface) = self.surface_bloom_surface_at(idx) {
+                if let Some(desc) = self.surface_bloom_descriptor_at(idx) {
                     self.input_focused = false;
-                    self.request_surface(&surface);
+                    // A window pick reopens the dial (Modes phase); everything else closes it.
+                    self.activate_bloom_descriptor(&desc);
                     return;
                 }
             }
+            // Closed without a selection — drop any commandeer picker too.
+            self.picker = None;
             self.update_input_region();
             return;
         }
 
         if press.bloom_started {
-            if let Some(surface) = self.surface_bloom_hit(body_x, y) {
-                self.surface_bloom_open = false;
-                self.input_focused = false;
-                self.request_surface(&surface);
-                return;
+            if let Some(idx) = self.surface_bloom_hit_index(body_x, y) {
+                if let Some(desc) = self.surface_bloom_descriptor_at(idx) {
+                    self.surface_bloom_open = false;
+                    self.input_focused = false;
+                    self.activate_bloom_descriptor(&desc);
+                    return;
+                }
             }
             self.surface_bloom_open = true;
             self.update_input_region();
             return;
         }
 
-        // A click on the tucked bump summons the buddy back out.
+        // The tucked bump: left-click summons the buddy back out; right-click cycles how much
+        // of it peeks (head-only → bubble → bubble+input) without summoning.
         if press.target == PressTarget::Bump {
             if press.dist <= CLICK_SLOP {
-                self.summon();
+                if press.secondary {
+                    self.cycle_tucked_view();
+                } else {
+                    self.summon();
+                }
             }
             return;
         }
 
         if press.secondary {
-            if press.dist <= CLICK_SLOP && matches!(press.target, PressTarget::Head | PressTarget::Outside) {
-                self.toggle_pin();
+            // Right-click opens the commandeer picker: first the window list, then P/M/C for the
+            // chosen window (unpin is local; pin/monitor/control are soul-gated). The dial reuses
+            // the bloom path. With no windows enumerated it falls back to the local pin toggle.
+            if press.dist <= CLICK_SLOP
+                && matches!(press.target, PressTarget::Head | PressTarget::Body | PressTarget::Outside)
+            {
+                // While pinned, the dominant right-click intent is "un-pin" — and unpinning is a
+                // pure local presentation toggle (law 7 clean, no soul). Do it directly instead of
+                // routing back through the window→Unpin picker dance (which the small pinned surface
+                // never gave the dial room to show). Re-pin a different window by right-clicking once
+                // unpinned.
+                if self.pinned_to_target {
+                    self.toggle_pin();
+                } else {
+                    self.open_commandeer_picker();
+                }
             }
             return;
         }
@@ -1834,10 +2556,10 @@ impl App {
         }
 
         if press.dist > CLICK_SLOP {
-            // A head drag ended. If it came to rest near an edge, tuck it there;
+            // A head or body drag ended. If it came to rest near an edge, tuck it there;
             // otherwise report where it landed so the placement can be persisted.
             // (Feet drags are local resizes — nothing to tuck or report.)
-            if press.target == PressTarget::Head {
+            if matches!(press.target, PressTarget::Head | PressTarget::Body) {
                 if let Some(edge) = self.nearest_edge_within_threshold() {
                     self.tuck_to(edge);
                 } else {
@@ -1856,27 +2578,40 @@ impl App {
                 self.show_receipt_rail_entry(idx);
             }
             PressTarget::Input => self.input_focused = true,
-            PressTarget::Paste => {
-                self.input_focused = true;
-                self.paste_clipboard_into_input();
-            }
-            PressTarget::Review => {
+            PressTarget::Interior(id) => {
                 self.input_focused = false;
-                self.request_review();
+                match id {
+                    PerimeterId::Paste => self.paste_clipboard_into_input(),
+                    PerimeterId::Review => self.request_review(),
+                    PerimeterId::Edit => self.request_repo_edit(),
+                    other => self.on_perimeter_control(other),
+                }
             }
-            PressTarget::Edit => {
+            PressTarget::SettingsRow(idx) => {
                 self.input_focused = false;
-                self.request_repo_edit();
+                self.on_settings_row(idx);
             }
-            PressTarget::Perimeter(id) => {
+            PressTarget::OnboardingOption(idx) => {
                 self.input_focused = false;
-                self.on_perimeter_control(id);
+                self.on_onboarding_option(idx);
+            }
+            PressTarget::OnboardingField(idx) => {
+                self.input_focused = false;
+                self.on_onboarding_field(idx);
+            }
+            PressTarget::OnboardingPrimary => {
+                self.input_focused = false;
+                self.on_onboarding_primary();
             }
             PressTarget::TorsoAction(action) => {
                 self.input_focused = false;
                 self.on_torso_action(action);
             }
-            PressTarget::Feet | PressTarget::Bump | PressTarget::SurfaceBloom(_) | PressTarget::Outside => {
+            PressTarget::Body
+            | PressTarget::Feet
+            | PressTarget::Bump
+            | PressTarget::SurfaceBloom(_)
+            | PressTarget::Outside => {
                 self.input_focused = false;
             }
         }
@@ -1893,6 +2628,8 @@ impl App {
                     id: (*id).to_string(),
                     label: (*id).to_string(),
                     availability: "available".to_string(),
+                    kind: "surface".to_string(),
+                    effector: None,
                 })
                 .collect()
         } else {
@@ -1904,17 +2641,51 @@ impl App {
         rotate_surfaces_for_bloom(self.ordered_surfaces(), &self.active_surface)
     }
 
-    fn surface_bloom_hit(&self, x: f64, y: f64) -> Option<String> {
-        let idx = self.surface_bloom_hit_index(x, y)?;
-        self.surface_bloom_surface_at(idx)
+    /// The descriptors the open dial currently shows — surfaces, or one of the two commandeer
+    /// picker phases. All the dial machinery (render, rects, hit-test, selection) reads through
+    /// here, so switching menus is just a different list (the reuse-wholesale seam).
+    fn bloom_descriptors(&self) -> Vec<presence::SurfaceDescriptor> {
+        match &self.picker {
+            None => self.surface_bloom_surfaces(),
+            Some(PickerPhase::Windows) => window_picker_descriptors(&self.available_targets),
+            Some(PickerPhase::Modes { target_id, .. }) => {
+                let chosen_is_pinned = self.pinned_to_target
+                    && self.frame_target.as_ref().is_some_and(|f| &f.id == target_id);
+                commandeer_mode_descriptors(chosen_is_pinned)
+            }
+        }
     }
 
     fn surface_bloom_hit_index(&self, x: f64, y: f64) -> Option<usize> {
-        render::surface_bloom_hit(&self.layout(), self.surface_bloom_surfaces().len(), x, y)
+        render::surface_bloom_hit(&self.layout(), self.bloom_descriptors().len(), x, y)
     }
 
-    fn surface_bloom_surface_at(&self, idx: usize) -> Option<String> {
-        self.surface_bloom_surfaces().get(idx).map(|surface| surface.id.clone())
+    fn surface_bloom_descriptor_at(&self, idx: usize) -> Option<presence::SurfaceDescriptor> {
+        self.bloom_descriptors().get(idx).cloned()
+    }
+
+    /// Act on a bloom-dial selection: a launcher opens its external tool through the gate; a
+    /// plain surface switches the active surface. Centralises the kind-branch both selection
+    /// paths (tap-on-pill and drag-release-on-pill) share.
+    fn activate_bloom_descriptor(&mut self, desc: &presence::SurfaceDescriptor) {
+        // Picker entries are checked first. A `window:` pick advances the picker to its second
+        // phase (reopening the dial on the same window); a `commandeer:` pick routes the mode
+        // (Monitor/Control wear launcher styling but are gated effector requests, not launches).
+        if let Some(target_id) = desc.id.strip_prefix("window:") {
+            self.enter_commandeer_modes(target_id);
+            return;
+        }
+        if let Some(mode) = desc.id.strip_prefix("commandeer:") {
+            self.on_commandeer_choice(mode);
+            return;
+        }
+        if desc.is_launcher() {
+            if let Some(effector) = desc.effector.as_deref() {
+                self.request_launch(effector, &desc.label);
+            }
+        } else {
+            self.request_surface(&desc.id);
+        }
     }
 
     fn surface_availability(&self, id: &str) -> &str {
@@ -1941,6 +2712,26 @@ impl App {
     }
 
     fn request_surface(&mut self, surface: &str) {
+        // "Customize" is the body-local settings panel, not a soul surface — open it here and never
+        // ask the soul to switch. Reached from the dial's Customize pill and the "+" interior row.
+        if surface == "customize" {
+            self.toggle_settings();
+            return;
+        }
+        // Any other surface switch leaves the settings panel.
+        self.settings_open = false;
+        // A launcher surface opens an external tool instead of becoming the active surface —
+        // route it through the same reach `action_request` path the bloom dial uses. (Cycling
+        // already skips launchers, so this only fires on a direct quick-row tap.)
+        if let Some(desc) = self.surfaces.iter().find(|s| s.id == surface) {
+            if desc.is_launcher() {
+                if let Some(effector) = desc.effector.clone() {
+                    let label = desc.label.clone();
+                    self.request_launch(&effector, &label);
+                    return;
+                }
+            }
+        }
         // An `unwired` surface names an effector not yet wired: explain rather than ask the
         // soul to switch (it would no-op anyway). The body only reports availability the soul
         // pushed; it never decides wiring itself (AGENTS.md law 7).
@@ -1969,6 +2760,23 @@ impl App {
             let id = order[idx].id.clone();
             self.request_surface(&id);
         }
+    }
+
+    fn interior_row_specs(chat_open: bool) -> Vec<(PerimeterId, &'static str)> {
+        let mut specs: Vec<(PerimeterId, &'static str)> = Vec::new();
+        if chat_open {
+            specs.push((PerimeterId::Paste, "P"));
+            specs.push((PerimeterId::Review, "R"));
+            specs.push((PerimeterId::Edit, "E"));
+        }
+        specs.push((PerimeterId::ArrowN, "◀"));
+        specs.push((PerimeterId::Quick0, "1"));
+        specs.push((PerimeterId::Quick1, "2"));
+        specs.push((PerimeterId::Quick2, "3"));
+        specs.push((PerimeterId::Quick3, "4"));
+        specs.push((PerimeterId::Add, "+"));
+        specs.push((PerimeterId::ArrowS, "▶"));
+        specs
     }
 
     fn on_perimeter_control(&mut self, id: PerimeterId) {
@@ -2003,6 +2811,8 @@ impl App {
         if let Some(press) = self.press.as_mut() {
             press.bloom_started = true;
         }
+        // Hold-to-bloom always shows the surface switcher, never a leftover commandeer picker.
+        self.picker = None;
         self.surface_bloom_open = true;
         self.speech = None;
         self.update_input_region();
@@ -2024,6 +2834,22 @@ impl App {
             "Confirming review…".to_string()
         } else {
             "Requesting receipt review…".to_string()
+        });
+        self.update_input_region();
+    }
+
+    /// Ask the soul to launch an external tool (a reach effector like `open_cursor`). The body
+    /// only names the effector — the soul owns the workspace target it opens (AGENTS.md law 7).
+    /// First tap requests; the soul replies `needs_confirmation` (which sets `pending_effector`),
+    /// and re-tapping the same launcher pill confirms. After the soul remembers the confirmation
+    /// for the session, later taps open silently. The body never spawns the process itself.
+    fn request_launch(&mut self, effector: &str, label: &str) {
+        let confirmed = self.pending_effector.as_deref() == Some(effector);
+        self.send_to_soul(presence::action_request_json(&self.buddy, effector, confirmed, None));
+        self.speech = Some(if confirmed {
+            format!("Opening {label}…")
+        } else {
+            format!("Open {label}?")
         });
         self.update_input_region();
     }
@@ -2059,18 +2885,306 @@ impl App {
         self.update_input_region();
     }
 
+    /// Open the right-click commandeer picker, reusing the bloom dial. First phase lists the
+    /// enumerable windows (`available_targets`). With none enumerated yet, fall back to the local
+    /// pin toggle on the auto-tracked frame (the pre-picker behaviour) so right-click is never a
+    /// dead gesture.
+    fn open_commandeer_picker(&mut self) {
+        if self.available_targets.is_empty() {
+            self.toggle_pin();
+            return;
+        }
+        self.picker = Some(PickerPhase::Windows);
+        self.surface_bloom_open = true;
+        self.input_focused = false;
+        self.speech = None;
+        self.update_input_region();
+    }
+
+    /// Advance the picker from window choice to mode choice for `target_id`, reopening the dial on
+    /// the same window. An unknown id (the list changed mid-pick) cancels cleanly.
+    fn enter_commandeer_modes(&mut self, target_id: &str) {
+        let Some(entry) = self.available_targets.iter().find(|t| t.target_id == target_id) else {
+            self.close_picker();
+            return;
+        };
+        let name = if entry.title.trim().is_empty() { entry.app_id.clone() } else { entry.title.clone() };
+        self.picker = Some(PickerPhase::Modes { target_id: target_id.to_string(), name });
+        self.surface_bloom_open = true;
+        self.input_focused = false;
+        self.update_input_region();
+    }
+
+    /// Route a P/M/C selection across the law-7 boundary for the window chosen in the Modes phase:
+    /// unpinning the currently-pinned window is local; every other mode is requested as the
+    /// soul-gated `commandeer` effector. The dial is already closed by the caller; this clears the
+    /// picker before acting.
+    fn on_commandeer_choice(&mut self, mode: &str) {
+        let Some(PickerPhase::Modes { target_id, name }) = self.picker.take() else {
+            return;
+        };
+        let is_pinned_target = self.pinned_to_target
+            && self.frame_target.as_ref().is_some_and(|f| f.id == target_id);
+        match commandeer_route(mode, is_pinned_target) {
+            Some(CommandeerRoute::LocalUnpin) => self.toggle_pin(),
+            Some(CommandeerRoute::Gated(m)) => self.request_commandeer(&target_id, &name, m),
+            None => {}
+        }
+    }
+
+    /// Ask the soul to run the act-floored `commandeer` effector on the chosen window. The body
+    /// only names the target + mode; the soul authorizes through the action gate and, on `allow`,
+    /// dispatches the world-effect (retarget / raise / type) to the frame driver — the body never
+    /// raises or types into the window itself (AGENTS.md law 7). First press proposes; the soul
+    /// replies `needs_confirmation` (the act floor), cleared by a `/confirm` (or re-selecting).
+    fn request_commandeer(&mut self, target_id: &str, name: &str, mode: &str) {
+        let confirmed = self.pending_effector.as_deref() == Some("commandeer");
+        // Remember the intent so the body can act on the soul's `allow` (e.g. engage pin on the
+        // chosen window). The soul still decides authority; the body only follows the verdict.
+        self.pending_commandeer = Some((target_id.to_string(), mode.to_string()));
+        self.send_to_soul(presence::commandeer_request_json(
+            &self.buddy,
+            mode,
+            target_id,
+            name,
+            confirmed,
+        ));
+        self.speech = Some(if confirmed {
+            format!("Confirming {mode} on {name}…")
+        } else {
+            format!("{mode} {name}?")
+        });
+        self.update_input_region();
+    }
+
+    /// Close the commandeer picker and the dial together.
+    fn close_picker(&mut self) {
+        self.picker = None;
+        self.surface_bloom_open = false;
+        self.update_input_region();
+    }
+
+    // --- wizard onboarding panel (Build C) ----------------------------------------
+
+    fn mask_onboarding_field_display(&self, field: &presence::PanelField, draft: &str) -> String {
+        if field.masked || field.control == "paste_key" {
+            let n = draft.chars().count();
+            if n == 0 {
+                String::new()
+            } else {
+                "•".repeat(n.min(12))
+            }
+        } else {
+            draft.to_string()
+        }
+    }
+
+    fn onboarding_panel_layout_counts(panel: &OnboardingPanelState) -> (usize, usize, bool, bool) {
+        let list_rows = if panel.rows.is_empty() {
+            panel.options.len()
+        } else {
+            panel.rows.len()
+        };
+        (
+            list_rows,
+            panel.fields.len(),
+            panel.prompt.is_some(),
+            panel.primary_label.is_some(),
+        )
+    }
+
+    /// Stretch the torso when a multi-row onboarding section would otherwise cram options and
+    /// credential fields into overlapping strips (connect is the worst case: four providers + two fields).
+    fn ensure_onboarding_body_len(&mut self) {
+        let Some(panel) = self.onboarding_panel.as_ref() else {
+            return;
+        };
+        let (list_rows, field_rows, has_prompt, has_primary) =
+            Self::onboarding_panel_layout_counts(panel);
+        let min_len =
+            render::Layout::min_body_len_for_onboarding(list_rows, field_rows, has_prompt, has_primary);
+        if self.body_len + 0.5 < min_len {
+            self.set_body_len(min_len);
+        }
+    }
+
+    fn onboarding_panel_layout(&self) -> render::OnboardingLayout {
+        let layout = self.layout();
+        let Some(panel) = self.onboarding_panel.as_ref() else {
+            return render::OnboardingLayout {
+                card: layout.output_panel_rect(),
+                title: layout.output_panel_rect(),
+                prompt: None,
+                options: Vec::new(),
+                fields: Vec::new(),
+                primary: None,
+            };
+        };
+        let (list_rows, field_rows, has_prompt, has_primary) = Self::onboarding_panel_layout_counts(panel);
+        layout.onboarding_layout(list_rows, field_rows, has_prompt, has_primary)
+    }
+
+    fn onboarding_panel_rects(&self, layout: &render::Layout) -> Vec<render::Rect> {
+        let Some(panel) = self.onboarding_panel.as_ref() else {
+            return Vec::new();
+        };
+        let (list_rows, field_rows, has_prompt, has_primary) = Self::onboarding_panel_layout_counts(panel);
+        let panel_layout = layout.onboarding_layout(list_rows, field_rows, has_prompt, has_primary);
+        let mut rects = vec![panel_layout.card];
+        rects.extend(panel_layout.options.iter().copied());
+        rects.extend(panel_layout.fields.iter().copied());
+        if let Some(rect) = panel_layout.primary {
+            rects.push(rect);
+        }
+        rects
+    }
+
+    fn onboarding_hit(&self, x: f64, y: f64) -> Option<OnboardingHit> {
+        if self.onboarding_panel.is_none() {
+            return None;
+        }
+        render::onboarding_hit_at(&self.onboarding_panel_layout(), x, y)
+    }
+
+    fn on_onboarding_option(&mut self, idx: usize) {
+        let Some(panel) = self.onboarding_panel.as_mut() else {
+            return;
+        };
+        if idx >= panel.option_selected.len() {
+            return;
+        }
+        if panel.single_select() {
+            for (i, selected) in panel.option_selected.iter_mut().enumerate() {
+                *selected = i == idx;
+            }
+        } else {
+            panel.option_selected[idx] = !panel.option_selected[idx];
+        }
+        self.update_input_region();
+    }
+
+    fn on_onboarding_field(&mut self, idx: usize) {
+        let Some(panel) = self.onboarding_panel.as_mut() else {
+            return;
+        };
+        if idx >= panel.fields.len() {
+            return;
+        }
+        let control = panel.fields[idx].control.clone();
+        panel.focused_field = Some(idx);
+        if control == "paste_key" {
+            if let Ok(text) = read_clipboard_text().map(|text| sanitize_paste(&text)) {
+                if let Some(draft) = panel.field_drafts.get_mut(idx) {
+                    *draft = text;
+                }
+            }
+        }
+        self.update_input_region();
+    }
+
+    fn on_onboarding_primary(&mut self) {
+        let payload = self.onboarding_panel.as_ref().and_then(|panel| {
+            panel
+                .primary_panel
+                .clone()
+                .map(|token| (token, panel.click_choices()))
+        });
+        if let Some((token, choices)) = payload {
+            self.emit_clicked_panel(&token, Some(&choices));
+        }
+    }
+
+    // --- body-local settings panel ------------------------------------------------
+
+    /// The settings rows are a fixed set: Colour, Size, Posture, Buddy.
+    fn settings_row_count(&self) -> usize {
+        4
+    }
+
+    /// Which settings row (if any) a torso-panel press lands on, using the shared interior-row
+    /// layout so the panel's hit-test matches exactly what `draw_settings_view` rendered.
+    fn settings_row_at(&self, x: f64, y: f64) -> Option<usize> {
+        self.layout()
+            .interior_rows_for(self.settings_row_count())
+            .into_iter()
+            .enumerate()
+            .find_map(|(i, rect)| rect.contains(x, y).then_some(i))
+    }
+
+    /// Open/close the body-local settings panel (reached from the dial's Customize entry). Opening
+    /// takes the torso over the interior list; closing returns to the interior list.
+    fn toggle_settings(&mut self) {
+        self.settings_open = !self.settings_open;
+        if self.settings_open {
+            self.interior_open = false;
+            self.surface_bloom_open = false;
+            self.picker = None;
+            self.chat_open = false;
+            self.input_focused = false;
+            self.speech = Some("Settings".to_string());
+        } else {
+            // Back to the interior control list (the body's default torso view).
+            self.interior_open = true;
+        }
+        self.update_input_region();
+    }
+
+    /// Act on a settings row tap. Colour and size are genuinely body-local (changed here, now);
+    /// posture and buddy are governance/identity the body only reflects — tapping explains where
+    /// they are actually set, never mutating them locally (AGENTS.md law 7).
+    fn on_settings_row(&mut self, idx: usize) {
+        match idx {
+            0 => self.cycle_color(),
+            1 => self.cycle_size(),
+            2 => {
+                self.speech = Some("Posture is set with the soul (Work / Play / Private).".to_string());
+                self.update_input_region();
+            }
+            3 => {
+                self.speech = Some(format!("Buddy \"{}\" is chosen at launch (BB_BUDDY).", self.name_label));
+                self.update_input_region();
+            }
+            _ => {}
+        }
+    }
+
+    /// Cycle the buddy's clay colour through the local palette. Pure presentation (law 7).
+    fn cycle_color(&mut self) {
+        self.color = next_color(self.color);
+        self.speech = Some(format!("Colour: {}", color_swatch_name(self.color)));
+        self.update_input_region();
+    }
+
+    /// Cycle the body size through the local presets (reuses the feet-drag resize path).
+    fn cycle_size(&mut self) {
+        self.set_body_len(next_size(self.body_len));
+        self.speech = Some(format!("Size: {}", size_preset_name(self.body_len)));
+        self.update_input_region();
+    }
+
     fn on_torso_action(&mut self, action: TorsoAction) {
-        self.speech = Some(match action {
-            TorsoAction::Expand => "Fullscreen image open will land here.".to_string(),
+        match action {
+            TorsoAction::Expand => {
+                self.speech = Some("Fullscreen image open will land here.".to_string());
+            }
             TorsoAction::Copy => match self.current_text_output() {
                 Some(text) => match copy_to_clipboard(text) {
-                    Ok(()) => "Copied text output.".to_string(),
-                    Err(err) => format!("Copy failed: {err}"),
+                    Ok(()) => self.speech = Some("Copied text output.".to_string()),
+                    Err(err) => self.speech = Some(format!("Copy failed: {err}")),
                 },
-                None => "No text output to copy.".to_string(),
+                None => self.speech = Some("No text output to copy.".to_string()),
             },
-            TorsoAction::Scroll => "Torso scroll controls will land here.".to_string(),
-        });
+            TorsoAction::Scroll => {
+                // Toggle the interior view — the perimeter controls fold into a labeled list
+                // inside the torso. Reset the speech bubble so it doesn't overlap the list. Also
+                // leaves the settings panel, since it shares the torso.
+                self.settings_open = false;
+                self.interior_open = !self.interior_open;
+                if self.interior_open {
+                    self.speech = None;
+                }
+            }
+        }
         self.update_input_region();
     }
 
@@ -2083,27 +3197,22 @@ impl App {
 
     // --- tuck / summon -------------------------------------------------------
 
-    /// If the head currently sits within `TUCK_THRESHOLD` of a screen edge, which edge
-    /// (the nearest). Needs known screen bounds; without them, never tucks.
+    /// If the figure currently sits within `TUCK_THRESHOLD` of a screen edge, which edge
+    /// (the nearest). Measured to the FIGURE BBOX, not the head — the drag clamp keeps the
+    /// whole figure on-screen, so the head never reaches the right/top/bottom edges on its
+    /// own (the body extends past it on those sides). Using the bbox is what makes tucking
+    /// symmetric: every edge tucks as soon as the figure meets it, the way the left edge
+    /// always did. Needs known screen bounds; without them, never tucks.
     fn nearest_edge_within_threshold(&self) -> Option<presence::Edge> {
         let (sw, sh) = self.screen?;
-        let head = render::head_rect();
-        let left = self.margin_left + head.x as f64;
-        let top = self.margin_top + head.y as f64;
-        let right = sw - (self.margin_left + (head.x + head.w) as f64);
-        let bottom = sh - (self.margin_top + (head.y + head.h) as f64);
-
-        let candidates = [
-            (presence::Edge::Left, left),
-            (presence::Edge::Right, right),
-            (presence::Edge::Top, top),
-            (presence::Edge::Bottom, bottom),
-        ];
-        candidates
-            .into_iter()
-            .filter(|(_, d)| *d < TUCK_THRESHOLD)
-            .min_by(|a, b| a.1.total_cmp(&b.1))
-            .map(|(edge, _)| edge)
+        let fig = render::figure_bbox(self.body_len);
+        nearest_tuck_edge(
+            self.margin_left,
+            self.margin_top,
+            fig,
+            (sw, sh),
+            TUCK_THRESHOLD,
+        )
     }
 
     /// The along-edge coordinate (screen px) of the head's centre — what we report and
@@ -2129,12 +3238,19 @@ impl App {
     fn enter_tuck(&mut self, edge: presence::Edge, along: f64) {
         self.chat_open = false;
         self.input_focused = false;
-        self.speech = None;
+        // Keep the latest speech: the tucked "peek" bubble surfaces it when the user cycles the
+        // tucked view, so it must survive the tuck (head-only rendering simply doesn't draw it).
+        self.interior_open = false;
+        self.settings_open = false;
         self.tucked = Some(edge);
+        self.tucked_view = TuckedView::HeadOnly;
         let (sw, sh) = self.screen.unwrap_or((f64::MAX, f64::MAX));
         let (surface_w, surface_h) = self.requested_surface_size();
         if let Some(layer) = self.layer.as_ref() {
-            layer.set_size(render::SURFACE_W, self.layout().surface_h());
+            // Size for the FULL figure (rail included), not the bump — so a later summon
+            // never has to grow the surface back and the receipt rail can't be clipped
+            // when the buddy pops out stretched. Tucked rendering only paints the bump.
+            layer.set_size(self.requested_surface_w(), self.layout().surface_h());
             layer.commit();
         }
 
@@ -2166,19 +3282,27 @@ impl App {
     /// inward off the edge, restore full input, and tell the soul.
     fn summon(&mut self) {
         let Some(edge) = self.tucked.take() else { return };
-        let head = render::head_rect();
+        self.tucked_view = TuckedView::HeadOnly;
+        let fig = render::figure_bbox(self.body_len);
         let inset = TUCK_THRESHOLD; // land clear of the tuck zone so it doesn't re-tuck
         let (sw, sh) = self.screen.unwrap_or((f64::MAX, f64::MAX));
+        // Place the whole figure bbox just inside the edge it was tucked against, so the
+        // body (not only the head) pops fully on-screen — the receipt-rail/expanded case
+        // the old head-only placement could leave half-clipped.
         match edge {
-            presence::Edge::Left => self.margin_left = -(head.x as f64) + inset,
+            presence::Edge::Left => self.margin_left = -(fig.x as f64) + inset,
             presence::Edge::Right => {
-                self.margin_left = sw - (head.x + head.w) as f64 - inset;
+                self.margin_left = sw - (fig.x + fig.w) as f64 - inset;
             }
-            presence::Edge::Top => self.margin_top = -(head.y as f64) + inset,
+            presence::Edge::Top => self.margin_top = -(fig.y as f64) + inset,
             presence::Edge::Bottom => {
-                self.margin_top = sh - (head.y + head.h) as f64 - inset;
+                self.margin_top = sh - (fig.y + fig.h) as f64 - inset;
             }
         }
+        // Restore the full-figure surface (rail included) — tucked sizing kept it at the
+        // full extent, but reassert so a stretched body with the receipt rail visible can
+        // never pop out into a surface too narrow to hold the rail (the clip bug).
+        self.set_layer_size(self.requested_surface_w(), self.layout().surface_h());
         self.clamp_margins();
         self.update_input_region();
         self.reposition();
@@ -2219,6 +3343,10 @@ impl App {
 
     fn emit_clicked(&self) {
         self.send_to_soul(presence::clicked_json(&self.buddy, self.margin_left, self.margin_top));
+    }
+
+    fn emit_clicked_panel(&self, panel: &str, choices: Option<&presence::PanelClickChoices>) {
+        self.send_to_soul(presence::clicked_panel_json(&self.buddy, panel, choices));
     }
 
     fn emit_grabbed(&self) {
@@ -2485,16 +3613,102 @@ mod tests {
     use super::*;
 
     #[test]
-    fn perimeter_controls_filter_chat_buttons_with_chat_state() {
-        let layout = render::Layout::initial();
-        let closed = active_perimeter_controls_for(false, layout);
-        let open = active_perimeter_controls_for(true, layout);
+    fn onboarding_panel_single_select_sections() {
+        let connect = OnboardingPanelState::from_cue(
+            "connect".into(),
+            "Connect".into(),
+            None,
+            vec![],
+            vec![],
+            vec![],
+            None,
+            None,
+        );
+        let posture = OnboardingPanelState::from_cue(
+            "posture".into(),
+            "Posture".into(),
+            None,
+            vec![],
+            vec![],
+            vec![],
+            None,
+            None,
+        );
+        let placement = OnboardingPanelState::from_cue(
+            "placement".into(),
+            "Placement".into(),
+            None,
+            vec![],
+            vec![],
+            vec![],
+            None,
+            None,
+        );
+        assert!(connect.single_select());
+        assert!(posture.single_select());
+        assert!(!placement.single_select());
+    }
 
+    #[test]
+    fn reply_bubble_never_points_at_an_empty_torso() {
+        let long = "Ran \"Commandeer window\" via claude. allow commandeer at 22:12:42.";
+        assert!(long.len() > 56);
+        // Awaiting a reply: the text was loaded into the torso, so the bubble may point at it.
+        assert_eq!(reply_bubble(true, long), "Reply ready in torso.");
+        // Not awaiting (e.g. a commandeer summary or surface label): nothing was loaded into the
+        // torso, so the bubble must carry the text itself — never the "…in torso" promise.
+        assert_eq!(reply_bubble(false, long), long);
+        // Short text reads inline either way.
+        assert_eq!(reply_bubble(true, "Pinned."), "Pinned.");
+        assert_eq!(reply_bubble(false, "Pinned."), "Pinned.");
+    }
+
+    #[test]
+    fn interior_row_specs_include_chat_controls_only_when_chat_is_open() {
+        // The retired perimeter ring's chat-button filtering now lives in the interior specs:
+        // Paste/Review/Edit appear only when chat is open.
+        let closed = App::interior_row_specs(false);
+        let open = App::interior_row_specs(true);
         assert!(!closed.iter().any(|(id, _)| matches!(id, PerimeterId::Paste | PerimeterId::Review | PerimeterId::Edit)));
         assert!(open.iter().any(|(id, _)| *id == PerimeterId::Paste));
         assert!(open.iter().any(|(id, _)| *id == PerimeterId::Review));
         assert!(open.iter().any(|(id, _)| *id == PerimeterId::Edit));
-        assert_eq!(open.len(), layout.perimeter_controls().len());
+    }
+
+    #[test]
+    fn color_cycle_wraps_the_palette_and_names_each_swatch() {
+        // Cycling from the last swatch wraps to the first; every palette entry round-trips through
+        // its name, and the default terracotta is the head of the list.
+        assert_eq!(color_swatch_name(COLOR_SWATCHES[0].0), "Terracotta");
+        let mut c = COLOR_SWATCHES[0].0;
+        for step in 1..=COLOR_SWATCHES.len() {
+            c = next_color(c);
+            let expected = COLOR_SWATCHES[step % COLOR_SWATCHES.len()].0;
+            assert_eq!(c, expected, "cycle step {step} should land on the next swatch");
+        }
+        // A full loop returns to the start.
+        assert_eq!(c, COLOR_SWATCHES[0].0);
+    }
+
+    #[test]
+    fn off_palette_color_reads_as_custom_and_cycles_to_the_first_swatch() {
+        let off = [1, 2, 3];
+        assert_eq!(color_swatch_name(off), "Custom");
+        assert_eq!(next_color(off), COLOR_SWATCHES[0].0);
+    }
+
+    #[test]
+    fn size_cycle_steps_presets_and_snaps_a_custom_length_to_the_next_step() {
+        // From an exact preset, cycling advances to the next preset (wrapping).
+        let mut len = SIZE_PRESETS[0].0;
+        for step in 1..=SIZE_PRESETS.len() {
+            len = next_size(len);
+            assert_eq!(len, SIZE_PRESETS[step % SIZE_PRESETS.len()].0);
+        }
+        // A custom (feet-drag) length names as Custom but cycles off its NEAREST preset, not an
+        // arbitrary jump: 145 is nearest Default(140) → next is Tall(220).
+        assert_eq!(size_preset_name(145.0), "Custom");
+        assert_eq!(next_size(145.0), 220.0);
     }
 
     fn surf(id: &str, availability: &str) -> presence::SurfaceDescriptor {
@@ -2502,6 +3716,18 @@ mod tests {
             id: id.to_string(),
             label: id.to_string(),
             availability: availability.to_string(),
+            kind: "surface".to_string(),
+            effector: None,
+        }
+    }
+
+    fn launcher(id: &str, effector: &str) -> presence::SurfaceDescriptor {
+        presence::SurfaceDescriptor {
+            id: id.to_string(),
+            label: id.to_string(),
+            availability: "gated".to_string(),
+            kind: "launcher".to_string(),
+            effector: Some(effector.to_string()),
         }
     }
 
@@ -2593,13 +3819,19 @@ mod tests {
         let decision_at = detail.find("allow repo_edit").unwrap();
         assert!(grade_at < decision_at, "grade sentence must precede the decision sentence");
 
-        // Refinement B — speech-act pin (self-asserting half; the bidirectional confirm half
-        // lands with a Build C merge): a grade-justified authorization is worded "Authorized
-        // by …" and must NOT borrow the panel-confirm vocabulary.
+        // Refinement B — speech-act pin: a grade-justified authorization is worded "Authorized
+        // by …" and must NOT borrow the panel-confirm vocabulary. This is the load-bearing half
+        // on the body side: `detail_text()` is the ONLY receipt-text producer the body owns, so
+        // keeping panel vocab out of it is what stops the grade receipt from masquerading as a
+        // panel confirmation on the one rail they could share.
         assert!(!detail.to_lowercase().contains("confirmed"));
         assert!(!detail.to_lowercase().contains("panel"));
-        // TODO(build-c-merge): add the inverse — a panel-confirm receipt contains "confirmed"
-        // and must NOT contain "Authorized by" — so the two speech acts can never collapse.
+        // Build-C-merge finding (2026-06-29): the inverse pin does NOT live here. Panel confirm
+        // never flows through `detail_text()` — `emit_clicked_panel` sends a `clicked_panel` cue
+        // and the "confirmed" echo is a SOUL-emitted `say` (wizard Host), rendered in the speech
+        // bubble, not a ReceiptRailEntry. The two speech acts have separate producers, so the
+        // collapse the inverse guarded against can't happen via this rail. The residual cross-pin
+        // (panel echo says "confirmed" / never "Authorized by") belongs in the wizard soul tests.
     }
 
     #[test]
@@ -2625,7 +3857,23 @@ mod tests {
     }
 
     #[test]
-    fn bloom_order_rotates_active_surface_to_twelve_oclock() {
+    fn cycle_skips_launchers_so_they_stay_bloom_only() {
+        // Launchers ride the bloom dial but the arrow cycle must step over them — arrows switch
+        // surfaces, they never open a tool. Forward/backward from session both skip open_cursor.
+        let order = vec![
+            surf("session", "available"),
+            launcher("open_cursor", "open_cursor"),
+            surf("agent_zero", "gated"),
+        ];
+        assert_eq!(next_cyclable_index(&order, 0, 1), Some(2));
+        assert_eq!(next_cyclable_index(&order, 0, -1), Some(2));
+        // A dial of only launchers has nothing to cycle to.
+        let only_launchers = vec![launcher("open_cursor", "open_cursor"), launcher("open_vscode", "open_vscode")];
+        assert_eq!(next_cyclable_index(&only_launchers, 0, 1), None);
+    }
+
+    #[test]
+    fn bloom_order_rotates_active_surface_to_the_first_slot() {
         let order = vec![
             surf("session", "available"),
             surf("private_local_chat", "gated"),
@@ -2645,7 +3893,7 @@ mod tests {
         let old_enough = now.checked_sub(SURFACE_BLOOM_HOLD + Duration::from_millis(1)).unwrap();
         let fresh = now.checked_sub(SURFACE_BLOOM_HOLD - Duration::from_millis(1)).unwrap();
         let base = PressState {
-            target: PressTarget::Perimeter(PerimeterId::ArrowN),
+            target: PressTarget::Interior(PerimeterId::ArrowN),
             secondary: false,
             started_at: old_enough,
             dist: 0.0,
@@ -2658,21 +3906,193 @@ mod tests {
         assert!(!should_open_surface_bloom(&PressState { dist: CLICK_SLOP + 0.1, ..base }, now));
         assert!(!should_open_surface_bloom(&PressState { secondary: true, ..base }, now));
         assert!(!should_open_surface_bloom(&PressState { target: PressTarget::Head, ..base }, now));
-        assert!(!should_open_surface_bloom(&PressState { target: PressTarget::Perimeter(PerimeterId::Add), ..base }, now));
-        assert!(!should_open_surface_bloom(&PressState { target: PressTarget::Paste, ..base }, now));
-        assert!(!should_open_surface_bloom(&PressState { target: PressTarget::Review, ..base }, now));
-        assert!(!should_open_surface_bloom(&PressState { target: PressTarget::Edit, ..base }, now));
+        assert!(!should_open_surface_bloom(&PressState { target: PressTarget::Interior(PerimeterId::Add), ..base }, now));
+        assert!(!should_open_surface_bloom(&PressState { target: PressTarget::Interior(PerimeterId::Paste), ..base }, now));
+        assert!(!should_open_surface_bloom(&PressState { target: PressTarget::Interior(PerimeterId::Review), ..base }, now));
+        assert!(!should_open_surface_bloom(&PressState { target: PressTarget::Interior(PerimeterId::Edit), ..base }, now));
         assert!(!should_open_surface_bloom(&PressState { bloom_started: true, ..base }, now));
     }
 
     #[test]
-    fn perimeter_surface_controls_have_clickable_rects() {
+    fn commandeer_route_keeps_unpin_local_and_gates_screen_action() {
+        // The law-7 boundary: unpinning the currently-pinned window is local presentation; every
+        // other choice routes through the soul-gated `commandeer` effector with the driver's mode.
+        assert_eq!(commandeer_route("pin", true), Some(CommandeerRoute::LocalUnpin));
+        // Pin on a window we are NOT currently pinned to retargets — that is a gated driver action.
+        assert_eq!(commandeer_route("pin", false), Some(CommandeerRoute::Gated("pin")));
+        assert_eq!(commandeer_route("monitor", false), Some(CommandeerRoute::Gated("monitor")));
+        assert_eq!(commandeer_route("control", false), Some(CommandeerRoute::Gated("control")));
+        // Monitor/Control are gated regardless of pin state (a screen action is never local).
+        assert_eq!(commandeer_route("control", true), Some(CommandeerRoute::Gated("control")));
+        // An unknown mode routes nowhere (never silently treated as a local or gated effect).
+        assert_eq!(commandeer_route("delete", false), None);
+    }
+
+    #[test]
+    fn tucked_view_cycles_bubble_then_input_then_head() {
+        // The order the user reads right-clicking a tucked bump: head-only → speech bubble →
+        // bubble + input → back to head-only. Focus (and a live input) only in BubbleInput.
+        assert_eq!(TuckedView::HeadOnly.next(), TuckedView::Bubble);
+        assert_eq!(TuckedView::Bubble.next(), TuckedView::BubbleInput);
+        assert_eq!(TuckedView::BubbleInput.next(), TuckedView::HeadOnly);
+
+        assert!(!TuckedView::HeadOnly.shows_bubble() && !TuckedView::HeadOnly.shows_input());
+        assert!(TuckedView::Bubble.shows_bubble() && !TuckedView::Bubble.shows_input());
+        assert!(TuckedView::BubbleInput.shows_bubble() && TuckedView::BubbleInput.shows_input());
+    }
+
+    #[test]
+    fn window_picker_lists_each_target_with_a_routable_id() {
+        let targets = vec![
+            presence::TargetEntry { target_id: "win-1".into(), title: "Firefox".into(), app_id: "org.mozilla.firefox".into() },
+            // An untitled window falls back to its app id for the label.
+            presence::TargetEntry { target_id: "win-2".into(), title: "  ".into(), app_id: "com.system76.CosmicTerm".into() },
+        ];
+        let pills = window_picker_descriptors(&targets);
+        let ids: Vec<&str> = pills.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(ids, vec!["window:win-1", "window:win-2"]);
+        assert_eq!(pills[0].label, "Firefox");
+        assert_eq!(pills[1].label, "com.system76.CosmicTerm");
+        assert!(pills.iter().all(|d| d.availability == "available" && !d.is_launcher()));
+        // An empty target list yields no pills (right-click falls back to the local pin toggle).
+        assert!(window_picker_descriptors(&[]).is_empty());
+    }
+
+    #[test]
+    fn commandeer_mode_descriptors_list_pmc_and_flip_pin_to_unpin() {
+        // Second phase: P/M/C for the chosen window. Pin reads as a surface pill; Monitor/Control
+        // wear launcher styling (the reach/act affordance). All carry the synthetic routing ids.
+        let modes = commandeer_mode_descriptors(false);
+        let ids: Vec<&str> = modes.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(ids, vec!["commandeer:pin", "commandeer:monitor", "commandeer:control"]);
+        assert_eq!(modes[0].label, "Pin");
+        assert_eq!(modes[0].kind, "surface");
+        assert!(modes[1].is_launcher() && modes[2].is_launcher());
+        assert!(modes.iter().all(|d| d.availability == "available"));
+        // When the chosen window is the one currently pinned, Pin flips to Unpin.
+        assert_eq!(commandeer_mode_descriptors(true)[0].label, "Unpin");
+    }
+
+    #[test]
+    fn interior_surface_controls_have_clickable_rects() {
+        // The retired perimeter ring's controls now live as interior rows — each gets a
+        // non-zero rect inside the torso panel.
         let layout = render::Layout::initial();
-        let controls = active_perimeter_controls_for(false, layout);
-        for id in [PerimeterId::ArrowN, PerimeterId::ArrowE, PerimeterId::ArrowS, PerimeterId::ArrowW, PerimeterId::Quick0, PerimeterId::Add] {
-            let rect = controls.iter().find_map(|(candidate, rect)| (*candidate == id).then_some(*rect)).expect("control exists");
+        let controls = layout.interior_rows();
+        for id in [PerimeterId::ArrowN, PerimeterId::Quick0, PerimeterId::Quick1, PerimeterId::Quick2, PerimeterId::Quick3, PerimeterId::Add, PerimeterId::ArrowS] {
+            let rect = controls
+                .iter()
+                .find_map(|(candidate, rect)| (*candidate == id).then_some(*rect))
+                .expect("interior row exists");
             assert!(rect.w > 0.0 && rect.h > 0.0, "{id:?} should have area");
         }
+    }
+
+    #[test]
+    fn clamp_keeps_a_sliver_of_the_figure_visible_at_every_edge() {
+        // The real figure bbox (default stretch): roughly x∈[141,419], y∈[14,284].
+        let fig = render::figure_bbox(render::BODY_LEN_DEFAULT);
+        let keep = render::DRAG_KEEP_VISIBLE as f64;
+        let sw = 1920.0;
+        let sh = 1080.0;
+
+        // Dragged fully off the right: clamp pulls the left edge back so `keep` px stays visible.
+        let (left, _) = clamp_figure_margins(5000.0, 0.0, fig, (sw, sh), keep);
+        assert_eq!(left, sw - keep - fig.x as f64);
+        assert!(left + fig.x as f64 <= sw - keep + 0.5);
+        assert!(left + (fig.x + fig.w) as f64 >= sw - keep - 0.5, "a sliver must remain visible");
+
+        // Dragged fully off the left: clamp lets the margin go negative so `keep` px stays visible.
+        let (left, _) = clamp_figure_margins(-5000.0, 0.0, fig, (sw, sh), keep);
+        assert_eq!(left, keep - (fig.x + fig.w) as f64);
+        assert!(left + (fig.x + fig.w) as f64 >= keep - 0.5);
+        assert!(left + fig.x as f64 <= keep + 0.5, "a sliver must remain visible");
+
+        // Dragged fully off the bottom and top.
+        let (_, top) = clamp_figure_margins(0.0, 5000.0, fig, (sw, sh), keep);
+        assert_eq!(top, sh - keep - fig.y as f64);
+        let (_, top) = clamp_figure_margins(0.0, -5000.0, fig, (sw, sh), keep);
+        assert_eq!(top, keep - (fig.y + fig.h) as f64);
+    }
+
+    #[test]
+    fn clamp_degrades_safely_when_screen_smaller_than_keep_sliver() {
+        // A screen smaller than the keep-visible budget must still clamp to a single in-bounds
+        // value rather than panicking or inverting the min/max range.
+        let fig = render::figure_bbox(render::BODY_LEN_DEFAULT);
+        let tiny = (40.0, 40.0);
+        let (left, top) = clamp_figure_margins(10_000.0, 10_000.0, fig, tiny, render::DRAG_KEEP_VISIBLE as f64);
+        // min == max on a too-small screen, so the clamp pins the margin to that single value.
+        assert!(left.is_finite() && top.is_finite());
+    }
+
+    #[test]
+    fn tuck_fires_symmetrically_on_every_edge_via_figure_bbox() {
+        // The left edge always tucked because dragging left puts the head (and the figure) at
+        // the edge first. The right/top/bottom edges only tuck if proximity is measured to the
+        // FIGURE BBOX — the drag clamp keeps the whole figure on-screen, so the head never
+        // reaches those edges on its own. This pins that symmetry: when the figure bbox is
+        // within TUCK_THRESHOLD of any one edge, that edge is selected.
+        let fig = render::figure_bbox(render::BODY_LEN_DEFAULT);
+        let sw = 1920.0;
+        let sh = 1080.0;
+        let threshold = TUCK_THRESHOLD;
+        let keep = render::DRAG_KEEP_VISIBLE as f64;
+
+        // Clamp the figure hard against each edge (the clamp pins it at `keep` px from the
+        // edge), then assert that edge is the tuck pick. keep (36) < threshold (40), so a
+        // clamped drag is always within the tuck zone on release.
+        assert!(keep < threshold, "clamp sliver must sit inside the tuck threshold for symmetry");
+
+        let (left, _) = clamp_figure_margins(10_000.0, 0.0, fig, (sw, sh), keep);
+        assert_eq!(nearest_tuck_edge(left, 0.0, fig, (sw, sh), threshold), Some(presence::Edge::Right));
+        let (left, _) = clamp_figure_margins(-10_000.0, 0.0, fig, (sw, sh), keep);
+        assert_eq!(nearest_tuck_edge(left, 0.0, fig, (sw, sh), threshold), Some(presence::Edge::Left));
+        let (_, top) = clamp_figure_margins(0.0, 10_000.0, fig, (sw, sh), keep);
+        assert_eq!(nearest_tuck_edge(0.0, top, fig, (sw, sh), threshold), Some(presence::Edge::Bottom));
+        let (_, top) = clamp_figure_margins(0.0, -10_000.0, fig, (sw, sh), keep);
+        assert_eq!(nearest_tuck_edge(0.0, top, fig, (sw, sh), threshold), Some(presence::Edge::Top));
+    }
+
+    #[test]
+    fn tuck_yields_none_when_figure_is_well_clear_of_every_edge() {
+        let fig = render::figure_bbox(render::BODY_LEN_DEFAULT);
+        // Centered on a 1920x1080 screen — every edge gap is hundreds of px.
+        let left = (1920.0 - fig.w as f64) / 2.0;
+        let top = (1080.0 - fig.h as f64) / 2.0;
+        assert_eq!(nearest_tuck_edge(left, top, fig, (1920.0, 1080.0), TUCK_THRESHOLD), None);
+    }
+
+    #[test]
+    fn interior_row_specs_fold_every_perimeter_control_into_the_torso() {
+        // Closed chat: the surface controls only (the ring's navigable set). 7 rows.
+        let closed = App::interior_row_specs(false);
+        assert_eq!(
+            closed.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+            vec![
+                PerimeterId::ArrowN,
+                PerimeterId::Quick0,
+                PerimeterId::Quick1,
+                PerimeterId::Quick2,
+                PerimeterId::Quick3,
+                PerimeterId::Add,
+                PerimeterId::ArrowS,
+            ]
+        );
+        // Open chat: Paste/Review/Edit are prepended so the chat controls come inside too. 10 rows.
+        let open = App::interior_row_specs(true);
+        assert_eq!(open.len(), 10);
+        assert_eq!(
+            open.iter().map(|(id, _)| *id).take(3).collect::<Vec<_>>(),
+            vec![PerimeterId::Paste, PerimeterId::Review, PerimeterId::Edit]
+        );
+        // The two arrow directions collapse to a single back/fwd pair (no redundant N/S/E/W).
+        assert_eq!(closed[0].1, "◀");
+        assert_eq!(closed[6].1, "▶");
+        // Chat-control glyphs keep their perimeter letters so muscle memory transfers.
+        assert_eq!(open[0].1, "P");
+        assert_eq!(open[1].1, "R");
+        assert_eq!(open[2].1, "E");
     }
 }
 

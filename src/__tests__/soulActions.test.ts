@@ -225,6 +225,85 @@ describe("handleActionRequest", () => {
     expect(receipt.rules.some((r) => r.policy_rule === "action.confirm.risk_floor")).toBe(true);
   });
 
+  // Commandeer is the first window-driving act effector. Its governance is load-bearing:
+  // keystroke injection has no OS consent, so the gate is the only safety boundary. These
+  // lock the contract — granted to forge only, act-floored to confirm, allowed on confirm,
+  // and producing an execution receipt (the world-effect runs in the driver).
+  test("commandeer is granted to forge and confirms before it may run (act floor)", () => {
+    const storage = memoryStorage();
+    const intent = {
+      effectorId: "commandeer" as const,
+      operation: "control",
+      target: { kind: "command" as const, path: "win-42" },
+      summary: "control win-42",
+    };
+    const { receipt } = handleActionRequest({
+      buddy: "crab", // forge's persona id — resolves to the governance grant
+      effectorId: "commandeer",
+      settings: { ...BASE_SETTINGS, allowAction: true },
+      posture: "work",
+      history: ACTION_HISTORY,
+      intent,
+      storage,
+      now: "2026-06-26T12:00:00Z",
+    });
+    expect(receipt.buddy).toBe("forge");
+    expect(receipt.decision).toBe("needs_confirmation");
+    expect(receipt.rules.some((r) => r.policy_rule === "action.blocked.ungranted")).toBe(false);
+    expect(receipt.rules.some((r) => r.policy_rule === "action.confirm.risk_floor")).toBe(true);
+  });
+
+  test("a confirmed commandeer allows and emits an execution receipt", () => {
+    const storage = memoryStorage();
+    const intent = {
+      effectorId: "commandeer" as const,
+      operation: "control",
+      target: { kind: "command" as const, path: "win-42" },
+      summary: "control win-42",
+    };
+    const { receipt, result, execution } = handleActionRequest({
+      buddy: "forge",
+      effectorId: "commandeer",
+      settings: { ...BASE_SETTINGS, allowAction: true },
+      posture: "work",
+      history: ACTION_HISTORY,
+      intent,
+      confirmed: true,
+      executors: { commandeer: () => ({ outcome: "ok", detail: "cue dispatched" }) },
+      storage,
+      now: "2026-06-26T12:00:05Z",
+    });
+    expect(receipt.decision).toBe("allow");
+    expect(execution?.outcome).toBe("ok");
+    expect(result.outcome?.executed).toBe(true);
+    // Law 6 (governance slice): the backing grade is persisted first, then the authorization
+    // and execution receipts — memory → action → execution, in that order.
+    const ledger = readReceiptLedger(storage);
+    expect(ledger).toHaveLength(3);
+    expect(ledger.map((e) => e.kind)).toEqual(["memory", "action", "execution"]);
+  });
+
+  test("commandeer is blocked for a buddy that wasn't granted it", () => {
+    const storage = memoryStorage();
+    const { receipt } = handleActionRequest({
+      buddy: "aether", // not granted commandeer
+      effectorId: "commandeer",
+      settings: { ...BASE_SETTINGS, allowAction: true },
+      posture: "work",
+      history: ACTION_HISTORY,
+      intent: {
+        effectorId: "commandeer",
+        operation: "pin",
+        target: { kind: "command", path: "win-1" },
+        summary: "pin win-1",
+      },
+      storage,
+      now: "2026-06-26T12:00:00Z",
+    });
+    expect(receipt.decision).toBe("blocked");
+    expect(receipt.rules.some((r) => r.policy_rule === "action.blocked.ungranted")).toBe(true);
+  });
+
   test("aether placeholder surfaces can block as known-but-unwired effectors", () => {
     const storage = memoryStorage();
     const { receipt } = handleActionRequest({
@@ -406,6 +485,109 @@ describe("grade projection onto the action_result wire (Slice 2)", () => {
     });
     expect(receipt.decision).toBe("allow");
     expect(result.grade).toBeUndefined();
+  });
+});
+
+// Launcher reach effectors (Slice 0): open a tool the user already has, through the gate.
+// They are low-risk reach, so the confirmation floor asks once under work posture, then the
+// executor opens the tool on the confirmed allow — proving the launch path runs the executor.
+describe("launcher reach effectors", () => {
+  /** The launcher intent the soul synthesises: open the workspace, file_path (never a repo_path,
+   * so the protected-target block can't apply), low-risk reach. */
+  function launcherIntent(effectorId: "open_cursor" | "open_vscode" | "open_terminal", root = "/work/space") {
+    return {
+      effectorId,
+      operation: "open",
+      target: { kind: "file_path" as const, path: root },
+      summary: `open ${root} in ${effectorId}`,
+    };
+  }
+
+  test("forge launching open_cursor asks once under work, then opens on confirm", () => {
+    const storage = memoryStorage();
+    const opened: string[] = [];
+    const executors = {
+      open_cursor: (ctx: { intent: { target: { path: string } } }) => {
+        opened.push(ctx.intent.target.path);
+        return { outcome: "ok" as const, detail: "opened" };
+      },
+    };
+
+    // First request (unconfirmed): granted + wired, but low-risk reach hits the work-posture
+    // confirmation floor — needs_confirmation, and crucially NOT blocked and NOT yet executed.
+    const first = handleActionRequest({
+      buddy: "forge",
+      effectorId: "open_cursor",
+      settings: BASE_SETTINGS,
+      posture: "work",
+      history: [],
+      intent: launcherIntent("open_cursor"),
+      executors,
+      storage,
+      now: "2026-06-25T12:00:00Z",
+    });
+    expect(first.receipt.decision).toBe("needs_confirmation");
+    expect(first.receipt.rules.some((r) => r.policy_rule === "action.blocked.ungranted")).toBe(false);
+    expect(first.execution).toBeUndefined();
+    expect(opened).toEqual([]);
+
+    // Confirmed: allow, and the executor opens the tool exactly once.
+    const second = handleActionRequest({
+      buddy: "forge",
+      effectorId: "open_cursor",
+      settings: BASE_SETTINGS,
+      posture: "work",
+      history: [],
+      intent: launcherIntent("open_cursor"),
+      executors,
+      confirmed: true,
+      storage,
+      now: "2026-06-25T12:00:01Z",
+    });
+    expect(second.receipt.decision).toBe("allow");
+    expect(second.receipt.risk).toBe("low");
+    expect(second.execution?.outcome).toBe("ok");
+    expect(opened).toEqual(["/work/space"]);
+  });
+
+  test("a launcher whose CLI is missing surfaces the error, not a false 'Running'", () => {
+    const storage = memoryStorage();
+    const executors = {
+      open_cursor: () => ({ outcome: "error" as const, detail: "cursor not found on PATH" }),
+    };
+    const { receipt, result } = handleActionRequest({
+      buddy: "forge",
+      effectorId: "open_cursor",
+      settings: BASE_SETTINGS,
+      posture: "work",
+      history: [],
+      intent: launcherIntent("open_cursor"),
+      executors,
+      confirmed: true,
+      storage,
+      now: "2026-06-25T12:00:02Z",
+    });
+    expect(receipt.decision).toBe("allow");
+    expect(result.summary).toContain("didn't run");
+    expect(result.summary).toContain("cursor not found on PATH");
+    expect(result.summary).not.toContain("Running");
+  });
+
+  test("a launcher is never blocked as an unbacked action — reach needs no action grant", () => {
+    const storage = memoryStorage();
+    const { receipt } = handleActionRequest({
+      buddy: "forge",
+      effectorId: "open_vscode",
+      settings: BASE_SETTINGS, // allowAction false: a reach effector needs no may_use_for_action
+      posture: "work",
+      history: [],
+      intent: launcherIntent("open_vscode"),
+      storage,
+      now: "2026-06-25T12:00:00Z",
+    });
+    expect(receipt.rules.some((r) => r.policy_rule === "action.blocked.no_action_grant")).toBe(false);
+    expect(receipt.rules.some((r) => r.policy_rule === "action.blocked.unwired")).toBe(false);
+    expect(receipt.decision).toBe("needs_confirmation");
   });
 });
 

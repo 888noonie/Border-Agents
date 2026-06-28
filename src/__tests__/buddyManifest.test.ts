@@ -35,14 +35,28 @@ describe("buddy manifest", () => {
     }
   });
 
-  it("gates receipt_review and local_chat on the reach lane", () => {
+  it("gates receipt_review, local_chat, and the launchers on the reach lane", () => {
     expect(EFFECTOR_SPECS.receipt_review.wired).toBe(true);
     expect(isWired("receipt_review")).toBe(true);
     expect(EFFECTOR_SPECS.local_chat.wired).toBe(true);
     expect(EFFECTOR_SPECS.local_chat.kind).toBe("reach");
     expect(EFFECTOR_SPECS.local_chat.requiresGrant).toBe(true);
     expect(isWired("local_chat")).toBe(true);
-    expect([...GATED_WIRED_REACH_EFFECTORS]).toEqual(["receipt_review", "local_chat"]);
+    // Launchers — open a tool the user already has, detached. Reach lane only.
+    for (const id of ["open_vscode", "open_cursor", "open_claude_code", "open_agent_zero", "open_terminal"] as const) {
+      expect(EFFECTOR_SPECS[id].wired, `${id} must be wired live`).toBe(true);
+      expect(EFFECTOR_SPECS[id].kind, `${id} must be a reach effector`).toBe("reach");
+      expect(isWired(id)).toBe(true);
+    }
+    expect([...GATED_WIRED_REACH_EFFECTORS]).toEqual([
+      "receipt_review",
+      "local_chat",
+      "open_vscode",
+      "open_cursor",
+      "open_claude_code",
+      "open_agent_zero",
+      "open_terminal",
+    ]);
     // The reach lane never acts in place of the tool — an act effector can never enter it.
     for (const id of GATED_WIRED_REACH_EFFECTORS) {
       expect(EFFECTOR_SPECS[id].kind, `reach-lane effector ${id} must be reach`).toBe("reach");
@@ -52,7 +66,9 @@ describe("buddy manifest", () => {
   it("gates repo_edit on the stricter act lane, never the reach lane", () => {
     expect(EFFECTOR_SPECS.repo_edit.wired).toBe(true);
     expect(isWired("repo_edit")).toBe(true);
-    expect(GATED_WIRED_ACT_EFFECTORS.map((e) => e.id)).toEqual(["repo_edit"]);
+    expect(EFFECTOR_SPECS.commandeer.wired).toBe(true);
+    expect(EFFECTOR_SPECS.commandeer.kind).toBe("act");
+    expect(GATED_WIRED_ACT_EFFECTORS.map((e) => e.id)).toEqual(["repo_edit", "commandeer"]);
     // Every act-lane entry is an act effector declaring the stricter membrane guarantees,
     // and never also sits in the reach lane.
     for (const entry of GATED_WIRED_ACT_EFFECTORS) {
@@ -66,7 +82,9 @@ describe("buddy manifest", () => {
   it("the union of both lanes is exactly the wired effectors", () => {
     const wired = Object.values(EFFECTOR_SPECS).filter((s) => s.wired).map((s) => s.id).sort();
     expect([...GATED_WIRED_EFFECTORS].sort()).toEqual(wired);
-    expect([...GATED_WIRED_EFFECTORS].sort()).toEqual(["local_chat", "receipt_review", "repo_edit"].sort());
+    expect([...GATED_WIRED_EFFECTORS].sort()).toEqual(
+      ["local_chat", "receipt_review", "repo_edit", "commandeer", "open_vscode", "open_cursor", "open_claude_code", "open_agent_zero", "open_terminal"].sort(),
+    );
   });
 
   it("resolves persona ids to governance ids, and leaves governance/unknown ids untouched", () => {

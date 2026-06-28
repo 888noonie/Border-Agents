@@ -33,7 +33,12 @@ import {
   DEFAULT_EXECUTORS,
   type ExecutorRegistry,
 } from "./effectorExecutors";
-import { buildBuddyGovernanceSnapshot, selectPurpose, type SessionChatLine } from "./liveGovernance";
+import {
+  buildBuddyGovernanceSnapshot,
+  selectPurpose,
+  type BuddyGovernanceSnapshot,
+  type SessionChatLine,
+} from "./liveGovernance";
 import {
   presence,
   type PresenceActionIntent,
@@ -42,7 +47,11 @@ import {
   type PresenceEmotion,
   type SurfaceRoute,
 } from "./presenceProtocol";
-import { appendActionReceiptToLedger, appendExecutionReceiptToLedger } from "./receiptLedger";
+import {
+  appendActionReceiptToLedger,
+  appendExecutionReceiptToLedger,
+  appendSnapshotToReceiptLedger,
+} from "./receiptLedger";
 
 const LOCAL_PROVIDERS = new Set<RouteProvider>(["lm_studio", "ollama"]);
 
@@ -216,7 +225,7 @@ export function handleActionRequest(args: {
   requestId?: string;
   storage?: Storage;
   now?: string;
-}): { receipt: ActionReceipt; result: PresenceActionResult; execution?: ExecutionReceipt } {
+}): { receipt: ActionReceipt; result: PresenceActionResult; execution?: ExecutionReceipt; snapshot?: BuddyGovernanceSnapshot } {
   const derivedAt = args.now ?? new Date().toISOString();
 
   // The body speaks in persona ids (e.g. "owl"); the gate authorizes under the governance
@@ -290,7 +299,7 @@ export function handleActionRequest(args: {
       : buildExecutionReceipt(ctx, false, { outcome: "skipped", detail: "no executor wired on this surface" });
   }
 
-  return finish(args, receipt, spec.label, manifestId, execution);
+  return finish(args, receipt, spec.label, manifestId, execution, snapshot);
 }
 
 function finish(
@@ -299,9 +308,16 @@ function finish(
   label: string,
   ledgerBuddyId: string,
   execution?: ExecutionReceipt,
-): { receipt: ActionReceipt; result: PresenceActionResult; execution?: ExecutionReceipt } {
-  // Order matters: the authorization receipt lands before the execution receipt, so the
-  // ledger reads "authorized X, then executed X" — different borders, in sequence.
+  snapshot?: BuddyGovernanceSnapshot | null,
+): { receipt: ActionReceipt; result: PresenceActionResult; execution?: ExecutionReceipt; snapshot?: BuddyGovernanceSnapshot } {
+  // Law 6 (every grade must produce a receipt): when the gate weighed graded memory, the
+  // GradeReceipts that backed the decision land FIRST — so the ledger reads "graded X,
+  // authorized X, then executed X", three borders in sequence. Persisted regardless of the
+  // action's decision: a block is justified by the same grade, and blocked chunks must be
+  // preserved in the frame ledger. Absent only when memory was off or nothing was retrieved.
+  if (snapshot) {
+    appendSnapshotToReceiptLedger({ buddyId: ledgerBuddyId, snapshot, storage: args.storage });
+  }
   appendActionReceiptToLedger({ buddyId: ledgerBuddyId, receipt, storage: args.storage });
   if (execution) {
     appendExecutionReceiptToLedger({ buddyId: ledgerBuddyId, receipt: execution, storage: args.storage });
@@ -333,5 +349,5 @@ function finish(
     ...(outcome ? { outcome } : {}),
   });
 
-  return { receipt, result, execution };
+  return { receipt, result, execution, ...(snapshot ? { snapshot } : {}) };
 }

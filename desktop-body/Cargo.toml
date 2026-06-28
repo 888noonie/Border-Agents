@@ -16,6 +16,17 @@ path = "src/main.rs"
 name = "bb-frame-driver"
 path = "src/bin/frame_driver.rs"
 
+# Slice 4 end-to-end trace harness — NOT a runtime binary. Reads one `action_result`
+# envelope from stdin, runs it through the same `parse_to_body` the live body uses, and
+# prints the parsed `ActionGrade` as JSON. The vitest trace
+# (`src/__tests__/governanceVerticalSlice.trace.test.ts`) drives `handleActionRequest` to
+# produce a real envelope, pipes it here, and asserts the body reconstructs the same
+# `backed_by` ids the soul emitted and the ledger persisted — closing the
+# wire↔ledger↔body loop deterministically. Built only by the trace test.
+[[bin]]
+name = "bb-parse-action-result"
+path = "src/bin/parse_action_result.rs"
+
 [dependencies]
 smithay-client-toolkit = "0.19"
 calloop = "0.13"

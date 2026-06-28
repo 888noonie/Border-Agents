@@ -517,6 +517,7 @@ fn main() {
         input_focused: false,
         pending_effector: None,
         receipt_rail: VecDeque::new(),
+        receipt_selected: None,
         active_surface: "session".to_string(),
         surfaces: Vec::new(),
         surface_bloom_open: false,
@@ -768,6 +769,10 @@ struct App {
     /// Last 20 action_result cues, newest first. This is display state only; the full
     /// ActionReceipt stays soul-side.
     receipt_rail: VecDeque<ReceiptRailEntry>,
+    /// Index (into `receipt_rail`) of the entry the user last clicked, so the rail can draw a
+    /// selected-state ring. `None` = nothing selected. Kept pinned to the same logical entry
+    /// as the rail grows (new entries push to the front, shifting indices).
+    receipt_selected: Option<usize>,
     active_surface: String,
     /// Ordered surface list with per-surface availability, soul-pushed on `hydrate`. The body
     /// cycles and dims from this (Slice 2a) so it never imports the TS surface manifest. Empty
@@ -969,7 +974,8 @@ impl App {
             .receipt_rail
             .iter()
             .zip(receipt_time_labels.iter())
-            .map(|(entry, time)| render::ReceiptRailItem {
+            .enumerate()
+            .map(|(idx, (entry, time))| render::ReceiptRailItem {
                 glyph: entry.glyph(),
                 effector: entry.effector.as_str(),
                 decision: entry.decision.as_str(),
@@ -977,6 +983,7 @@ impl App {
                 graded: entry.grade.as_ref().map(|g| g.graded).unwrap_or(0),
                 trusted: entry.grade.as_ref().map(|g| g.trusted).unwrap_or(0),
                 time: time.as_str(),
+                selected: self.receipt_selected == Some(idx),
             })
             .collect();
         // Fade each quick button whose surface the soul reported `unwired` (Slice 2a).
@@ -1401,6 +1408,13 @@ impl App {
                     receipt_id,
                     grade,
                 });
+                // A new entry pushes to the front, sliding every existing index down one. Keep
+                // the selection ring pinned to the same logical receipt; drop it if that entry
+                // fell off the rail cap.
+                self.receipt_selected = self
+                    .receipt_selected
+                    .map(|i| i + 1)
+                    .filter(|&i| i < self.receipt_rail.len());
                 self.pending_effector = (decision == "needs_confirmation").then_some(effector);
                 self.set_emotion(Emotion::for_decision(&decision));
                 if let Some(text) = summary {
@@ -1914,6 +1928,7 @@ impl App {
     fn show_receipt_rail_entry(&mut self, idx: usize) {
         if let Some(entry) = self.receipt_rail.get(idx) {
             self.speech = Some(entry.detail_text());
+            self.receipt_selected = Some(idx);
             self.update_input_region();
         }
     }

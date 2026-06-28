@@ -717,6 +717,9 @@ pub struct ReceiptRailItem<'a> {
     pub graded: u32,
     pub trusted: u32,
     pub time: &'a str,
+    /// The entry the user last clicked. Its detail opens in the speech bubble (off-rail),
+    /// so the rail must show which entry is active — an accent ring anchors the click.
+    pub selected: bool,
 }
 
 pub enum TorsoOutput<'a> {
@@ -2027,7 +2030,15 @@ fn draw_receipt_rail(pixmap: &mut Pixmap, font: &Font, items: &[ReceiptRailItem]
         if rect.y + rect.h > pixmap.height() as f32 - RECEIPT_RAIL_PAD {
             break;
         }
-        fill_round_rect(pixmap, rect, 6.0, &solid(Color::from_rgba8(248, 250, 252, 224)));
+        if item.selected {
+            // Accent ring behind the card: a clicked entry expands its detail in the speech
+            // bubble (off-rail), so the rail itself needs a visible anchor for the click.
+            let ring = Rect { x: rect.x - 2.0, y: rect.y - 2.0, w: rect.w + 4.0, h: rect.h + 4.0 };
+            fill_round_rect(pixmap, ring, 8.0, &solid(Color::from_rgba8(58, 122, 200, 255)));
+        }
+        // Selected cards are opaque so the accent reads as a clean border, not a tint.
+        let card_alpha = if item.selected { 255 } else { 224 };
+        fill_round_rect(pixmap, rect, 6.0, &solid(Color::from_rgba8(248, 250, 252, card_alpha)));
         let glyph_color = receipt_glyph_color(item.glyph);
         draw_line(pixmap, font, item.glyph, rect.x + 5.0, rect.y + 18.0, 11.0, glyph_color);
 
@@ -2797,6 +2808,7 @@ mod tests {
             graded,
             trusted,
             time: "11:00:01",
+            selected: false,
         };
 
         // No grade → falls back to route label (or decision), no ⚖ marker.
@@ -2821,6 +2833,35 @@ mod tests {
 
         // Grade, no route → marker alone.
         assert_eq!(receipt_detail_line(&font, &with_grade(1, 1, None), 72.0), "\u{2696} 1/1 trusted");
+    }
+
+    #[test]
+    fn selected_receipt_card_draws_an_accent_ring_only_around_the_clicked_entry() {
+        let font = load_font().expect("system font available for receipt rail test");
+        let card = |selected| ReceiptRailItem {
+            glyph: "✅",
+            effector: "repo_edit",
+            decision: "allow",
+            route_label: Some("claude"),
+            graded: 1,
+            trusted: 1,
+            time: "11:00:01",
+            selected,
+        };
+        // Two cards: index 0 selected, index 1 not. The ring sits in the 2px margin to the
+        // left of the card (rect.x = RECEIPT_RAIL_PAD = 8, ring from x=6), so sample there.
+        let mut pixmap = Pixmap::new(RECEIPT_RAIL_W, 120).expect("pixmap");
+        draw_receipt_rail(&mut pixmap, &font, &[card(true), card(false)]);
+
+        let accent = |px: u32, py: u32| {
+            let p = pixmap.pixel(px, py).expect("pixel in bounds");
+            // Accent is (58,122,200) opaque — blue-dominant. The rail bg (36,42,48) is dark.
+            p.blue() as i32 > p.red() as i32 + 40 && p.blue() > 140
+        };
+        // Card 0 spans y∈[8,36]; its ring border is at x≈7, y≈22.
+        assert!(accent(7, 22), "selected card 0 must show the accent ring in its left margin");
+        // Card 1 spans y∈[41,69]; same left-margin x but NO ring → rail background, not accent.
+        assert!(!accent(7, 55), "unselected card 1 must not show an accent ring");
     }
 
     #[test]

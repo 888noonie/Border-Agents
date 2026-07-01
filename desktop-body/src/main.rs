@@ -1905,7 +1905,12 @@ impl App {
                 rects.push(self.offset_rect_for_body(layout.input_region_rect()).as_i32());
             }
             if self.interior_open {
-                for (_, rect) in layout.interior_rows() {
+                // Match the rendering's row set exactly (interior_row_specs(chat_open)), not the
+                // closed-chat-only layout.interior_rows() — otherwise Paste/Review/Edit are drawn
+                // but never registered as input regions, so clicks on them pass through the overlay
+                // to the window below and the body never sees the press.
+                let specs = Self::interior_row_specs(self.chat_open);
+                for rect in layout.interior_rows_for(specs.len()) {
                     rects.push(self.offset_rect_for_body(rect).as_i32());
                 }
             }
@@ -2418,12 +2423,19 @@ impl App {
             // Interior view owns the torso panel: a press inside hits a labeled row. The
             // Torso scroll/expand/copy buttons stay hit-testable so the view can be closed
             // again; a press on empty panel space falls through to the body-drag handle.
-            layout
-                .interior_rows()
-                .into_iter()
-                .find(|(_, rect)| rect.contains(body_x, y))
-                .map(|(id, _)| PressTarget::Interior(id))
-                .unwrap_or(PressTarget::Body)
+            // Use the same row set the rendering uses (interior_row_specs(chat_open)), not the
+            // closed-chat-only layout.interior_rows() — otherwise Paste/Review/Edit are drawn
+            // but not hit-tested, so clicks on them fall through to Body-drag and never fire.
+            {
+                let specs = Self::interior_row_specs(self.chat_open);
+                let row_rects = layout.interior_rows_for(specs.len());
+                specs
+                    .into_iter()
+                    .zip(row_rects.into_iter())
+                    .find(|(_, rect)| rect.contains(body_x, y))
+                    .map(|((id, _), _)| PressTarget::Interior(id))
+                    .unwrap_or(PressTarget::Body)
+            }
         } else if self.chat_open && layout.input_region_rect().contains(body_x, y) {
             PressTarget::Input
         } else if let Some(action) = render::torso_action_at(&layout, body_x, y) {

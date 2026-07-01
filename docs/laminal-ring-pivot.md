@@ -114,14 +114,19 @@ CI trace harness rather than eyeballing.
   98+0+29. (Discovery: the golden fixture already carries `alertLevel:"ready"`, so it now
   anchors the present-valid parse; the absent→None back-compat anchor moved to a unit test.)
 
-- **R2 — The 5-hue palette, one source; drive the existing ring from `alert_level`.**
-  Define the palette once (extend the `route_health` hue table into a full `AlertLevel`→hue
-  map: quiet=blue-grey, ready=green, confirm=amber, blocked=red, critical=violet — three
-  of five already exist as ready/degraded/unavailable; quiet and critical are new). Read
-  `BodyView.alert_level` in the existing ring paint path via an
-  exhaustive `match`. Figure still draws; its halo now speaks the full 5-state vocabulary.
-  Gate: all five states paint distinct hues on the current figure; trace/fixture asserts
-  `decision → alertLevel → hue`.
+- **R2 — The 5-hue palette, one source; drive the existing ring from `alert_level`. ✅ DONE.**
+  `alert_level_ring_rgba(AlertLevel) -> [u8;4]` is the single palette source, total and
+  exhaustive (a new variant won't compile without a hue): quiet=blue-grey `[122,138,168]`,
+  ready=green, confirm=amber, blocked=red (reused from route_health), critical=violet
+  `[138,79,214]`. The ring paint path reads `BodyView.alert_level`; figure untouched.
+  **Fork resolved — precedence, not replace:** `alert_level` is the ring's primary voice;
+  `route_health` remains the fallback when no tier is set. Governance tier and provider
+  health are different signals — folding provider failure into `critical` is a *soul-side*
+  derivation (law 7: the body paints, never infers), parked below. Tests: 5-hue
+  total+distinct pin; a real precedence proof (Confirm-over-ready ≠ ready-alone). The
+  `decision → alertLevel → hue` chain is proven across two deterministic layers: vitest
+  harness (decision→alertLevel, wire===body) + Rust tests (alertLevel→hue against the
+  exact paint function). cargo 100+0+29, tsc clean, vitest 278.
 
 - **R3 — Detach the ring into a primitive.** Introduce `draw_ring(alert_level)` as an
   independent halo that renders correctly *with the figure absent*. Add `BB_SKIN=ring|clay`
@@ -211,5 +216,13 @@ work: the `repo_edit` flow in ring language).
   and deciding it under R3 (infrastructure) keeps it deliberate rather than a last-minute
   call under F-series flow polish. Not blocking R2's first paint (R2's ring still rides
   the figure, so idle is contextualized by the figure being present).
+- **Route-health fold into `critical` (soul-side).** The design doc folds provider failure
+  into the `critical` tier. That unification is a *soul-side derivation* — the soul (e.g.
+  `decisionAlertLevel` or a sibling) deciding route failure is a boundary event and emitting
+  `critical` on the wire — never a body render conflation (law 7). Until the soul does this,
+  the body's `route_health` fallback ring stays (R2's precedence design). When the soul
+  folds it, the fallback either retires or stays as transport-only chrome — explicit call
+  at that point. Natural slot: alongside R4 or early F-series, when the ring vocabulary is
+  complete and the soul-side mapping is a small, testable change.
 - **Tauri 2nd webview vs. native** for onboarding flows that outgrow the in-torso panel.
   Scale, not correctness.

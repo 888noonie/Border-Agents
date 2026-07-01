@@ -139,6 +139,16 @@ fn env_color(key: &str) -> [u8; 3] {
     }
 }
 
+/// Parse `BB_SKIN` — `clay` restores the frozen anthropomorphic figure; anything else, including
+/// unset, is the laminal `ring` default (the standalone state halo). Read once at startup; the
+/// skin never changes at runtime. Default ring so the laminal path is the one we live in.
+fn env_skin() -> render::Skin {
+    match std::env::var("BB_SKIN").ok().map(|v| v.trim().to_ascii_lowercase()).as_deref() {
+        Some("clay") => render::Skin::Clay,
+        _ => render::Skin::Ring,
+    }
+}
+
 fn buddy_env_key(buddy: &str, suffix: &str) -> String {
     format!("{}_{}", buddy.trim().to_ascii_uppercase().replace('-', "_"), suffix)
 }
@@ -675,6 +685,7 @@ fn main() {
         facing: Facing::Right,
         body_len: render::BODY_LEN_DEFAULT,
         color: env_color("BB_COLOR"),
+        skin: env_skin(),
     };
     app.init_hermes_surface();
 
@@ -1238,6 +1249,8 @@ struct App {
     body_len: f32,
     /// Clay colour from `BB_COLOR`.
     color: [u8; 3],
+    /// Which skin paints the presence, from `BB_SKIN` (default `ring`). Set once at startup.
+    skin: render::Skin,
 }
 
 /// Map a presence-protocol edge onto the renderer's bump edge.
@@ -1587,6 +1600,7 @@ impl App {
             pinned,
             frame: None,
             color: self.color,
+            skin: self.skin,
         };
 
         let buffer = match pool.create_buffer(w as i32, h as i32, stride, wl_shm::Format::Argb8888) {

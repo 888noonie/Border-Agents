@@ -61,6 +61,15 @@ const ARM_W: f32 = 13.0;
 const HAND_R: f32 = 9.0;
 const LEG_W: f32 = 15.0;
 
+// --- ring skin geometry (BB_SKIN=ring) --------------------------------------------
+// The standalone state halo. Its own geometry — a clean circle on the presence column —
+// deliberately NOT derived from the figure's outline or the stretchable torso, so it holds
+// its shape with the figure absent. Sits just above the (self-backed) pane content.
+const RING_CX: f32 = FIG_CX;
+const RING_CY: f32 = HEAD_CY - 2.0;
+const RING_R: f32 = 40.0;
+const RING_THICKNESS: f32 = 7.0;
+
 // --- UI geometry -----------------------------------------------------------------
 
 const BUBBLE_W: f32 = 172.0;
@@ -101,6 +110,19 @@ pub const CLAY_DEFAULT: [u8; 3] = [201, 109, 60];
 pub enum Facing {
     Left,
     Right,
+}
+
+/// Which body skin renders. `Ring` (the default) is the laminal surface: a standalone
+/// state halo that stands on its own geometry, no figure. `Clay` restores the original
+/// anthropomorphic figure — frozen, skin-only, never extended (docs/laminal-ring-pivot.md
+/// decision 1). Selected once at startup from `BB_SKIN`; the figure is never the default and
+/// nothing new renders against it. State and identity are orthogonal: the ring speaks state
+/// (hue), the figure is a legacy skin, not a signal path.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Skin {
+    #[default]
+    Ring,
+    Clay,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -1211,6 +1233,9 @@ pub struct BodyView<'a> {
     pub frame: Option<FrameLayout>,
     /// Clay colour (BB_COLOR) — every shade on the figure derives from this.
     pub color: [u8; 3],
+    /// Which skin paints the presence: `Ring` (default, laminal) draws the standalone state
+    /// halo; `Clay` draws the frozen figure. From `BB_SKIN`, set once at startup.
+    pub skin: Skin,
 }
 
 pub fn receipt_rail_visible_for_body_len(body_len: f32) -> bool {
@@ -1361,7 +1386,15 @@ fn draw_body_content(
     mouth: &Mouth,
     pose: &FigurePose,
 ) {
-    draw_figure(pixmap, &view.layout, view.color, bob, pose, view.alert_level, view.route_health, view.route_flash);
+    match view.skin {
+        // The laminal default: the standalone state halo, no figure. The pane content below is
+        // self-backed, so it still renders; polishing that pane into ring language is F-series.
+        Skin::Ring => draw_ring(pixmap, view.alert_level, view.route_health, view.route_flash),
+        // The frozen figure — byte-identical to before the pivot (the ring rides its silhouette).
+        Skin::Clay => draw_figure(
+            pixmap, &view.layout, view.color, bob, pose, view.alert_level, view.route_health, view.route_flash,
+        ),
+    }
     if let Some(font) = font {
         if let Some(panel) = view.onboarding {
             draw_onboarding_view(pixmap, font, &view.layout, panel, view.color);
@@ -1376,8 +1409,12 @@ fn draw_body_content(
             draw_posture_badge(pixmap, font, &view.layout, label);
         }
     }
-    draw_eyes(pixmap, bob, eye_open, pupil_dy);
-    draw_mouth(pixmap, bob, mouth);
+    // The face is figure behavior — it only exists on the clay skin. In ring skin the hue and its
+    // cadence carry state; there is no face to draw (docs/laminal-ring-pivot.md decision 1).
+    if view.skin == Skin::Clay {
+        draw_eyes(pixmap, bob, eye_open, pupil_dy);
+        draw_mouth(pixmap, bob, mouth);
+    }
     if let Some(font) = font {
         // The external perimeter ring is retired — every perimeter control now lives inside
         // the torso as a labeled interior row (drawn above, in place of the torso output).
@@ -1552,22 +1589,79 @@ fn draw_route_boundary_chrome(
     route_health: Option<&str>,
     route_flash: bool,
 ) {
-    // The governance alert tier is the ring's primary voice (the laminate). The route-health
-    // ring is the fallback until an `action_result` has set a tier — and, later, until the soul
-    // folds route/provider failure into `critical`. Precedence: alert_level wins when present.
-    let ring = alert_level
-        .map(alert_level_ring_color)
-        .or_else(|| route_health.and_then(route_health_ring_color));
-    if let Some(color) = ring {
-        stroke_figure_boundary(pixmap, layout, color, 2.0, 4.0);
+    // Clay skin: the ring rides the figure silhouette. When neither a tier nor route health is
+    // set, no ring paints — the figure itself still shows the buddy, so absence is fine here.
+    // (The standalone ring skin resolves absence to Quiet instead — see `draw_ring`.)
+    if let Some([r, g, b, a]) = ring_hue_rgba(alert_level, route_health) {
+        stroke_figure_boundary(pixmap, layout, Color::from_rgba8(r, g, b, a), 2.0, 4.0);
     }
     if route_flash {
         stroke_figure_boundary(pixmap, layout, Color::from_rgba8(238, 162, 55, 205), 3.0, 8.0);
     }
 }
 
-fn route_health_ring_color(health: &str) -> Option<Color> {
-    route_health_ring_rgba(health).map(|[r, g, b, a]| Color::from_rgba8(r, g, b, a))
+/// The R2 precedence resolved to rgba, shared by both skins: the governance alert tier is the
+/// ring's primary voice; route health is the fallback until an `action_result` sets a tier (and,
+/// later, until the soul folds route/provider failure into `critical`). `None` means no signal —
+/// each caller decides what that renders as (clay chrome: no ring; standalone ring: Quiet).
+fn ring_hue_rgba(alert_level: Option<AlertLevel>, route_health: Option<&str>) -> Option<[u8; 4]> {
+    alert_level
+        .map(alert_level_ring_rgba)
+        .or_else(|| route_health.and_then(route_health_ring_rgba))
+}
+
+/// R3 — the ring detached from the figure. A standalone state halo on its **own** geometry (a
+/// clean circle centred on the presence column), not a stroke of the figure's silhouette, so it
+/// reads correctly with the figure absent (`BB_SKIN=ring`). It always paints: an absent tier
+/// resolves to `Quiet` (the resting hue) rather than nothing, because in ring skin the ring *is*
+/// the buddy — it can never vanish. Hue precedence is R2's (alert_level → route_health → Quiet).
+fn draw_ring(
+    pixmap: &mut Pixmap,
+    alert_level: Option<AlertLevel>,
+    route_health: Option<&str>,
+    route_flash: bool,
+) {
+    let [r, g, b, a] =
+        ring_hue_rgba(alert_level, route_health).unwrap_or_else(|| alert_level_ring_rgba(AlertLevel::Quiet));
+
+    // A faint inner disc — the presence "breath" the hue washes over. Alpha well below the ring
+    // so the halo reads as a ring, not a filled coin.
+    if let Some(disc) = PathBuilder::from_circle(RING_CX, RING_CY, RING_R - RING_THICKNESS * 0.5) {
+        let glow = Color::from_rgba8(r, g, b, (a as f32 * 0.22) as u8);
+        pixmap.fill_path(&disc, &solid(glow), FillRule::Winding, Transform::identity(), None);
+    }
+
+    // The ring proper — a bold annulus in the tier hue.
+    let mut stroke = Stroke::default();
+    stroke.width = RING_THICKNESS;
+    stroke.line_cap = tiny_skia::LineCap::Round;
+    if let Some(circle) = PathBuilder::from_circle(RING_CX, RING_CY, RING_R) {
+        pixmap.stroke_path(
+            &circle,
+            &solid(Color::from_rgba8(r, g, b, a)),
+            &stroke,
+            Transform::identity(),
+            None,
+        );
+    }
+
+    // The local→cloud transition flash rides the same halo (parity with the clay chrome) — an
+    // amber pulse just outside the ring. Preserved so the signal doesn't silently vanish in ring
+    // skin; it is transport chrome, not a governance tier.
+    if route_flash {
+        let mut flash = Stroke::default();
+        flash.width = 3.0;
+        flash.line_cap = tiny_skia::LineCap::Round;
+        if let Some(circle) = PathBuilder::from_circle(RING_CX, RING_CY, RING_R + 5.0) {
+            pixmap.stroke_path(
+                &circle,
+                &solid(Color::from_rgba8(238, 162, 55, 205)),
+                &flash,
+                Transform::identity(),
+                None,
+            );
+        }
+    }
 }
 
 fn route_health_ring_rgba(health: &str) -> Option<[u8; 4]> {
@@ -1592,11 +1686,6 @@ fn alert_level_ring_rgba(level: AlertLevel) -> [u8; 4] {
         AlertLevel::Blocked => [210, 63, 60, 215],    // red — refused / unwired, shown honestly
         AlertLevel::Critical => [138, 79, 214, 220],  // violet — privacy/route/provider boundary
     }
-}
-
-fn alert_level_ring_color(level: AlertLevel) -> Color {
-    let [r, g, b, a] = alert_level_ring_rgba(level);
-    Color::from_rgba8(r, g, b, a)
 }
 
 fn stroke_figure_boundary(pixmap: &mut Pixmap, layout: &Layout, color: Color, width: f32, outset: f32) {
@@ -4143,6 +4232,7 @@ mod tests {
                 pinned: None,
                 frame: None,
                 color: [255, 107, 107],
+                skin: Skin::Clay,
             };
             sprite.paint(&mut canvas, w, h, &view);
             canvas
@@ -4244,6 +4334,7 @@ mod tests {
                 pinned: None,
                 frame: None,
                 color: CLAY_DEFAULT,
+                skin: Skin::Clay,
             };
             sprite.paint(&mut canvas, w, h, &view);
             canvas
@@ -4329,6 +4420,104 @@ mod tests {
             route_only.data(),
             "alert_level must take the ring over route_health when both are present",
         );
+    }
+
+    // --- R3: the ring detached into a standalone primitive (BB_SKIN=ring) --------------
+
+    /// Render just the standalone halo into a fresh canvas.
+    fn ring_only(alert: Option<AlertLevel>, route: Option<&str>, flash: bool) -> Vec<u8> {
+        let mut pixmap = Pixmap::new(SURFACE_W, Layout::initial().surface_h()).unwrap();
+        draw_ring(&mut pixmap, alert, route, flash);
+        pixmap.data().to_vec()
+    }
+
+    #[test]
+    fn standalone_ring_reads_all_five_states_distinctly() {
+        use std::collections::HashSet;
+        let blank = vec![0_u8; ring_only(None, None, false).len()];
+        // The gate: with the figure absent, the ring alone must render every one of the five
+        // governance states, and no two may collapse to the same pixels.
+        let renders: Vec<Vec<u8>> = [
+            AlertLevel::Quiet,
+            AlertLevel::Ready,
+            AlertLevel::Confirm,
+            AlertLevel::Blocked,
+            AlertLevel::Critical,
+        ]
+        .iter()
+        .map(|&l| ring_only(Some(l), None, false))
+        .collect();
+        for (i, r) in renders.iter().enumerate() {
+            assert_ne!(r, &blank, "state {i} must paint a visible ring with the figure absent");
+        }
+        let distinct: HashSet<&Vec<u8>> = renders.iter().collect();
+        assert_eq!(distinct.len(), renders.len(), "each state must read as its own ring");
+    }
+
+    #[test]
+    fn standalone_ring_never_vanishes_absent_tier_rests_at_quiet() {
+        // In ring skin the halo *is* the buddy — it can never be blank. With no tier and no route
+        // health, it resolves to the Quiet resting hue rather than nothing (the idle-decay stance:
+        // idle rests at Quiet; it does not disappear).
+        let idle = ring_only(None, None, false);
+        let blank = vec![0_u8; idle.len()];
+        assert_ne!(idle, blank, "an idle ring (no tier) must still be visible");
+        assert_eq!(idle, ring_only(Some(AlertLevel::Quiet), None, false), "absent tier === Quiet");
+        // R2's precedence survives the detachment: no tier + route 'ready' falls back to the route
+        // hue (identical to the Ready tier's) and differs from the Quiet rest.
+        assert_eq!(
+            ring_only(None, Some("ready"), false),
+            ring_only(Some(AlertLevel::Ready), None, false),
+            "route health is still the fallback when no tier is set",
+        );
+        assert_ne!(ring_only(None, Some("ready"), false), idle, "the route fallback is not the Quiet rest");
+    }
+
+    #[test]
+    fn skin_selects_ring_or_figure_through_the_paint_path() {
+        // The skin field actually routes draw_body_content: same view, different skin ⇒ different
+        // pixels. Proves BB_SKIN is live end-to-end, not just a parsed-and-ignored flag.
+        let layout = Layout::initial();
+        let w = SURFACE_W;
+        let h = layout.surface_h();
+        let sprite = Sprite::new();
+
+        let paint = |skin: Skin| -> Vec<u8> {
+            let mut canvas = vec![0_u8; (w * h * 4) as usize];
+            let view = BodyView {
+                t: 0.0,
+                emotion: Emotion::Neutral,
+                speech: None,
+                torso_output: TorsoOutput::Text(TextCard { title: "", body: "" }),
+                chat_open: false,
+                tucked: None,
+                tucked_show_bubble: false,
+                tucked_show_input: false,
+                input_text: "",
+                input_placeholder: "",
+                input_focused: false,
+                review_pending: false,
+                edit_pending: false,
+                posture_badge: None,
+                surface_bloom: &[],
+                route_health: None,
+                route_flash: false,
+                alert_level: Some(AlertLevel::Confirm),
+                receipt_rail: &[],
+                interior_rows: &[],
+                settings: &[],
+                onboarding: None,
+                layout,
+                pinned: None,
+                frame: None,
+                color: CLAY_DEFAULT,
+                skin,
+            };
+            sprite.paint(&mut canvas, w, h, &view);
+            canvas
+        };
+
+        assert_ne!(paint(Skin::Ring), paint(Skin::Clay), "the skin must change what the body paints");
     }
 
     #[test]
@@ -4697,6 +4886,7 @@ mod tests {
             pinned: None,
             frame: Some(frame),
             color: CLAY_DEFAULT,
+            skin: Skin::Clay,
         };
 
         sprite.paint(&mut canvas, frame.surface_w, frame.surface_h, &view);

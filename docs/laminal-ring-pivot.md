@@ -128,7 +128,7 @@ CI trace harness rather than eyeballing.
   harness (decision→alertLevel, wire===body) + Rust tests (alertLevel→hue against the
   exact paint function). cargo 100+0+29, tsc clean, vitest 278.
 
-- **R3 — Detach the ring into a primitive. ✅ DONE (code; pending native walk).**
+- **R3 — Detach the ring into a primitive. ✅ DONE (code + native walk passed).**
   `draw_ring(alert_level, route_health, route_flash)` is a standalone halo with its own
   geometry (`RING_CX/CY/R/THICKNESS`, a clean circle on the presence column) — not a stroke
   of the figure silhouette, so it holds its shape with the figure gone. R2's precedence
@@ -144,6 +144,15 @@ CI trace harness rather than eyeballing.
   ever apply to `ready`, and `ready`'s clear is event-driven ("green clears when the user
   engages the reply") deferred to F2 — where the flow defines the event, not a blind
   duration. F2's gate must surface the green-clear event definition.**
+
+  **Native walk (2026-07-02, COSMIC, owner's eyes): PASSED.** `BB_BUDDY=forge` + soul,
+  clicked E (Edit) → ring went **amber (Confirm)** + `"Edit repository" needs your
+  confirmation before it runs.` bubble; clicked E again → action ran → ring went **green
+  (Ready)** + `Ran "Edit repository" via claude.` bubble. The full `alertLevel` loop
+  (soul derives → `action_result` carries → ring paints) verified end to end through the
+  real soul-gated action path. The walk surfaced one pre-existing bug (native P/R/E were
+  drawn but not input-region-registered or hit-tested, so clicks passed through the overlay
+  — `f29f837`), now fixed and on the branch. R3 is walk-verified, not just code-verified.
 
 - **R4 — The tucked edge light bar.** When tucked, an edge-of-screen light bar mirrors the
   ring hue. Gate: peripheral readability — bar hue === ring hue === `alert_level`, asserted

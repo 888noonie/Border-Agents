@@ -70,6 +70,12 @@ const RING_CY: f32 = HEAD_CY - 2.0;
 const RING_R: f32 = 40.0;
 const RING_THICKNESS: f32 = 7.0;
 
+// R4 — the tucked edge light bar. When the body tucks under Skin::Ring, a thin light bar
+// flush to the tucked edge mirrors the ring hue, so the governance tier stays peripheral-
+// readable with the figure gone. Thin enough to read as chrome, thick enough to read at a
+// glance from the corner of the eye.
+const BAR_THICKNESS: f32 = 8.0;
+
 // --- UI geometry -----------------------------------------------------------------
 
 const BUBBLE_W: f32 = 172.0;
@@ -1280,7 +1286,14 @@ impl Sprite {
         // Tucked: the minimized bump hugging the edge, plus an optional "peek" (speech bubble,
         // and an input field) beside it when the user has cycled the tucked view open.
         if let Some(edge) = view.tucked {
-            draw_bump(&mut pixmap, edge, w, h, view.color);
+            // R4: under Skin::Ring the tucked buddy paints the edge light bar (hue mirrors the
+            // ring); under Skin::Clay the sleeping bump stays byte-identical. draw_bump and
+            // draw_closed_eyes bodies are untouched — only the call site gains the skin gate,
+            // the same move as R3's eyes/mouth gating.
+            match view.skin {
+                Skin::Ring => draw_edge_bar(&mut pixmap, edge, w, h, view.alert_level, view.route_health),
+                Skin::Clay => draw_bump(&mut pixmap, edge, w, h, view.color),
+            }
             if let Some(font) = &self.font {
                 if view.tucked_show_bubble {
                     draw_tucked_bubble(&mut pixmap, font, edge, w, h, view.speech.unwrap_or(""));
@@ -1610,6 +1623,15 @@ fn ring_hue_rgba(alert_level: Option<AlertLevel>, route_health: Option<&str>) ->
         .or_else(|| route_health.and_then(route_health_ring_rgba))
 }
 
+/// The single source of the ring/bar hue once precedence + the absent-tier stance are
+/// applied: `alert_level` → `route_health` → `Quiet`. Both `draw_ring` and `draw_edge_bar`
+/// resolve through this, so "bar hue === ring hue" is true by construction (and the tests
+/// pin it). No second palette table — the only literal hues live in `alert_level_ring_rgba`
+/// and `route_health_ring_rgba`.
+fn ring_hue_or_quiet(alert_level: Option<AlertLevel>, route_health: Option<&str>) -> [u8; 4] {
+    ring_hue_rgba(alert_level, route_health).unwrap_or_else(|| alert_level_ring_rgba(AlertLevel::Quiet))
+}
+
 /// R3 — the ring detached from the figure. A standalone state halo on its **own** geometry (a
 /// clean circle centred on the presence column), not a stroke of the figure's silhouette, so it
 /// reads correctly with the figure absent (`BB_SKIN=ring`). It always paints: an absent tier
@@ -1621,8 +1643,7 @@ fn draw_ring(
     route_health: Option<&str>,
     route_flash: bool,
 ) {
-    let [r, g, b, a] =
-        ring_hue_rgba(alert_level, route_health).unwrap_or_else(|| alert_level_ring_rgba(AlertLevel::Quiet));
+    let [r, g, b, a] = ring_hue_or_quiet(alert_level, route_health);
 
     // A faint inner disc — the presence "breath" the hue washes over. Alpha well below the ring
     // so the halo reads as a ring, not a filled coin.
@@ -1661,6 +1682,41 @@ fn draw_ring(
                 None,
             );
         }
+    }
+}
+
+/// R4 — the tucked edge light bar. Under `Skin::Ring`, a tucked buddy paints a uniform bar
+/// flush against the tucked edge (spanning the surface's full extent along that edge) in
+/// exactly the ring's hue, so the governance tier stays peripheral-readable with the figure
+/// gone. Hue comes from `ring_hue_or_quiet` (shared with `draw_ring`) — bar hue === ring hue
+/// by construction. Uniform: no node/marker at the old bump position, no route_flash leg, no
+/// pulse cadence — those are F-series ring-behavior work, not R4's hue-mirroring gate.
+fn draw_edge_bar(
+    pixmap: &mut Pixmap,
+    edge: BumpEdge,
+    w: u32,
+    h: u32,
+    alert_level: Option<AlertLevel>,
+    route_health: Option<&str>,
+) {
+    let [r, g, b, a] = ring_hue_or_quiet(alert_level, route_health);
+    let wf = w as f32;
+    let hf = h as f32;
+    let t = BAR_THICKNESS;
+    let rect = match edge {
+        BumpEdge::Left => Rect { x: 0.0, y: 0.0, w: t, h: hf },
+        BumpEdge::Right => Rect { x: wf - t, y: 0.0, w: t, h: hf },
+        BumpEdge::Top => Rect { x: 0.0, y: 0.0, w: wf, h: t },
+        BumpEdge::Bottom => Rect { x: 0.0, y: hf - t, w: wf, h: t },
+    };
+    if let Some(path) = round_rect_path(rect, 0.0) {
+        pixmap.fill_path(
+            &path,
+            &solid(Color::from_rgba8(r, g, b, a)),
+            FillRule::Winding,
+            Transform::identity(),
+            None,
+        );
     }
 }
 
@@ -4518,6 +4574,199 @@ mod tests {
         };
 
         assert_ne!(paint(Skin::Ring), paint(Skin::Clay), "the skin must change what the body paints");
+    }
+
+    // --- R4: the tucked edge light bar (BB_SKIN=ring, tucked) -------------------------
+
+    /// Render just the edge bar into a fresh canvas (mirror of `ring_only`).
+    fn bar_only(edge: BumpEdge, alert: Option<AlertLevel>, route: Option<&str>) -> Vec<u8> {
+        const BW: u32 = 200;
+        const BH: u32 = 120;
+        let mut pixmap = Pixmap::new(BW, BH).unwrap();
+        draw_edge_bar(&mut pixmap, edge, BW, BH, alert, route);
+        pixmap.data().to_vec()
+    }
+
+    /// Sample the center pixel of the bar (clean fill, away from anti-aliased edges), returned
+    /// as premultiplied RGBA bytes — the form tiny-skia's `Pixmap::data()` stores (RGBA; the
+    /// BGRA swap happens later in `blit_premultiplied_bgra` for the Wayland SHM canvas).
+    fn sample_bar_center_rgba(edge: BumpEdge, alert: Option<AlertLevel>, route: Option<&str>) -> [u8; 4] {
+        const BW: u32 = 200;
+        const BH: u32 = 120;
+        let mut pixmap = Pixmap::new(BW, BH).unwrap();
+        draw_edge_bar(&mut pixmap, edge, BW, BH, alert, route);
+        let half_t = (BAR_THICKNESS as u32) / 2;
+        let (sx, sy) = match edge {
+            BumpEdge::Left => (half_t, BH / 2),
+            BumpEdge::Right => (BW - half_t, BH / 2),
+            BumpEdge::Top => (BW / 2, half_t),
+            BumpEdge::Bottom => (BW / 2, BH - half_t),
+        };
+        let idx = ((sy * BW + sx) * 4) as usize;
+        let d = pixmap.data();
+        [d[idx], d[idx + 1], d[idx + 2], d[idx + 3]]
+    }
+
+    /// Demultiply a premultiplied RGBA sample back to linear RGBA (round-to-nearest, matching
+    /// tiny-skia's premultiply rounding). Used to compare a painted pixel against the palette.
+    fn demultiply_rgba(rgba: [u8; 4]) -> [u8; 4] {
+        let [r, g, b, a] = rgba;
+        if a == 0 {
+            return [0, 0, 0, 0];
+        }
+        let div = a as u32;
+        let r_lin = ((r as u32 * 255 + div / 2) / div).min(255) as u8;
+        let g_lin = ((g as u32 * 255 + div / 2) / div).min(255) as u8;
+        let b_lin = ((b as u32 * 255 + div / 2) / div).min(255) as u8;
+        [r_lin, g_lin, b_lin, a]
+    }
+
+    fn rgba_close(a: [u8; 4], b: [u8; 4], tol: i32) -> bool {
+        (0..4).all(|i| (a[i] as i32 - b[i] as i32).abs() <= tol)
+    }
+
+    #[test]
+    fn edge_bar_reads_all_five_states_distinctly() {
+        use std::collections::HashSet;
+        let blank = vec![0_u8; bar_only(BumpEdge::Left, None, None).len()];
+        // The gate: the bar alone must render every one of the five governance states, and no
+        // two may collapse to the same pixels — the R3 `standalone_ring_reads_all_five_states`
+        // shape, applied to the bar.
+        let renders: Vec<Vec<u8>> = [
+            AlertLevel::Quiet,
+            AlertLevel::Ready,
+            AlertLevel::Confirm,
+            AlertLevel::Blocked,
+            AlertLevel::Critical,
+        ]
+        .iter()
+        .map(|&l| bar_only(BumpEdge::Left, Some(l), None))
+        .collect();
+        for (i, r) in renders.iter().enumerate() {
+            assert_ne!(r, &blank, "state {i} must paint a visible bar");
+        }
+        let distinct: HashSet<&Vec<u8>> = renders.iter().collect();
+        assert_eq!(distinct.len(), renders.len(), "each state must read as its own bar");
+    }
+
+    #[test]
+    fn edge_bar_hue_equals_ring_hue_exactly() {
+        // The literal R4 gate: bar hue === ring hue === alert_level. The bar resolves through
+        // ring_hue_or_quiet (shared with draw_ring), and the ring's hue is pinned to
+        // alert_level_ring_rgba by R3 — so asserting the bar's demultiplied center pixel
+        // equals the palette entry closes bar===ring===alert_level. ±1 absorbs premultiply/
+        // demultiply rounding (e.g. Confirm 218/205 round-trips to 217). All four edges are
+        // sampled so the gate isn't accidentally true for one edge only.
+        for &level in &[
+            AlertLevel::Quiet,
+            AlertLevel::Ready,
+            AlertLevel::Confirm,
+            AlertLevel::Blocked,
+            AlertLevel::Critical,
+        ] {
+            let expected = alert_level_ring_rgba(level);
+            for &edge in &[BumpEdge::Left, BumpEdge::Right, BumpEdge::Top, BumpEdge::Bottom] {
+                let sampled = demultiply_rgba(sample_bar_center_rgba(edge, Some(level), None));
+                assert!(
+                    rgba_close(sampled, expected, 1),
+                    "level {:?} edge {:?}: bar hue {:?} != ring hue {:?}",
+                    level,
+                    edge,
+                    sampled,
+                    expected,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn edge_bar_precedence_alert_over_route() {
+        // R2's precedence proof, applied to the bar: alert=Confirm(amber) over route=ready
+        // (green) must differ from route=ready alone — the governance tier wins the bar hue,
+        // not the route health.
+        let with_alert = bar_only(BumpEdge::Left, Some(AlertLevel::Confirm), Some("ready"));
+        let route_only = bar_only(BumpEdge::Left, None, Some("ready"));
+        assert_ne!(
+            with_alert, route_only,
+            "alert_level must take the bar over route_health when both are present",
+        );
+        // And the Confirm-over-ready bar is exactly the Confirm bar (not a blend):
+        let confirm_only = bar_only(BumpEdge::Left, Some(AlertLevel::Confirm), None);
+        assert_eq!(with_alert, confirm_only, "the alert tier fully wins, not a blend with route");
+    }
+
+    #[test]
+    fn edge_bar_never_vanishes_absent_rests_at_quiet() {
+        // In ring skin the bar *is* the tucked buddy — it can never be blank. No tier + no
+        // route resolves to the Quiet resting hue, not nothing (the idle-decay stance R3
+        // ratified, now holding for the tucked bar too).
+        let idle = bar_only(BumpEdge::Left, None, None);
+        let blank = vec![0_u8; idle.len()];
+        assert_ne!(&idle, &blank, "an idle bar (no tier) must still be visible");
+        assert_eq!(
+            idle,
+            bar_only(BumpEdge::Left, Some(AlertLevel::Quiet), None),
+            "absent tier === Quiet on the bar",
+        );
+        // Route health is still the fallback when no tier is set (R2 precedence survives).
+        assert_eq!(
+            bar_only(BumpEdge::Left, None, Some("ready")),
+            bar_only(BumpEdge::Left, Some(AlertLevel::Ready), None),
+            "route health is still the fallback on the bar",
+        );
+    }
+
+    #[test]
+    fn skin_gates_tucked_path_ring_vs_clay() {
+        // The R3 `skin_selects_ring_or_figure_through_the_paint_path` shape, tucked variant:
+        // the same tucked BodyView, Ring vs Clay, must paint different pixels. Ring paints the
+        // edge bar; Clay paints the sleeping bump. Proves the skin gate is live on the tucked
+        // path, not just the open path — closing the hole where the figure leaked through.
+        let layout = Layout::initial();
+        let w = SURFACE_W;
+        let h = layout.surface_h();
+        let sprite = Sprite::new();
+
+        let paint = |skin: Skin| -> Vec<u8> {
+            let mut canvas = vec![0_u8; (w * h * 4) as usize];
+            let view = BodyView {
+                t: 0.0,
+                emotion: Emotion::Neutral,
+                speech: None,
+                torso_output: TorsoOutput::Text(TextCard { title: "", body: "" }),
+                chat_open: false,
+                tucked: Some(BumpEdge::Left),
+                tucked_show_bubble: false,
+                tucked_show_input: false,
+                input_text: "",
+                input_placeholder: "",
+                input_focused: false,
+                review_pending: false,
+                edit_pending: false,
+                posture_badge: None,
+                surface_bloom: &[],
+                route_health: None,
+                route_flash: false,
+                alert_level: Some(AlertLevel::Confirm),
+                receipt_rail: &[],
+                interior_rows: &[],
+                settings: &[],
+                onboarding: None,
+                layout,
+                pinned: None,
+                frame: None,
+                color: CLAY_DEFAULT,
+                skin,
+            };
+            sprite.paint(&mut canvas, w, h, &view);
+            canvas
+        };
+
+        assert_ne!(
+            paint(Skin::Ring),
+            paint(Skin::Clay),
+            "a tucked ring-skin buddy must paint the bar, not the clay bump",
+        );
     }
 
     #[test]

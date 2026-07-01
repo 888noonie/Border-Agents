@@ -509,6 +509,9 @@ pub enum Cue {
         /// The grade basis that justified the decision (present only when the gate weighed
         /// graded memory). `backed_by` is the audit trail back to the ledger (law 6).
         grade: Option<ActionGrade>,
+        /// The soul-derived governance alert tier (law 7: the body paints it, never infers it).
+        /// Absent on older cues → `None`. R1 threads it onto the view model; nothing renders it.
+        alert_level: Option<AlertLevel>,
     },
     SurfaceActive {
         surface: String,
@@ -655,6 +658,20 @@ pub struct ActionGrade {
     pub backed_by: Vec<String>,
 }
 
+/// Glanceable governance alert tier riding on an `action_result` — the chrome the body will
+/// paint (later the state ring) alongside the face. Mirrors the TS `PresenceAlertLevel`: a
+/// closed 5-set, so the body reasons over it exhaustively instead of a free string. `quiet` is
+/// the resting tier; an unknown decision fails loud at `critical`, never a reassuring `quiet`.
+/// R1 threads it to the view model; no draw path reads it yet.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlertLevel {
+    Quiet,
+    Ready,
+    Confirm,
+    Blocked,
+    Critical,
+}
+
 /// A parsed to-body message: which buddy it concerns, and the cue to apply.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ToBody {
@@ -722,7 +739,29 @@ fn parse_action_result(v: &Value) -> Option<Cue> {
         None => None,
         Some(raw) => Some(parse_action_grade(raw)?),
     };
-    Some(Cue::ActionResult { effector, decision, receipt_id, request_id, summary, outcome, grade })
+    // An `alertLevel` is optional, but if present it must be one of the five literals — a
+    // malformed level drops the whole cue (mirrors the TS `isAlertLevel` guard) rather than
+    // rendering an unknown chrome tier.
+    let alert_level = match v.get("alertLevel") {
+        None => None,
+        Some(raw) => Some(parse_alert_level(raw)?),
+    };
+    Some(Cue::ActionResult { effector, decision, receipt_id, request_id, summary, outcome, grade, alert_level })
+}
+
+/// Parse the optional `alertLevel` on an `action_result`. Must be one of the five
+/// `PresenceAlertLevel` literals; an unknown string returns `None` so the caller's `?` drops the
+/// whole cue (mirrors the TS `isAlertLevel` strict guard). An absent field is handled by the
+/// caller as `None`, preserving back-compat with older cues.
+fn parse_alert_level(v: &Value) -> Option<AlertLevel> {
+    match v.as_str()? {
+        "quiet" => Some(AlertLevel::Quiet),
+        "ready" => Some(AlertLevel::Ready),
+        "confirm" => Some(AlertLevel::Confirm),
+        "blocked" => Some(AlertLevel::Blocked),
+        "critical" => Some(AlertLevel::Critical),
+        _ => None,
+    }
 }
 
 /// Parse the optional `grade` on an `action_result`. `graded`/`trusted` must be non-negative
@@ -1373,7 +1412,7 @@ mod tests {
         let result = parse_to_body(&fixture("action_result")).unwrap();
         assert_eq!(result.buddy, "hermes");
         match result.cue {
-            Cue::ActionResult { effector, decision, receipt_id, request_id, summary, outcome, grade } => {
+            Cue::ActionResult { effector, decision, receipt_id, request_id, summary, outcome, grade, alert_level } => {
                 assert_eq!(effector, "receipt_review");
                 assert_eq!(decision, "allow");
                 assert!(!receipt_id.is_empty());
@@ -1387,8 +1426,11 @@ mod tests {
                 assert_eq!(route.provider, "claude");
                 assert_eq!(route.locality, "cloud");
                 assert!(!route.downgraded);
-                // The golden fixture is the back-compat anchor: no grade field, parses to None.
+                // The golden fixture carries no grade (back-compat anchor: parses to None) but
+                // does carry alertLevel:"ready" — the chrome twin of decision:"allow"
+                // (decisionAlertLevel) — so the fixture pins the present-and-valid parse too.
                 assert!(grade.is_none());
+                assert_eq!(alert_level, Some(AlertLevel::Ready));
             }
             other => panic!("expected action_result, got {other:?}"),
         }
@@ -1425,6 +1467,25 @@ mod tests {
         assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"action_result","buddy":"h","ts":1,"effector":"repo_edit","decision":"allow","receiptId":"r1","grade":{"graded":1,"trusted":1,"backedBy":[42]}}"#).is_none());
         // A missing field (no backedBy) drops the cue.
         assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"action_result","buddy":"h","ts":1,"effector":"repo_edit","decision":"allow","receiptId":"r1","grade":{"graded":1,"trusted":1}}"#).is_none());
+    }
+
+    #[test]
+    fn alert_level_validation_mirrors_ts() {
+        // A well-formed alertLevel parses to the matching closed-set variant.
+        let ok = parse_to_body(r#"{"protocol":"presence","v":0,"kind":"action_result","buddy":"h","ts":1,"effector":"repo_edit","decision":"needs_confirmation","receiptId":"r1","alertLevel":"confirm"}"#).unwrap();
+        match ok.cue {
+            Cue::ActionResult { alert_level, .. } => assert_eq!(alert_level, Some(AlertLevel::Confirm)),
+            other => panic!("expected action_result, got {other:?}"),
+        }
+        // A malformed alertLevel drops the whole cue (strict, mirrors isAlertLevel) rather than
+        // rendering an unknown chrome tier.
+        assert!(parse_to_body(r#"{"protocol":"presence","v":0,"kind":"action_result","buddy":"h","ts":1,"effector":"repo_edit","decision":"allow","receiptId":"r1","alertLevel":"bogus"}"#).is_none());
+        // An absent alertLevel parses to None (back-compat with older cues, same as the fixture).
+        let none = parse_to_body(r#"{"protocol":"presence","v":0,"kind":"action_result","buddy":"h","ts":1,"effector":"repo_edit","decision":"allow","receiptId":"r1"}"#).unwrap();
+        match none.cue {
+            Cue::ActionResult { alert_level, .. } => assert!(alert_level.is_none()),
+            other => panic!("expected action_result, got {other:?}"),
+        }
     }
 
     #[test]

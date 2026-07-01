@@ -670,6 +670,7 @@ fn main() {
         active_provider: None,
         active_locality: None,
         active_route_health: None,
+        active_alert_level: None,
         route_flash_until: None,
         facing: Facing::Right,
         body_len: render::BODY_LEN_DEFAULT,
@@ -1223,6 +1224,10 @@ struct App {
     /// Optional soul-derived `ready | degraded | unavailable` from `surface_active.route.health`.
     /// Absent means no ring, preserving back-compat with older cues.
     active_route_health: Option<String>,
+    /// Soul-derived governance alert tier from the last `action_result.alertLevel` (law 7: the
+    /// body paints it, never infers it). `None` until an action_result carries one. R1 threads it
+    /// to the view model; the state ring that reads it lands in a later slice.
+    active_alert_level: Option<presence::AlertLevel>,
     /// Body-observed local→cloud transition flash deadline. This is presentation memory only,
     /// separate from soul-derived health.
     route_flash_until: Option<Instant>,
@@ -1573,6 +1578,7 @@ impl App {
             surface_bloom: &bloom_items,
             route_health: route_health.as_deref(),
             route_flash,
+            alert_level: self.active_alert_level,
             receipt_rail: &receipt_rail_items,
             interior_rows: if onboarding_view.is_some() { &[] } else { &interior_rows },
             settings: if onboarding_view.is_some() { &[] } else { &settings_rows },
@@ -1953,12 +1959,15 @@ impl App {
             presence::Cue::Output { surface, text, caption, media_type, data_base64 } => {
                 self.apply_output(&surface, text, caption, media_type, data_base64);
             }
-            presence::Cue::ActionResult { effector, decision, receipt_id, summary, outcome, grade, .. } => {
+            presence::Cue::ActionResult { effector, decision, receipt_id, summary, outcome, grade, alert_level, .. } => {
                 // Present the soul's authorization outcome — the body renders it, it never decides
                 // it (law 7). The face is the fastest read: each decision wears a DISTINCT, honest
                 // expression (allow→happy, needs_confirmation→curious, blocked→alert) so a glance
                 // conveys it before any prose. `needs_confirmation` also flips THIS effector's
                 // on-body button (Review or Edit) into Confirm until resolved.
+                // Thread the soul-derived alert tier onto body state (law 7: painted, never
+                // inferred). R1 stores it; the state ring that reads it lands in a later slice.
+                self.active_alert_level = alert_level;
                 let executed = outcome.as_ref().map(|o| o.executed);
                 let route_label = outcome
                     .as_ref()

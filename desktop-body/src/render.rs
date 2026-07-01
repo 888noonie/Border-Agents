@@ -1187,6 +1187,10 @@ pub struct BodyView<'a> {
     pub route_health: Option<&'a str>,
     /// Body-observed local→cloud transition flash. Separate from route health.
     pub route_flash: bool,
+    /// Soul-derived governance alert tier from `action_result.alertLevel` (law 7: painted, never
+    /// inferred). R1 threads it onto the view model; no draw path reads it yet — the state ring
+    /// that will paint from it lands in a later slice.
+    pub alert_level: Option<crate::presence::AlertLevel>,
     /// Expanded-mode receipt rail items, newest first. Empty still draws the rail panel.
     pub receipt_rail: &'a [ReceiptRailItem<'a>],
     /// The interior view: perimeter controls folded into a labeled list inside the torso,
@@ -4100,6 +4104,7 @@ mod tests {
                 surface_bloom: &[],
                 route_health: None,
                 route_flash: false,
+                alert_level: None,
                 receipt_rail: &[],
                 interior_rows: interior,
                 settings: &[],
@@ -4200,6 +4205,7 @@ mod tests {
                 surface_bloom: &[],
                 route_health: None,
                 route_flash: false,
+                alert_level: None,
                 receipt_rail: &[],
                 interior_rows: &interior,
                 settings: &[],
@@ -4604,6 +4610,7 @@ mod tests {
             surface_bloom: &[],
             route_health: None,
             route_flash: false,
+            alert_level: None,
             receipt_rail: &[],
             interior_rows: &[],
             settings: &[],

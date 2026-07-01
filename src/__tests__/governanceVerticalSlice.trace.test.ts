@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { handleActionRequest } from "../soulActions";
+import { handleActionRequest, decisionAlertLevel } from "../soulActions";
 import { readReceiptLedger } from "../receiptLedger";
 import type { BuddySettings } from "../buddyProfiles";
 import type { SessionChatLine } from "../liveGovernance";
@@ -66,7 +66,11 @@ function repoIntent(path: string, operation = "write_patch") {
 }
 
 /** Pipe one envelope JSON through the Rust harness and return its parsed JSON output. */
-function parseViaRust(envelopeJson: string): { ok: boolean; grade?: { graded: number; trusted: number; backed_by: string[] } | null } {
+function parseViaRust(envelopeJson: string): {
+  ok: boolean;
+  grade?: { graded: number; trusted: number; backed_by: string[] } | null;
+  alertLevel?: string | null;
+} {
   const result = spawnSync(HARNESS_BIN, [], {
     cwd: DESKTOP_BODY,
     input: envelopeJson,
@@ -184,5 +188,46 @@ describe("governance vertical slice 4 — wire↔ledger↔body end-to-end trace"
     });
     const parsed = parseViaRust(malformed);
     expect(parsed.ok).toBe(false);
+  });
+
+  // R1 — the alertLevel seed of "extend the trace to decision→alertLevel→hue". The soul already
+  // derives a glanceable alert tier from every gate decision (`decisionAlertLevel`); R1 threads it
+  // to the body side of the wire. This closes the same wire===body loop the grade trace closes,
+  // one slice earlier than the ring that will paint the hue: prove the tier is not discarded.
+  test("the body reconstructs the same alertLevel the soul derived from each decision", () => {
+    const storage = memoryStorage();
+    const intent = repoIntent(".border-agents/proofs/slice-r1.patch");
+    // needs_confirmation (high risk), then confirm → allow.
+    const first = handleActionRequest({
+      buddy: "forge", effectorId: "repo_edit", settings: ACTING, posture: "work",
+      history: ACTION_HISTORY, intent, storage, now: "2026-06-13T12:00:00Z",
+    });
+    const second = handleActionRequest({
+      buddy: "forge", effectorId: "repo_edit", settings: ACTING, posture: "work",
+      history: ACTION_HISTORY, intent, confirmed: true, storage, now: "2026-06-13T12:00:01Z",
+    });
+    // A protected target (AGENTS.md) hard-blocks regardless of grant/confirmation.
+    const blocked = handleActionRequest({
+      buddy: "forge", effectorId: "repo_edit", settings: ACTING, posture: "work",
+      history: ACTION_HISTORY, intent: repoIntent("AGENTS.md"), storage, now: "2026-06-13T12:00:02Z",
+    });
+
+    // The flow exercises three distinct decisions — assert that union, not one arm.
+    expect([first, second, blocked].map((r) => r.receipt.decision)).toEqual([
+      "needs_confirmation",
+      "allow",
+      "blocked",
+    ]);
+
+    for (const { receipt, result } of [first, second, blocked]) {
+      // (soul) the wire carries exactly what decisionAlertLevel maps the decision to.
+      const expected = decisionAlertLevel(receipt.decision);
+      expect(result.alertLevel).toBe(expected);
+      // (body) the same parser the live body runs reconstructs the identical tier — the signal is
+      // on the body side of the wire, not discarded. wire === body on the alert tier.
+      const parsed = parseViaRust(JSON.stringify(result));
+      expect(parsed.ok).toBe(true);
+      expect(parsed.alertLevel).toBe(expected);
+    }
   });
 });

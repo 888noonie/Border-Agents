@@ -116,8 +116,9 @@ CI trace harness rather than eyeballing.
 
 - **R2 — The 5-hue palette, one source; drive the existing ring from `alert_level`.**
   Define the palette once (extend the `route_health` hue table into a full `AlertLevel`→hue
-  map: quiet=blue-grey, ready=green, confirm=amber, blocked=red, critical=violet — four of
-  five already exist). Read `BodyView.alert_level` in the existing ring paint path via an
+  map: quiet=blue-grey, ready=green, confirm=amber, blocked=red, critical=violet — three
+  of five already exist as ready/degraded/unavailable; quiet and critical are new). Read
+  `BodyView.alert_level` in the existing ring paint path via an
   exhaustive `match`. Figure still draws; its halo now speaks the full 5-state vocabulary.
   Gate: all five states paint distinct hues on the current figure; trace/fixture asserts
   `decision → alertLevel → hue`.
@@ -202,9 +203,13 @@ work: the `repo_edit` flow in ring language).
   `decision` are validated `String`s. The enum is the right call for R2's exhaustive
   `match alert_level → hue`. The two styles coexist; consolidation is optional, not required.
 - **Ring persistence / idle decay.** `active_alert_level` persists until the next
-  `action_result` overwrites it (mirrors `active_route_health`). Decide *before the
-  F-series* whether the ring's tier should decay to `Quiet` on idle or only change on the
-  next decision — so idle behavior is intentional, not inherited. Not blocking R2's first
-  paint.
+  `action_result` overwrites it (mirrors `active_route_health`). **Decide at R3** — when
+  the ring detaches into a standalone primitive (`BB_SKIN=ring`, figure off) and idle
+  behavior first becomes visible with the figure off — whether the ring's tier should
+  decay to `Quiet` on idle or only change on the next decision. R3 is the natural
+  decision point: you can't ship a standalone ring without deciding what it does at idle,
+  and deciding it under R3 (infrastructure) keeps it deliberate rather than a last-minute
+  call under F-series flow polish. Not blocking R2's first paint (R2's ring still rides
+  the figure, so idle is contextualized by the figure being present).
 - **Tauri 2nd webview vs. native** for onboarding flows that outgrow the in-torso panel.
   Scale, not correctness.

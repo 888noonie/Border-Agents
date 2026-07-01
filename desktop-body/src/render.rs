@@ -22,6 +22,8 @@ use tiny_skia::{
     Stroke, Transform,
 };
 
+use crate::presence::AlertLevel;
+
 // --- figure geometry -------------------------------------------------------------
 
 pub const SURFACE_W: u32 = 560;
@@ -1188,9 +1190,9 @@ pub struct BodyView<'a> {
     /// Body-observed local→cloud transition flash. Separate from route health.
     pub route_flash: bool,
     /// Soul-derived governance alert tier from `action_result.alertLevel` (law 7: painted, never
-    /// inferred). R1 threads it onto the view model; no draw path reads it yet — the state ring
-    /// that will paint from it lands in a later slice.
-    pub alert_level: Option<crate::presence::AlertLevel>,
+    /// inferred). Drives the figure's boundary ring hue via `alert_level_ring_rgba` (the primary
+    /// ring voice; route health is the fallback until a tier is set). Absent → no governance ring.
+    pub alert_level: Option<AlertLevel>,
     /// Expanded-mode receipt rail items, newest first. Empty still draws the rail panel.
     pub receipt_rail: &'a [ReceiptRailItem<'a>],
     /// The interior view: perimeter controls folded into a labeled list inside the torso,
@@ -1359,7 +1361,7 @@ fn draw_body_content(
     mouth: &Mouth,
     pose: &FigurePose,
 ) {
-    draw_figure(pixmap, &view.layout, view.color, bob, pose, view.route_health, view.route_flash);
+    draw_figure(pixmap, &view.layout, view.color, bob, pose, view.alert_level, view.route_health, view.route_flash);
     if let Some(font) = font {
         if let Some(panel) = view.onboarding {
             draw_onboarding_view(pixmap, font, &view.layout, panel, view.color);
@@ -1450,12 +1452,13 @@ fn draw_figure(
     color: [u8; 3],
     bob: f32,
     pose: &FigurePose,
+    alert_level: Option<AlertLevel>,
     route_health: Option<&str>,
     route_flash: bool,
 ) {
     let hips_y = layout.hips_y();
     let limb = solid(rgb(shade(color, 0.94)));
-    draw_route_boundary_chrome(pixmap, layout, route_health, route_flash);
+    draw_route_boundary_chrome(pixmap, layout, alert_level, route_health, route_flash);
 
     // Legs + feet (drawn first so the torso bottom overlaps the hip joins).
     let mut leg_stroke = Stroke::default();
@@ -1545,10 +1548,17 @@ fn draw_figure(
 fn draw_route_boundary_chrome(
     pixmap: &mut Pixmap,
     layout: &Layout,
+    alert_level: Option<AlertLevel>,
     route_health: Option<&str>,
     route_flash: bool,
 ) {
-    if let Some(color) = route_health.and_then(route_health_ring_color) {
+    // The governance alert tier is the ring's primary voice (the laminate). The route-health
+    // ring is the fallback until an `action_result` has set a tier — and, later, until the soul
+    // folds route/provider failure into `critical`. Precedence: alert_level wins when present.
+    let ring = alert_level
+        .map(alert_level_ring_color)
+        .or_else(|| route_health.and_then(route_health_ring_color));
+    if let Some(color) = ring {
         stroke_figure_boundary(pixmap, layout, color, 2.0, 4.0);
     }
     if route_flash {
@@ -1567,6 +1577,26 @@ fn route_health_ring_rgba(health: &str) -> Option<[u8; 4]> {
         "unavailable" => Some([210, 63, 60, 215]),
         _ => None,
     }
+}
+
+/// The one place the 5-state governance ring palette lives. Each `AlertLevel` maps to its ring
+/// hue, borrowed straight from the trust vocabulary: calm green trusts, amber asks, red refuses,
+/// violet guards a boundary, muted blue-grey rests. Total and exhaustive by construction — adding
+/// an `AlertLevel` variant is a compile error here until it is given a hue. This is the seed the
+/// route-health ring (three hues) generalizes into: the halo now speaks the full five-state set.
+fn alert_level_ring_rgba(level: AlertLevel) -> [u8; 4] {
+    match level {
+        AlertLevel::Quiet => [122, 138, 168, 150],   // muted blue-grey — resting, barely there
+        AlertLevel::Ready => [52, 168, 96, 180],      // calm green — a reply/answer is ready
+        AlertLevel::Confirm => [218, 147, 45, 205],   // amber — an action waits at the gate
+        AlertLevel::Blocked => [210, 63, 60, 215],    // red — refused / unwired, shown honestly
+        AlertLevel::Critical => [138, 79, 214, 220],  // violet — privacy/route/provider boundary
+    }
+}
+
+fn alert_level_ring_color(level: AlertLevel) -> Color {
+    let [r, g, b, a] = alert_level_ring_rgba(level);
+    Color::from_rgba8(r, g, b, a)
 }
 
 fn stroke_figure_boundary(pixmap: &mut Pixmap, layout: &Layout, color: Color, width: f32, outset: f32) {
@@ -4251,6 +4281,54 @@ mod tests {
         assert_eq!(route_health_ring_rgba("degraded"), Some([218, 147, 45, 205]));
         assert_eq!(route_health_ring_rgba("unavailable"), Some([210, 63, 60, 215]));
         assert_eq!(route_health_ring_rgba("flaky"), None);
+    }
+
+    #[test]
+    fn alert_level_ring_hues_are_total_and_distinct() {
+        use std::collections::HashSet;
+        // The five governance states — the body end of `decision → alertLevel → hue`. The soul
+        // side (`decision → alertLevel`) is pinned by the vitest trace harness; this pins the hue.
+        let all = [
+            AlertLevel::Quiet,
+            AlertLevel::Ready,
+            AlertLevel::Confirm,
+            AlertLevel::Blocked,
+            AlertLevel::Critical,
+        ];
+        // The palette is borrowed from the trust vocabulary — assert the load-bearing hues so a
+        // silent swap (e.g. confirm turning green) fails loud.
+        assert_eq!(alert_level_ring_rgba(AlertLevel::Quiet), [122, 138, 168, 150]);
+        assert_eq!(alert_level_ring_rgba(AlertLevel::Ready), [52, 168, 96, 180]);
+        assert_eq!(alert_level_ring_rgba(AlertLevel::Confirm), [218, 147, 45, 205]);
+        assert_eq!(alert_level_ring_rgba(AlertLevel::Blocked), [210, 63, 60, 215]);
+        assert_eq!(alert_level_ring_rgba(AlertLevel::Critical), [138, 79, 214, 220]);
+        // Every state reads as its own hue — no two governance tiers collapse to one colour.
+        let distinct: HashSet<[u8; 4]> = all.iter().map(|&l| alert_level_ring_rgba(l)).collect();
+        assert_eq!(distinct.len(), all.len());
+    }
+
+    #[test]
+    fn alert_level_is_the_ring_hue_over_route_health() {
+        let layout = Layout::initial();
+        let blank = Pixmap::new(SURFACE_W, layout.surface_h()).unwrap();
+
+        // (a) alert=Confirm(amber) over route=ready(green): the governance tier wins the ring.
+        let mut with_alert = Pixmap::new(SURFACE_W, layout.surface_h()).unwrap();
+        draw_route_boundary_chrome(&mut with_alert, &layout, Some(AlertLevel::Confirm), Some("ready"), false);
+        assert_ne!(with_alert.data(), blank.data(), "the ring must stroke the figure boundary");
+
+        // (b) no alert tier, same route: the route-health ring is the fallback (no regression).
+        let mut route_only = Pixmap::new(SURFACE_W, layout.surface_h()).unwrap();
+        draw_route_boundary_chrome(&mut route_only, &layout, None, Some("ready"), false);
+        assert_ne!(route_only.data(), blank.data(), "route health is still the fallback ring");
+
+        // Precedence proof: (a) and (b) share the same "ready" route, so if route health won the
+        // ring they'd be identical. They differ → the Confirm tier (amber) overrode ready (green).
+        assert_ne!(
+            with_alert.data(),
+            route_only.data(),
+            "alert_level must take the ring over route_health when both are present",
+        );
     }
 
     #[test]

@@ -658,11 +658,11 @@ pub struct ActionGrade {
     pub backed_by: Vec<String>,
 }
 
-/// Glanceable governance alert tier riding on an `action_result` — the chrome the body will
-/// paint (later the state ring) alongside the face. Mirrors the TS `PresenceAlertLevel`: a
-/// closed 5-set, so the body reasons over it exhaustively instead of a free string. `quiet` is
-/// the resting tier; an unknown decision fails loud at `critical`, never a reassuring `quiet`.
-/// R1 threads it to the view model; no draw path reads it yet.
+/// Glanceable governance alert tier riding on an `action_result` — the chrome the body paints
+/// (the state ring's hue) alongside the face. Mirrors the TS `PresenceAlertLevel`: a closed
+/// 5-set, so the body reasons over it exhaustively (see `render::alert_level_ring_rgba`) instead
+/// of a free string. `quiet` is the resting tier. Which tier a decision earns is the soul's call
+/// (`decisionAlertLevel`); the body only paints the tier it is handed, never inferring one (law 7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AlertLevel {
     Quiet,

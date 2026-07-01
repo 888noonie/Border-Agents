@@ -128,10 +128,22 @@ CI trace harness rather than eyeballing.
   harness (decision→alertLevel, wire===body) + Rust tests (alertLevel→hue against the
   exact paint function). cargo 100+0+29, tsc clean, vitest 278.
 
-- **R3 — Detach the ring into a primitive.** Introduce `draw_ring(alert_level)` as an
-  independent halo that renders correctly *with the figure absent*. Add `BB_SKIN=ring|clay`
-  (default `ring`). Gate: `BB_SKIN=ring` shows a standalone ring reading all 5 states;
-  `BB_SKIN=clay` restores today's figure. Verify by manual native walk in both skins.
+- **R3 — Detach the ring into a primitive. ✅ DONE (code; pending native walk).**
+  `draw_ring(alert_level, route_health, route_flash)` is a standalone halo with its own
+  geometry (`RING_CX/CY/R/THICKNESS`, a clean circle on the presence column) — not a stroke
+  of the figure silhouette, so it holds its shape with the figure gone. R2's precedence
+  survives the detachment via a shared `ring_hue_rgba` helper. `Skin { Ring default | Clay }`
+  + `env_skin()` reads `BB_SKIN` once at startup; `BB_SKIN=ring` is the default dev path
+  (`bb-body.sh` exports it, the reverse-tell guard). Figure function bodies unchanged —
+  only the eyes/mouth call sites are gated behind `Skin::Clay`. Tests: 5-state distinct +
+  pairwise-unique; never-vanishes-at-Quiet (R2 precedence survives); skin-selects-through-
+  paint-path (same BodyView, Ring vs Clay → different pixels). cargo 103+0+29, tsc clean,
+  vitest 278. **Idle-decay decision (due at R3, ratified): hold the last tier — no wall-
+  clock decay — with `absent → Quiet` so the ring is never blank. `confirm`/`blocked`/
+  `critical` are standing obligations that must persist (criterion 3); decay could only
+  ever apply to `ready`, and `ready`'s clear is event-driven ("green clears when the user
+  engages the reply") deferred to F2 — where the flow defines the event, not a blind
+  duration. F2's gate must surface the green-clear event definition.**
 
 - **R4 — The tucked edge light bar.** When tucked, an edge-of-screen light bar mirrors the
   ring hue. Gate: peripheral readability — bar hue === ring hue === `alert_level`, asserted
@@ -197,10 +209,13 @@ validation). That canary is watched hardest under the F-series lead.
 
 ## Roles
 
-R1–R4 (ring becomes the state surface, figure untouched) run under the building-side
-project lead; the builder builds. **Switch point: R4 → F1.** At R4→F1, project-lead passes
-to the builder (Opus) and the building-side lead becomes auditor for the F-series (product
-work: the `repo_edit` flow in ring language).
+R1–R3 ran under the building-side project lead (GLM); the builder (Opus) built, the lead
+audited. **Switch point: R3 → R4** (moved forward from R4→F1 after R3's native walk
+passes). At R3→R4 the roles reverse: GLM becomes the builder (coder), Opus becomes
+project lead + auditor. The F-series (product judgment: is this flow good?) then runs
+with Opus as lead — fitting, since Opus authored the design doc — and GLM executing the
+build. The "display not a flow" canary is watched hardest under the F-series lead,
+whoever that is when the F-series lands.
 
 ## Parked (don't lift unless forced)
 

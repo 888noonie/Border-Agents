@@ -1016,3 +1016,5 @@ All 9 protected figure functions **md5-identical** across `e678892^..e678892` (`
 2. `tucked_bubble_budget_is_three_lines` re-states `pad_top = 18.0` rather than sharing a constant with `draw_tucked_bubble` — drift-prone pair, acceptable per brief ("compute the same way").
 
 **Verdict: PASS. Push held for owner walk** (tuck → long speech shows up to 3 lines, honest `…` if longer; quick untucked chat/Customize regression for the shared `wrap()`).
+
+**Owner walk PASSED 2026-07-03 (native, COSMIC):** tucked bubble renders the full three-line speech (blocked-effector message complete, no mid-sentence cut) ✅; untucked chat bubble + torso text output regression clean (shared `wrap()`) ✅. **H5 COMPLETE — pushed. Tucked state polish done.**

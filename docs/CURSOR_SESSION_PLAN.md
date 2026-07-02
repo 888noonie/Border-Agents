@@ -920,3 +920,66 @@ Tuck a buddy → trigger speech longer than one line (e.g. tap the Edit interior
 `fix(body): laminal ring pivot — Slice H5 — tucked bubble 3-line budget + honest wrap ellipsis, render tidy`
 
 Append builder report below. **STOP after H5.**
+
+---
+
+## Builder report — H5 (Composer 2.5, 2026-07-02)
+
+**Status:** H5 complete. **Stopped after H5.** Not pushed.
+
+### Commit
+
+```
+fix(body): laminal ring pivot — Slice H5 — tucked bubble 3-line budget + honest wrap ellipsis, render tidy
+
+TUCK_PEEK_BUBBLE_H 60→88 for a three-line tucked bubble budget. wrap() ellipsizes
+when the line budget is exhausted, not only on width overflow. Rename stale bar
+test; #[cfg(test)] on Layout::initial and interior_rows (release warnings 10→9).
+
+Tests: cargo test 134 passed (main), +wrap_ellipsizes_when_line_budget_exhausted,
++wrap_unlimited_budget_never_ellipsizes, +tucked_bubble_budget_is_three_lines.
+```
+
+### Gate outputs (verbatim, forced recompile via `touch src/*.rs`)
+
+**`cd desktop-body && cargo test`**
+
+```
+running 134 tests
+test result: ok. 134 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.32s
+running 29 tests (parse bin)
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+```
+
+Baseline was 131 (post-H4b); H5 landed +3 named tests (rename count-neutral).
+
+**`cd desktop-body && cargo build --release`** — **9 warnings** (was 10; `Layout::initial`/`interior_rows` cfg-gated as briefed).
+
+**`npx tsc --noEmit`** — clean.
+
+**`npx vitest run`** — **278 / 31** unchanged.
+
+### Canary greps
+
+| Canary | Result |
+|--------|--------|
+| Figure function set byte-identical | PASS — diff touches only wrap, TUCK_PEEK_BUBBLE_H, Layout cfg, tests |
+| Zero new color literals | PASS |
+| No soul/wire/presence changes | PASS |
+
+### Conflict stops
+
+None.
+
+### Scope
+
+`desktop-body/src/render.rs` only, per brief.
+
+### Implementation notes
+
+- `truncated` flag threaded through `wrap` / `push_wrapped_line` / `hard_wrap_current`; `ellipsize_line_in_place` factors the shared trim-until-`…`-fits loop.
+- `tucked_bubble_rect` unchanged as geometry source of truth — height bump is constant-only.
+
+### Not done
+
+Push.

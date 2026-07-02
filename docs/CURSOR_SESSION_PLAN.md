@@ -565,3 +565,23 @@ None. No re-clamp added.
 ### Not done
 
 H4, push, main.rs, scripts.
+
+---
+
+## Lead audit — H3.1 + T/B length match (Fable, 2026-07-02)
+
+**Verdict: PASS.** Owner walk already passed (left/right centering ✓, 10px ✓, top/bottom length match ✓). Pushed.
+
+Covers all three commits: `457b930` (briefed slice), `8fff20b` (report), **`902fe43` (owner-requested mid-slice, outside the brief — audited to the same bar)**.
+
+Gates re-run with forced recompile: cargo **123 + 0 / 29** (+1 briefed test, +1 for the T/B match — both named), **10 known warnings**, tsc clean, vitest **278 / 31**. Canaries: zero new color literals; all figure/halo/chrome function bodies md5-identical across `eb0f99d..HEAD`.
+
+Briefed slice conforms: shrink-don't-slide exactly as pinned (`len = min(2·min(along, extent−along), extent·FRAC)`, `start = along − len/2`), **no defensive re-clamp**, thickness 12→10, scope render.rs only.
+
+Unbriefed `902fe43` design review: `tuck_bar_along_length` computes the left/right length with an **infinite cap**, so for L/R edges the cap equals their own length — L/R geometry provably unaffected; only top/bottom get capped to match. No circularity, no slide path reintroduced. `dock_head_only_bump_hits_bar_misses` rewrite (find-an-endpoint-outside-bump) verified sound on its new left-edge dims.
+
+Noted, non-blocking:
+- Test name `bar_is_half_length_centered_on_anchor` no longer describes its assertions (it now checks T/B↔L/R match + shrink); rename opportunistically next time that file is open.
+- **New owner walk finding (logged for backlog, not H-series):** tucked speech-bubble text is cut off (e.g. `"Edit repository" needs` truncated). Bubble render/positioning works well in the tucked space otherwise. Candidate small slice after H4: tucked bubble wrap/height vs. fixed bubble rect.
+
+**Process note:** owner asked Composer directly for the T/B match mid-slice — fine outcome this time (small, well-tested, audited clean), but preference stands: route scope adds through the lead brief so the audit knows what it's checking before it reads the diff.

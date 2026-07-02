@@ -740,3 +740,44 @@ Audited `69ac888` (+ builder report `d163d90`). Owner walk **PASSED** same eveni
 4. Concurrent-writer read-modify-write race (two buddy processes saving at once could drop each other's entry) — single-buddy reality today, becomes real if multi-buddy launch lands; note for then.
 
 **Verdict: PASS. Pushing `69ac888..` + this audit. H4b brief follows below.**
+
+---
+
+## Slice H4b — Customize "Dock" row (head/bar/both cycle, persisted) — brief for Composer
+
+**Status: READY FOR COMPOSER.** H4a walked + pushed. H4b gives dock its first in-session mutator: a row in the body-local settings panel, cycling like Colour/Size, written through the existing `persist_settings()` funnel. Same ground rules: gates verbatim with forced recompile, canaries, commit locally, NEVER push, STOP after H4b.
+
+### Scope
+
+**`desktop-body/src/main.rs` ONLY.** render.rs untouched (SettingsRow is already generic label/value/editable — no new drawing). settings.rs untouched (`persist_settings` already writes `self.dock_show`). No script changes, no new deps.
+
+### Pinned design
+
+- **Row placement:** insert `("Dock", …, editable)` at **index 2** in the `settings_data` vec (main.rs ~:1502) — after Size, keeping the editable body-local cluster (Colour, Size, Dock) above the read-only governance/identity rows (Posture → idx 3, Buddy → idx 4). `settings_row_count()` 4 → **5**; update its doc comment and the `on_settings_row` match arms to the shifted indices.
+- **Value label:** `Both → "Head + bar"`, `Head → "Head"`, `Bar → "Bar"` — small pure fn `dock_label(DockShow) -> &'static str` next to `size_preset_name` style.
+- **Cycle handler** `cycle_dock(&mut self)`: pure fn `next_dock(DockShow) -> DockShow` with order **Both → Head → Bar → Both**; handler sets `self.dock_show`, speech `format!("Dock: {}", dock_label(..))`, `update_input_region()`, `persist_settings()` — mirror `cycle_color` exactly.
+- **Ring-skin coercion (conflict point, pinned):** under `Skin::Ring`, `effective_dock_show` coerces to Bar regardless — cycling would silently do nothing visible. So under ring skin the Dock row is **read-only** (`editable: false`, same as Posture/Buddy) and tapping it speaks `"Dock is bar-only under the ring skin."` — no mutation, no persist. Clay (the default) gets the full cycle.
+- **No tuck special-case needed:** the settings panel lives in the torso, so cycling always happens untucked; the H3 union helpers read `self.dock_show` at paint/hit time, so the new value simply applies on the next tuck. Do not add re-tuck logic.
+- **Env note (no code):** if `BB_DOCK` was set at launch, the session started from env; cycling still mutates + persists normally, and the next plain launch uses the persisted value while an env launch still wins. That is the intended H4a precedence — no special handling.
+- **Law 7:** dock is body-local presentation. No soul messages, no wire changes.
+
+### Tests (named)
+
+- `dock_cycle_order` — Both→Head→Bar→Both closes the loop, all variants reachable
+- `dock_label_covers_all_variants` — three labels, no empty string
+
+(Row-tap dispatch needs a live App/Wayland — walk covers it; keep tests to the pure fns like `next_color`/`next_size` precedent.)
+
+### Gates (baselines post-H4a)
+
+`cargo test` = **129 + 0** (main) / 29 (parse bin) — growth by the 2 named tests only; `cargo build --release` = **10 known warnings** (note: the `initial`/`interior_rows` never-used line is one warning); `npx tsc --noEmit` clean; `npx vitest run` = **278 / 31**. Forced recompile (`touch src/*.rs`) before cargo gates.
+
+### Owner walk (after Fable audit)
+
+Launch plain → Customize → Dock row reads "Head + bar" → tap → "Head" → tuck to an edge → **head only, no bar** → untuck, tap to "Bar" → tuck → **bar only** → kill → relaunch plain → Dock survives as "Bar" → `BB_DOCK=both` launch → env wins ("Head + bar"). Optional: `BB_SKIN=ring` launch → Dock row greyed, tap explains bar-only.
+
+### Commit subject (verbatim)
+
+`feat(body): laminal ring pivot — Slice H4b — Dock setting row (head/bar/both cycle, persisted)`
+
+Append builder report below. **STOP after H4b.** (Backlog after: tucked bubble text cut-off — small render.rs slice, will also carry the stale `bar_is_half_length_centered_on_anchor` rename and the `Layout::initial` orphan cleanup.)

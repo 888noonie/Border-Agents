@@ -284,8 +284,77 @@ confirmed fixed by the owner. Pushed after this record.
    on task, closed idle, variants for amber/red). Requires a soul-side "busy" signal
    first (law 7: the body paints, never infers) — not a body-only slice.
 
-The original walk script, for the record: launch plainly (no `BB_SKIN`) → full
+The original walk script, for the record:
+(see below; H3 brief follows the audit section) launch plainly (no `BB_SKIN`) → full
 figure wearing the halo; click E → amber halo + confirm bubble; confirm → green halo;
 tuck → sleeping bump with hued halo ring; summon by clicking the bump. Optionally
 `BB_SKIN=ring`: tuck → bar, click anywhere along it → summons. Walk pass ⇒ push
-`75e8db6..HEAD` (R4 + docs + H1 + H2).
+`75e8db6..HEAD` (R4 + docs + H1 + H2). **Pushed 2026-07-02 (`6fef913`).**
+
+---
+
+# Slice H3 brief — dock modes + centered half-bar (2026-07-02)
+
+**Builder: Composer 2.5. Self-contained — do not rely on prior session context.**
+Authority unchanged: `docs/laminal-ring-pivot.md` incl. §Amendment 2026-07-02; conflicts
+stop-and-report. Ground rules, canaries, report format: identical to the H1/H2 section
+above. **Scope: `desktop-body/src/main.rs`, `desktop-body/src/render.rs`,
+`scripts/bb-body.sh` only. STOP after H3** — no H4 (Customize UI/persistence), no
+eyes-as-activity, no soul/TS changes.
+
+**New gate baselines** (post-H2): cargo test **115 passed / 0 failed** (main) + **29**
+(parse bin); `cargo build --release` **10 known warnings, nothing new**; `npx tsc
+--noEmit` clean; `npx vitest run` **278 / 31** unchanged.
+
+## Why
+
+Owner walk 2026-07-02: tuck appearance is a *preference*, not a skin property. Owner
+wants head, bar, or both when tucked, and a shorter, thicker bar. `BB_SKIN` stays "which
+render family"; `BB_DOCK` is "what shows when tucked" — orthogonal knobs.
+
+## Design decisions (pinned by lead — do not relitigate, report conflicts)
+
+1. **`enum DockShow { Head, Bar, Both }`**, `#[default] Both`. Not two bools — "never
+   neither" is structural, one match arm, not scattered validation.
+2. **Parse `BB_DOCK` once at startup** (mirror `env_skin`): `"head"` / `"bar"` /
+   `"both"` (trimmed, ascii-lowercased); anything else including unset/`"none"` →
+   `Both`. The trap is impossible even from a mis-set env.
+3. **`BB_DOCK` applies to the Clay tucked path.** Under `Skin::Ring` every mode coerces
+   to bar-only — the ring skin has no head primitive, and coercing (not erroring) keeps
+   "never nothing renders" true. One explicit `match` with a comment; do not make dock
+   clay-only silently, make the coercion legible.
+4. **Bar geometry** (`render.rs`): `BAR_THICKNESS: 8.0 → 12.0` (visual === input; this
+   supersedes the audit's "deeper input rect over an 8px bar" note).
+   `bar_rect(edge, w, h, along: f32) -> Rect` gains the along-edge anchor: length =
+   **half the edge extent** (`const BAR_LENGTH_FRAC: f32 = 0.5`, named), **centered on
+   `along`**, clamped to stay fully on-surface. `along` comes from `bump_center`'s
+   along-edge coordinate (`render.rs:662`) so bar and head share one anchor and the bar
+   reads as the head's underline glow under `Both`.
+5. **Paint order under Clay:** `Head` → bump + H2 halo; `Bar` → bar; `Both` → bump +
+   halo **then** bar. Hue for the bar: `ring_hue_or_quiet`, unchanged.
+6. **Hit-test/input = union of what is painted:** Head ∈ mode → `point_in_bump` /
+   `bump_rect`; Bar ∈ mode → `point_in_bar` / `bar_rect`. Input region
+   (`main.rs:1872` rects vec) pushes one rect per visible primitive. Paint and hit stay
+   single-source (H1's rule) — nothing hittable that isn't visible, nothing visible
+   that isn't hittable.
+7. **`scripts/bb-body.sh`:** `export BB_DOCK="${BB_DOCK:-both}"` beside the `BB_SKIN`
+   export, one-line comment.
+
+## Tests (new, named — plus fix existing bar tests for the new signature)
+
+- `env_dock_parse` — head/bar/both parse; unset, garbage, and `"none"` → `Both`.
+- `bar_is_half_length_centered_on_anchor` — bar length ≈ extent/2; center ≈ `along`;
+  clamped when the anchor sits near a corner.
+- `bar_hit_matches_bar_paint` — click inside the new bar bounds hits; beyond either end
+  (still on the edge) misses. (Existing `ring_tuck_full_bar_is_hittable` will need
+  updating for the shorter bar — rename/adjust deliberately and say so.)
+- `dock_head_only_bump_hits_bar_misses` and `dock_bar_only_bar_hits_bump_misses` —
+  every mode leaves at least one live summon target.
+- `ring_skin_coerces_dock_to_bar` — under Ring, `DockShow::Head` still paints/hits the
+  bar.
+- Existing `edge_bar_*` hue tests: sample points must move inside the new bar bounds —
+  adjust sampling, not tolerances.
+
+**Commit:** `feat(body): laminal ring pivot — Slice H3 — dock modes (head|bar|both) + centered half-bar`
+
+Append your builder report below this brief, same format as H1/H2. **STOP after H3.**

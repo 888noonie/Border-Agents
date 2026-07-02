@@ -726,6 +726,9 @@ pub fn torso_action_at(layout: &Layout, px: f64, py: f64) -> Option<TorsoAction>
 
 /// Radius of the tucked "bump" — smaller than the head so it frees screen space.
 pub const BUMP_R: f32 = 34.0;
+/// H2 — stroked alert halo around the tucked bump (outside the face, never covering eyes).
+const BUMP_HALO_OUTSET: f32 = 4.0;
+const BUMP_HALO_STROKE: f32 = 3.0;
 
 // --- tucked "peek" extras (bubble + input drawn beside the bump) -------------------
 //
@@ -1309,7 +1312,10 @@ impl Sprite {
             // the same move as R3's eyes/mouth gating.
             match view.skin {
                 Skin::Ring => draw_edge_bar(&mut pixmap, edge, w, h, view.alert_level, view.route_health),
-                Skin::Clay => draw_bump(&mut pixmap, edge, w, h, view.color),
+                Skin::Clay => {
+                    draw_bump(&mut pixmap, edge, w, h, view.color);
+                    draw_bump_halo(&mut pixmap, edge, w, h, view.alert_level, view.route_health);
+                }
             }
             if let Some(font) = &self.font {
                 if view.tucked_show_bubble {
@@ -2663,6 +2669,33 @@ fn draw_bump(pixmap: &mut Pixmap, edge: BumpEdge, w: u32, h: u32, color: [u8; 3]
         BumpEdge::Bottom => (0.0, -BUMP_R * 0.45),
     };
     draw_closed_eyes(pixmap, cx + dx, cy + dy - 2.0);
+}
+
+/// H2 — alert hue stroked around the tucked bump circle. Hue only (no pulse/cadence), same
+/// precedence as the ring and edge bar. `draw_bump` stays byte-identical; this is a sibling call.
+fn draw_bump_halo(
+    pixmap: &mut Pixmap,
+    edge: BumpEdge,
+    w: u32,
+    h: u32,
+    alert_level: Option<AlertLevel>,
+    route_health: Option<&str>,
+) {
+    let (cx, cy) = bump_center(edge, w, h);
+    let [r, g, b, a] = ring_hue_or_quiet(alert_level, route_health);
+    let mut stroke = Stroke::default();
+    stroke.width = BUMP_HALO_STROKE;
+    stroke.line_cap = tiny_skia::LineCap::Round;
+    let radius = BUMP_R + BUMP_HALO_OUTSET;
+    if let Some(circle) = PathBuilder::from_circle(cx, cy, radius) {
+        pixmap.stroke_path(
+            &circle,
+            &solid(Color::from_rgba8(r, g, b, a)),
+            &stroke,
+            Transform::identity(),
+            None,
+        );
+    }
 }
 
 fn draw_closed_eyes(pixmap: &mut Pixmap, x: f32, y: f32) {
@@ -4808,6 +4841,111 @@ mod tests {
             paint(Skin::Ring),
             paint(Skin::Clay),
             "a tucked ring-skin buddy must paint the bar, not the clay bump",
+        );
+    }
+
+    // --- H2: the tucked clay bump wears the alert hue ---------------------------------
+
+    fn bump_halo_only(edge: BumpEdge, alert: Option<AlertLevel>, route: Option<&str>) -> Vec<u8> {
+        const BW: u32 = 200;
+        const BH: u32 = 120;
+        let mut pixmap = Pixmap::new(BW, BH).unwrap();
+        draw_bump_halo(&mut pixmap, edge, BW, BH, alert, route);
+        pixmap.data().to_vec()
+    }
+
+    fn sample_bump_halo_rgba(edge: BumpEdge, alert: Option<AlertLevel>, route: Option<&str>) -> [u8; 4] {
+        const BW: u32 = 200;
+        const BH: u32 = 120;
+        let mut pixmap = Pixmap::new(BW, BH).unwrap();
+        draw_bump_halo(&mut pixmap, edge, BW, BH, alert, route);
+        let (cx, cy) = bump_center(edge, BW, BH);
+        let r = BUMP_R + BUMP_HALO_OUTSET;
+        let (sx, sy) = match edge {
+            BumpEdge::Left => ((cx + r) as u32, cy as u32),
+            BumpEdge::Right => ((cx - r).max(0.0) as u32, cy as u32),
+            BumpEdge::Top => (cx as u32, (cy + r) as u32),
+            BumpEdge::Bottom => (cx as u32, (cy - r).max(0.0) as u32),
+        };
+        let idx = ((sy * BW + sx) * 4) as usize;
+        let d = pixmap.data();
+        [d[idx], d[idx + 1], d[idx + 2], d[idx + 3]]
+    }
+
+    #[test]
+    fn bump_halo_reads_all_five_states_distinctly() {
+        use std::collections::HashSet;
+        let blank = vec![0_u8; bump_halo_only(BumpEdge::Left, None, None).len()];
+        let renders: Vec<Vec<u8>> = [
+            AlertLevel::Quiet,
+            AlertLevel::Ready,
+            AlertLevel::Confirm,
+            AlertLevel::Blocked,
+            AlertLevel::Critical,
+        ]
+        .iter()
+        .map(|&l| bump_halo_only(BumpEdge::Left, Some(l), None))
+        .collect();
+        for (i, r) in renders.iter().enumerate() {
+            assert_ne!(r, &blank, "state {i} must paint a visible bump halo");
+        }
+        let distinct: HashSet<&Vec<u8>> = renders.iter().collect();
+        assert_eq!(distinct.len(), renders.len(), "each state must read as its own halo");
+    }
+
+    #[test]
+    fn bump_halo_hue_equals_palette_exactly() {
+        for &level in &[
+            AlertLevel::Quiet,
+            AlertLevel::Ready,
+            AlertLevel::Confirm,
+            AlertLevel::Blocked,
+            AlertLevel::Critical,
+        ] {
+            let expected = alert_level_ring_rgba(level);
+            for &edge in &[BumpEdge::Left, BumpEdge::Right, BumpEdge::Top, BumpEdge::Bottom] {
+                let sampled = demultiply_rgba(sample_bump_halo_rgba(edge, Some(level), None));
+                assert!(
+                    rgba_close(sampled, expected, 1),
+                    "level {:?} edge {:?}: bump halo hue {:?} != palette {:?}",
+                    level,
+                    edge,
+                    sampled,
+                    expected,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn bump_halo_precedence_alert_over_route() {
+        let with_alert = bump_halo_only(BumpEdge::Left, Some(AlertLevel::Confirm), Some("ready"));
+        let route_only = bump_halo_only(BumpEdge::Left, None, Some("ready"));
+        assert_ne!(
+            with_alert, route_only,
+            "alert_level must take the bump halo over route_health when both are present",
+        );
+        let confirm_only = bump_halo_only(BumpEdge::Left, Some(AlertLevel::Confirm), None);
+        assert_eq!(
+            with_alert, confirm_only,
+            "the alert tier fully wins on the bump halo, not a blend with route",
+        );
+    }
+
+    #[test]
+    fn bump_halo_never_vanishes_absent_rests_at_quiet() {
+        let idle = bump_halo_only(BumpEdge::Left, None, None);
+        let blank = vec![0_u8; idle.len()];
+        assert_ne!(&idle, &blank, "an idle bump halo (no tier) must still be visible");
+        assert_eq!(
+            idle,
+            bump_halo_only(BumpEdge::Left, Some(AlertLevel::Quiet), None),
+            "absent tier === Quiet on the bump halo",
+        );
+        assert_eq!(
+            bump_halo_only(BumpEdge::Left, None, Some("ready")),
+            bump_halo_only(BumpEdge::Left, Some(AlertLevel::Ready), None),
+            "route health is still the fallback on the bump halo",
         );
     }
 

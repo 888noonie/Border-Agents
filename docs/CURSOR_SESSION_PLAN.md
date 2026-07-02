@@ -843,3 +843,33 @@ None.
 ### Not done
 
 Push, tucked bubble backlog slice.
+
+---
+
+## Lead audit — H4b (Fable, 2026-07-02) — **PASS (pending owner walk)**
+
+Audited `c83a038` (+ builder report `4b60bc5`).
+
+### Gates (lead re-run, forced recompile)
+
+| Gate | Result |
+|------|--------|
+| `cargo test` | **131 + 0** (main) / 29 (parse bin) — baseline 129 + exactly `dock_cycle_order` + `dock_label_covers_all_variants` |
+| `cargo build --release` | **10 warnings** — known set, unchanged |
+| `npx tsc --noEmit` | clean |
+| `npx vitest run` | **278 / 31** |
+
+### Brief conformance
+
+- Scope exact: **main.rs only** — render.rs and settings.rs untouched (figure + settings canaries trivially green). Commit subject verbatim.
+- Dock row at index 2 in `settings_data`, editable flag `!matches!(self.skin, Skin::Ring)`; Posture → 3, Buddy → 4, `settings_row_count` 4 → 5; all doc comments updated to match.
+- `cycle_dock` mirrors `cycle_color` exactly: `next_dock` (Both→Head→Bar→Both), speech via `dock_label`, `update_input_region()`, `persist_settings()`.
+- Ring-skin tap: read-only, speaks "Dock is bar-only under the ring skin.", **no mutation, no persist** — as pinned.
+- Labels exact: "Head + bar" / "Head" / "Bar". No tuck special-casing added (correctly none).
+- Law 7 clean: no soul/wire/presence changes.
+
+### Non-blocking notes
+
+None — cleanest slice of the series.
+
+**Verdict: PASS. Push held for owner walk** (Customize → Dock cycles → tuck shows head-only / bar-only per setting → relaunch persists → BB_DOCK env wins → optional ring-skin greyed row).

@@ -427,3 +427,38 @@ None.
 ### Not done (by design)
 
 H4 (Customize toggles + disk persistence), eyes-as-activity, soul/TS changes, push.
+
+---
+
+## Lead audit — H3 (Fable, 2026-07-02)
+
+**Verdict: PASS.** Cleared to owner walk. Push gated on the walk, as always.
+
+Independently re-ran all four gates with forced recompile (`touch src/*.rs`):
+
+| Gate | Lead result | Matches builder |
+|------|-------------|-----------------|
+| `cargo test` | 121 + 0 (main) / 29 (parse bin) | ✅ (+6 named tests, rename accounted) |
+| `cargo build --release` | 10 warnings, identical known set | ✅ |
+| `npx tsc --noEmit` | clean | ✅ |
+| `npx vitest run` | 278 / 31 files | ✅ |
+
+Diff review `957b4b0..bb203b7` against the pinned brief decisions — all conform:
+
+- `DockShow { Head, Bar, #[default] Both }`; `env_dock()` parses once at startup, trims + lowercases, `head|bar|both` explicit, everything else (incl. `none`, unset) → `Both`. Never-neither is structural: no code path yields an empty tucked surface.
+- `effective_dock_show(Skin::Ring, _) => Bar` — coercion is one named function, asserted by `ring_skin_coerces_dock_to_bar`.
+- `bar_rect(edge, w, h, along)`: `BAR_THICKNESS` 8→12, `BAR_LENGTH_FRAC = 0.5`, centered on `bump_along_edge` (shared with `bump_center`), clamped on-surface. `draw_edge_bar` consumes the same rect — visual === input holds.
+- Single-source union: `tucked_summon_rects` (input region), `point_in_tucked_summon` (press target), `tucked_summon_bounds` (tuck drag clamp) all live in render.rs; main.rs's old skin-gated `tucked_bump_rect`/`point_in_tucked_bump` pair fully replaced at all three call sites (input region ~:1880, press ~:2400, drag clamp ~:3380).
+- Scope exactly the three permitted files. Commit subject verbatim per brief.
+
+Canaries (lead-verified, not just builder-claimed):
+
+- md5 of figure bodies at `957b4b0` vs `bb203b7`: `draw_figure`, `draw_clay_head_at`, `draw_clay_texture`, `draw_eyes`, `draw_closed_eyes`, `draw_mouth`, `draw_bump`, `draw_bump_halo`, `draw_route_boundary_chrome` — **all IDENTICAL**.
+- Palette grep over added lines: **zero new color literals**; bar hue still flows through `ring_hue_or_quiet`.
+
+Noted, non-blocking:
+
+- `env_dock_parse` mutates process env (same pattern as `env_skin_defaults_to_clay_without_bb_skin`); standing note applies — serialize, don't delete, if it ever flakes under parallel test threads.
+- Left/right-edge bar⊂bump overlap discovery is well-handled (top-edge tests + product behavior unaffected); worth revisiting only if H4 makes bar-only the persisted default.
+
+**Owner walk (pending):** plain launch → figure+halo, tuck → head+bar; `BB_DOCK=head` → bump+halo only; `BB_DOCK=bar` → 12px half-bar only, centered on tuck point, summons; `BB_SKIN=ring` (any dock) → bar-only coercion.

@@ -270,7 +270,21 @@ Observations (recorded, not blockers):
    task). Consistent with the amendment (ring as explicit opt-in). Owner to keep/stage
    or drop — not part of H-series.
 
-**Remaining gate — owner walk (clay default):** launch plainly (no `BB_SKIN`) → full
+**Owner walk (2026-07-02, COSMIC): PASSED — both skins.** Clay default: figure + amber
+halo on "Edit repository needs your confirmation" → green halo + "Ran Edit repository";
+tucked bump wears the hued halo; summon works. Ring dev track: full-bar tuck target
+confirmed fixed by the owner. Pushed after this record.
+
+**Owner proposals from the walk (next H-slices, specs to follow):**
+1. **Dock settings** — tuck appearance becomes a user option, not skin-bound: toggles
+   **Head** and **Bar** (either or both; never neither — no trap).
+2. **Bar geometry** — halve the bar's length, thickness 8px → 12px (matches the audit's
+   grab-depth observation).
+3. **Parked, named future flow** — tucked eye states as activity display (open/blinking
+   on task, closed idle, variants for amber/red). Requires a soul-side "busy" signal
+   first (law 7: the body paints, never infers) — not a body-only slice.
+
+The original walk script, for the record: launch plainly (no `BB_SKIN`) → full
 figure wearing the halo; click E → amber halo + confirm bubble; confirm → green halo;
 tuck → sleeping bump with hued halo ring; summon by clicking the bump. Optionally
 `BB_SKIN=ring`: tuck → bar, click anywhere along it → summons. Walk pass ⇒ push

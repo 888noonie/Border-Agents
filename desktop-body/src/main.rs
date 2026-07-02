@@ -148,6 +148,16 @@ fn env_skin() -> render::Skin {
     }
 }
 
+/// Parse `BB_DOCK` — `head` / `bar` / `both`; unset, garbage, and `none` -> `Both`.
+fn env_dock() -> render::DockShow {
+    match std::env::var("BB_DOCK").ok().map(|v| v.trim().to_ascii_lowercase()).as_deref() {
+        Some("head") => render::DockShow::Head,
+        Some("bar") => render::DockShow::Bar,
+        Some("both") => render::DockShow::Both,
+        _ => render::DockShow::Both,
+    }
+}
+
 fn buddy_env_key(buddy: &str, suffix: &str) -> String {
     format!("{}_{}", buddy.trim().to_ascii_uppercase().replace('-', "_"), suffix)
 }
@@ -685,6 +695,7 @@ fn main() {
         body_len: render::BODY_LEN_DEFAULT,
         color: env_color("BB_COLOR"),
         skin: env_skin(),
+        dock_show: env_dock(),
     };
     app.init_hermes_surface();
 
@@ -1250,6 +1261,8 @@ struct App {
     color: [u8; 3],
     /// Which skin paints the presence, from `BB_SKIN` (default `clay`). Set once at startup.
     skin: render::Skin,
+    /// Tucked appearance, from `BB_DOCK` (default `both`). Set once at startup.
+    dock_show: render::DockShow,
 }
 
 /// Map a presence-protocol edge onto the renderer's bump edge.
@@ -1385,20 +1398,16 @@ impl App {
         }
     }
 
-    fn tucked_bump_rect(&self, edge: presence::Edge) -> render::Rect {
-        let bump = edge_to_bump(edge);
-        match self.skin {
-            render::Skin::Ring => render::bar_rect(bump, self.width, self.height),
-            render::Skin::Clay => render::bump_rect(bump, self.width, self.height),
-        }
-    }
-
-    fn point_in_tucked_bump(&self, edge: presence::Edge, x: f64, y: f64) -> bool {
-        let bump = edge_to_bump(edge);
-        match self.skin {
-            render::Skin::Ring => render::point_in_bar(bump, self.width, self.height, x, y),
-            render::Skin::Clay => render::point_in_bump(bump, self.width, self.height, x, y),
-        }
+    fn point_in_tucked_summon(&self, edge: presence::Edge, x: f64, y: f64) -> bool {
+        render::point_in_tucked_summon(
+            self.skin,
+            self.dock_show,
+            edge_to_bump(edge),
+            self.width,
+            self.height,
+            x,
+            y,
+        )
     }
 
     fn draw(&mut self) {
@@ -1608,6 +1617,7 @@ impl App {
             frame: None,
             color: self.color,
             skin: self.skin,
+            dock_show: self.dock_show,
         };
 
         let buffer = match pool.create_buffer(w as i32, h as i32, stride, wl_shm::Format::Argb8888) {
@@ -1869,7 +1879,16 @@ impl App {
         // so the screen space the buddy stepped aside from is truly freed.
         let rects = if let Some(edge) = self.tucked {
             let bump = edge_to_bump(edge);
-            let mut rects = vec![self.tucked_bump_rect(edge).as_i32()];
+            let mut rects: Vec<(i32, i32, i32, i32)> = render::tucked_summon_rects(
+                self.skin,
+                self.dock_show,
+                bump,
+                self.width,
+                self.height,
+            )
+            .into_iter()
+            .map(|r| r.as_i32())
+            .collect();
             // The peek bubble/input must catch the pointer when shown, or they are click-through
             // (the input never receives a press, and clicks fall to the window behind).
             if self.tucked_view.shows_bubble() {
@@ -2378,7 +2397,7 @@ impl App {
         // buddy back out. The bump is not draggable in v1.
         if let Some(edge) = self.tucked {
             let bump = edge_to_bump(edge);
-            let target = if self.point_in_tucked_bump(edge, x, y) {
+            let target = if self.point_in_tucked_summon(edge, x, y) {
                 PressTarget::Bump
             } else if self.tucked_view.shows_input()
                 && render::tucked_input_rect(bump, self.width, self.height).contains(x, y)
@@ -3358,7 +3377,13 @@ impl App {
             Some(s) => s,
             None => return,
         };
-        let bump = self.tucked_bump_rect(edge);
+        let bump = render::tucked_summon_bounds(
+            self.skin,
+            self.dock_show,
+            edge_to_bump(edge),
+            self.width,
+            self.height,
+        );
         match edge {
             presence::Edge::Left | presence::Edge::Right => {
                 let min_top = -(bump.y as f64);
@@ -3653,6 +3678,27 @@ impl Dispatch<ZwpRelativePointerV1, ()> for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn env_dock_parse() {
+        let saved = std::env::var("BB_DOCK").ok();
+        std::env::set_var("BB_DOCK", "head");
+        assert_eq!(env_dock(), render::DockShow::Head);
+        std::env::set_var("BB_DOCK", "bar");
+        assert_eq!(env_dock(), render::DockShow::Bar);
+        std::env::set_var("BB_DOCK", "both");
+        assert_eq!(env_dock(), render::DockShow::Both);
+        std::env::set_var("BB_DOCK", "none");
+        assert_eq!(env_dock(), render::DockShow::Both);
+        std::env::set_var("BB_DOCK", "garbage");
+        assert_eq!(env_dock(), render::DockShow::Both);
+        std::env::remove_var("BB_DOCK");
+        assert_eq!(env_dock(), render::DockShow::Both);
+        match saved {
+            Some(v) => std::env::set_var("BB_DOCK", v),
+            None => std::env::remove_var("BB_DOCK"),
+        }
+    }
 
     #[test]
     fn env_skin_defaults_to_clay_without_bb_skin() {

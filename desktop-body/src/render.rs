@@ -74,7 +74,9 @@ const RING_THICKNESS: f32 = 7.0;
 // flush to the tucked edge mirrors the ring hue, so the governance tier stays peripheral-
 // readable with the figure gone. Thin enough to read as chrome, thick enough to read at a
 // glance from the corner of the eye.
-const BAR_THICKNESS: f32 = 8.0;
+const BAR_THICKNESS: f32 = 12.0;
+/// Fraction of the along-edge extent used as bar length (half-edge, centered on the tuck anchor).
+pub const BAR_LENGTH_FRAC: f32 = 0.5;
 
 // --- UI geometry -----------------------------------------------------------------
 
@@ -128,6 +130,32 @@ pub enum Skin {
     #[default]
     Clay,
     Ring,
+}
+
+/// What renders when tucked — orthogonal to `Skin`. Default `Both`; parse refuses "neither"
+/// (unset/garbage/`none` -> `Both`). Under `Skin::Ring` every mode coerces to `Bar` only.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum DockShow {
+    Head,
+    Bar,
+    #[default]
+    Both,
+}
+
+/// Ring skin has no head primitive — coerce every dock mode to bar-only so something always paints.
+pub fn effective_dock_show(skin: Skin, dock: DockShow) -> DockShow {
+    match skin {
+        Skin::Ring => DockShow::Bar,
+        Skin::Clay => dock,
+    }
+}
+
+pub fn shows_tucked_head(dock: DockShow) -> bool {
+    matches!(dock, DockShow::Head | DockShow::Both)
+}
+
+pub fn shows_tucked_bar(dock: DockShow) -> bool {
+    matches!(dock, DockShow::Bar | DockShow::Both)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -657,6 +685,16 @@ impl FrameLayout {
 // - never a theoretical one - or the buddy vanishes off the side of its own
 // buffer with nothing left to click.
 
+/// Along-edge coordinate shared by the tucked bump and the bar anchor (`bump_center` on the
+/// free axis).
+pub fn bump_along_edge(edge: BumpEdge, w: u32, h: u32) -> f32 {
+    let (cx, cy) = bump_center(edge, w, h);
+    match edge {
+        BumpEdge::Left | BumpEdge::Right => cy,
+        BumpEdge::Top | BumpEdge::Bottom => cx,
+    }
+}
+
 /// Centre of the bump's full circle - ON the surface edge so only the
 /// on-surface half shows (the off-surface half clips = the "split in half").
 fn bump_center(edge: BumpEdge, w: u32, h: u32) -> (f32, f32) {
@@ -701,21 +739,89 @@ pub fn point_in_bump(edge: BumpEdge, w: u32, h: u32, px: f64, py: f64) -> bool {
 }
 
 /// Bounding box of the tucked edge light bar — shared geometry for `draw_edge_bar` paint and
-/// ring-skin tuck hit-testing/input region.
-pub fn bar_rect(edge: BumpEdge, w: u32, h: u32) -> Rect {
+/// tuck hit-testing. Half the along-edge extent, centered on `along`, clamped on-surface.
+pub fn bar_rect(edge: BumpEdge, w: u32, h: u32, along: f32) -> Rect {
     let wf = w as f32;
     let hf = h as f32;
     let t = BAR_THICKNESS;
+    let len = match edge {
+        BumpEdge::Left | BumpEdge::Right => hf * BAR_LENGTH_FRAC,
+        BumpEdge::Top | BumpEdge::Bottom => wf * BAR_LENGTH_FRAC,
+    };
     match edge {
-        BumpEdge::Left => Rect { x: 0.0, y: 0.0, w: t, h: hf },
-        BumpEdge::Right => Rect { x: wf - t, y: 0.0, w: t, h: hf },
-        BumpEdge::Top => Rect { x: 0.0, y: 0.0, w: wf, h: t },
-        BumpEdge::Bottom => Rect { x: 0.0, y: hf - t, w: wf, h: t },
+        BumpEdge::Left => {
+            let y = (along - len / 2.0).clamp(0.0, (hf - len).max(0.0));
+            Rect { x: 0.0, y, w: t, h: len }
+        }
+        BumpEdge::Right => {
+            let y = (along - len / 2.0).clamp(0.0, (hf - len).max(0.0));
+            Rect { x: wf - t, y, w: t, h: len }
+        }
+        BumpEdge::Top => {
+            let x = (along - len / 2.0).clamp(0.0, (wf - len).max(0.0));
+            Rect { x, y: 0.0, w: len, h: t }
+        }
+        BumpEdge::Bottom => {
+            let x = (along - len / 2.0).clamp(0.0, (wf - len).max(0.0));
+            Rect { x, y: hf - t, w: len, h: t }
+        }
     }
 }
 
-pub fn point_in_bar(edge: BumpEdge, w: u32, h: u32, px: f64, py: f64) -> bool {
-    bar_rect(edge, w, h).contains(px, py)
+pub fn point_in_bar(edge: BumpEdge, w: u32, h: u32, along: f32, px: f64, py: f64) -> bool {
+    bar_rect(edge, w, h, along).contains(px, py)
+}
+
+/// Union bounding box of every tucked summon primitive visible for this skin/dock pair.
+pub fn tucked_summon_bounds(skin: Skin, dock: DockShow, edge: BumpEdge, w: u32, h: u32) -> Rect {
+    let dock = effective_dock_show(skin, dock);
+    let along = bump_along_edge(edge, w, h);
+    let mut rects: Vec<Rect> = Vec::new();
+    if shows_tucked_head(dock) {
+        rects.push(bump_rect(edge, w, h));
+    }
+    if shows_tucked_bar(dock) {
+        rects.push(bar_rect(edge, w, h, along));
+    }
+    rects
+        .into_iter()
+        .reduce(|a, b| Rect {
+            x: a.x.min(b.x),
+            y: a.y.min(b.y),
+            w: (a.x + a.w).max(b.x + b.w) - a.x.min(b.x),
+            h: (a.y + a.h).max(b.y + b.h) - a.y.min(b.y),
+        })
+        .unwrap_or(Rect { x: 0.0, y: 0.0, w: 0.0, h: 0.0 })
+}
+
+/// Hit-test union of painted tucked summon targets (head circle + bar rect).
+pub fn point_in_tucked_summon(
+    skin: Skin,
+    dock: DockShow,
+    edge: BumpEdge,
+    w: u32,
+    h: u32,
+    px: f64,
+    py: f64,
+) -> bool {
+    let dock = effective_dock_show(skin, dock);
+    let along = bump_along_edge(edge, w, h);
+    (shows_tucked_head(dock) && point_in_bump(edge, w, h, px, py))
+        || (shows_tucked_bar(dock) && point_in_bar(edge, w, h, along, px, py))
+}
+
+/// Input-region rects for every visible tucked summon primitive (one rect per primitive).
+pub fn tucked_summon_rects(skin: Skin, dock: DockShow, edge: BumpEdge, w: u32, h: u32) -> Vec<Rect> {
+    let dock = effective_dock_show(skin, dock);
+    let along = bump_along_edge(edge, w, h);
+    let mut rects = Vec::new();
+    if shows_tucked_head(dock) {
+        rects.push(bump_rect(edge, w, h));
+    }
+    if shows_tucked_bar(dock) {
+        rects.push(bar_rect(edge, w, h, along));
+    }
+    rects
 }
 
 pub fn torso_action_at(layout: &Layout, px: f64, py: f64) -> Option<TorsoAction> {
@@ -1259,9 +1365,10 @@ pub struct BodyView<'a> {
     pub frame: Option<FrameLayout>,
     /// Clay colour (BB_COLOR) — every shade on the figure derives from this.
     pub color: [u8; 3],
-    /// Which skin paints the presence: `Ring` (default, laminal) draws the standalone state
-    /// halo; `Clay` draws the frozen figure. From `BB_SKIN`, set once at startup.
+    /// Which skin paints the presence. From `BB_SKIN`, set once at startup.
     pub skin: Skin,
+    /// Tucked appearance preference. From `BB_DOCK`, set once at startup; coerced under ring skin.
+    pub dock_show: DockShow,
 }
 
 pub fn receipt_rail_visible_for_body_len(body_len: f32) -> bool {
@@ -1310,12 +1417,22 @@ impl Sprite {
             // ring); under Skin::Clay the sleeping bump stays byte-identical. draw_bump and
             // draw_closed_eyes bodies are untouched — only the call site gains the skin gate,
             // the same move as R3's eyes/mouth gating.
-            match view.skin {
-                Skin::Ring => draw_edge_bar(&mut pixmap, edge, w, h, view.alert_level, view.route_health),
-                Skin::Clay => {
-                    draw_bump(&mut pixmap, edge, w, h, view.color);
-                    draw_bump_halo(&mut pixmap, edge, w, h, view.alert_level, view.route_health);
-                }
+            let dock = effective_dock_show(view.skin, view.dock_show);
+            let along = bump_along_edge(edge, w, h);
+            if shows_tucked_head(dock) {
+                draw_bump(&mut pixmap, edge, w, h, view.color);
+                draw_bump_halo(&mut pixmap, edge, w, h, view.alert_level, view.route_health);
+            }
+            if shows_tucked_bar(dock) {
+                draw_edge_bar(
+                    &mut pixmap,
+                    edge,
+                    w,
+                    h,
+                    along,
+                    view.alert_level,
+                    view.route_health,
+                );
             }
             if let Some(font) = &self.font {
                 if view.tucked_show_bubble {
@@ -1719,11 +1836,12 @@ fn draw_edge_bar(
     edge: BumpEdge,
     w: u32,
     h: u32,
+    along: f32,
     alert_level: Option<AlertLevel>,
     route_health: Option<&str>,
 ) {
     let [r, g, b, a] = ring_hue_or_quiet(alert_level, route_health);
-    let rect = bar_rect(edge, w, h);
+    let rect = bar_rect(edge, w, h, along);
     if let Some(path) = round_rect_path(rect, 0.0) {
         pixmap.fill_path(
             &path,
@@ -4330,6 +4448,7 @@ mod tests {
                 pinned: None,
                 frame: None,
                 color: [255, 107, 107],
+                dock_show: DockShow::Both,
                 skin: Skin::Clay,
             };
             sprite.paint(&mut canvas, w, h, &view);
@@ -4432,6 +4551,7 @@ mod tests {
                 pinned: None,
                 frame: None,
                 color: CLAY_DEFAULT,
+                dock_show: DockShow::Both,
                 skin: Skin::Clay,
             };
             sprite.paint(&mut canvas, w, h, &view);
@@ -4609,6 +4729,7 @@ mod tests {
                 pinned: None,
                 frame: None,
                 color: CLAY_DEFAULT,
+                dock_show: DockShow::Both,
                 skin,
             };
             sprite.paint(&mut canvas, w, h, &view);
@@ -4624,8 +4745,9 @@ mod tests {
     fn bar_only(edge: BumpEdge, alert: Option<AlertLevel>, route: Option<&str>) -> Vec<u8> {
         const BW: u32 = 200;
         const BH: u32 = 120;
+        let along = bump_along_edge(edge, BW, BH);
         let mut pixmap = Pixmap::new(BW, BH).unwrap();
-        draw_edge_bar(&mut pixmap, edge, BW, BH, alert, route);
+        draw_edge_bar(&mut pixmap, edge, BW, BH, along, alert, route);
         pixmap.data().to_vec()
     }
 
@@ -4635,14 +4757,16 @@ mod tests {
     fn sample_bar_center_rgba(edge: BumpEdge, alert: Option<AlertLevel>, route: Option<&str>) -> [u8; 4] {
         const BW: u32 = 200;
         const BH: u32 = 120;
+        let along = bump_along_edge(edge, BW, BH);
         let mut pixmap = Pixmap::new(BW, BH).unwrap();
-        draw_edge_bar(&mut pixmap, edge, BW, BH, alert, route);
+        draw_edge_bar(&mut pixmap, edge, BW, BH, along, alert, route);
+        let rect = bar_rect(edge, BW, BH, along);
         let half_t = (BAR_THICKNESS as u32) / 2;
         let (sx, sy) = match edge {
-            BumpEdge::Left => (half_t, BH / 2),
-            BumpEdge::Right => (BW - half_t, BH / 2),
-            BumpEdge::Top => (BW / 2, half_t),
-            BumpEdge::Bottom => (BW / 2, BH - half_t),
+            BumpEdge::Left => (half_t, (rect.y + rect.h / 2.0) as u32),
+            BumpEdge::Right => (BW - half_t, (rect.y + rect.h / 2.0) as u32),
+            BumpEdge::Top => ((rect.x + rect.w / 2.0) as u32, half_t),
+            BumpEdge::Bottom => ((rect.x + rect.w / 2.0) as u32, BH - half_t),
         };
         let idx = ((sy * BW + sx) * 4) as usize;
         let d = pixmap.data();
@@ -4764,31 +4888,102 @@ mod tests {
     }
 
     #[test]
-    fn ring_tuck_full_bar_is_hittable() {
+    fn ring_tuck_half_bar_is_hittable_within_bounds() {
         const W: u32 = 200;
         const H: u32 = 120;
         let edge = BumpEdge::Left;
-        let (cx, cy) = bump_center(edge, W, H);
-        // Far from the bump centre, still inside the full edge bar.
-        let far_y = (H as f64) - (BAR_THICKNESS as f64) - 2.0;
+        let along = bump_along_edge(edge, W, H);
+        let bar = bar_rect(edge, W, H, along);
+        let bar_x = (BAR_THICKNESS as f64) / 2.0;
+        let inside_y = (bar.y + bar.h / 2.0) as f64;
+        assert!(point_in_bar(edge, W, H, along, bar_x, inside_y), "ring tuck: bar centre must hit");
+        let beyond_end = (bar.y + bar.h + 4.0) as f64;
         assert!(
-            far_y > cy as f64 + BUMP_R as f64,
+            !point_in_bar(edge, W, H, along, bar_x, beyond_end),
+            "ring tuck: beyond the half-bar must miss",
+        );
+    }
+
+    #[test]
+    fn bar_is_half_length_centered_on_anchor() {
+        const W: u32 = 200;
+        const H: u32 = 120;
+        let along = bump_along_edge(BumpEdge::Left, W, H);
+        let rect = bar_rect(BumpEdge::Left, W, H, along);
+        assert!((rect.h - H as f32 * BAR_LENGTH_FRAC).abs() < 0.5);
+        assert!((rect.y + rect.h / 2.0 - along).abs() < 0.5);
+
+        let near_top = 4.0_f32;
+        let clamped = bar_rect(BumpEdge::Left, W, H, near_top);
+        assert!(clamped.y >= 0.0);
+        assert!(clamped.y + clamped.h <= H as f32);
+    }
+
+    #[test]
+    fn bar_hit_matches_bar_paint() {
+        const W: u32 = 200;
+        const H: u32 = 120;
+        let edge = BumpEdge::Left;
+        let along = bump_along_edge(edge, W, H);
+        let bar = bar_rect(edge, W, H, along);
+        let inside_x = (BAR_THICKNESS / 2.0) as f64;
+        let inside_y = (bar.y + bar.h / 2.0) as f64;
+        assert!(point_in_bar(edge, W, H, along, inside_x, inside_y));
+        let outside_y = (bar.y - 2.0) as f64;
+        assert!(!point_in_bar(edge, W, H, along, inside_x, outside_y));
+    }
+
+    #[test]
+    fn dock_head_only_bump_hits_bar_misses() {
+        const W: u32 = 200;
+        const H: u32 = 120;
+        // Top edge: bar runs along x; endpoints can sit outside the bump circle centred on the edge.
+        let edge = BumpEdge::Top;
+        let along = bump_along_edge(edge, W, H);
+        let (cx, cy) = bump_center(edge, W, H);
+        let bar = bar_rect(edge, W, H, along);
+        let bar_y = (BAR_THICKNESS / 2.0) as f64;
+        let far_x = (bar.x + 2.0) as f64;
+        assert!(
+            !point_in_bump(edge, W, H, far_x, bar_y),
             "test point must lie outside the bump circle",
         );
-        let bar_x = (BAR_THICKNESS as f64) / 2.0;
-        assert!(point_in_bar(edge, W, H, bar_x, far_y), "ring tuck: full bar must be hittable");
-        assert!(
-            !point_in_bump(edge, W, H, bar_x, far_y),
-            "ring tuck: the same point must miss the bump circle",
-        );
-        assert!(
-            point_in_bump(edge, W, H, cx as f64, cy as f64),
-            "clay tuck: bump centre must still hit",
-        );
-        assert!(
-            !point_in_bump(edge, W, H, bar_x, far_y),
-            "clay tuck: far bar point must miss the bump",
-        );
+        assert!(point_in_tucked_summon(Skin::Clay, DockShow::Head, edge, W, H, cx as f64, cy as f64));
+        assert!(!point_in_tucked_summon(Skin::Clay, DockShow::Head, edge, W, H, far_x, bar_y));
+    }
+
+    #[test]
+    fn dock_bar_only_bar_hits_bump_misses() {
+        const W: u32 = 200;
+        const H: u32 = 120;
+        let edge = BumpEdge::Top;
+        let along = bump_along_edge(edge, W, H);
+        let (cx, cy) = bump_center(edge, W, H);
+        let bar = bar_rect(edge, W, H, along);
+        let bar_mid_x = (bar.x + bar.w / 2.0) as f64;
+        let bar_mid_y = (BAR_THICKNESS / 2.0) as f64;
+        let bump_face_x = cx as f64;
+        let bump_face_y = (BUMP_R * 0.7) as f64;
+        assert!(point_in_bump(edge, W, H, bump_face_x, bump_face_y));
+        assert!(!point_in_bar(edge, W, H, along, bump_face_x, bump_face_y));
+        assert!(point_in_tucked_summon(Skin::Clay, DockShow::Bar, edge, W, H, bar_mid_x, bar_mid_y));
+        assert!(!point_in_tucked_summon(Skin::Clay, DockShow::Bar, edge, W, H, bump_face_x, bump_face_y));
+    }
+
+    #[test]
+    fn ring_skin_coerces_dock_to_bar() {
+        const W: u32 = 200;
+        const H: u32 = 120;
+        let edge = BumpEdge::Left;
+        let along = bump_along_edge(edge, W, H);
+        let bar = bar_rect(edge, W, H, along);
+        let bar_mid_x = (BAR_THICKNESS / 2.0) as f64;
+        let bar_mid_y = (bar.y + bar.h / 2.0) as f64;
+        let (cx, cy) = bump_center(edge, W, H);
+        let bump_face_x = (BUMP_R * 0.7) as f64;
+        assert!(point_in_tucked_summon(Skin::Ring, DockShow::Head, edge, W, H, bar_mid_x, bar_mid_y));
+        assert!(!point_in_tucked_summon(Skin::Ring, DockShow::Head, edge, W, H, bump_face_x, cy as f64));
+        assert_eq!(effective_dock_show(Skin::Ring, DockShow::Head), DockShow::Bar);
     }
 
     #[test]
@@ -4831,6 +5026,7 @@ mod tests {
                 pinned: None,
                 frame: None,
                 color: CLAY_DEFAULT,
+                dock_show: DockShow::Both,
                 skin,
             };
             sprite.paint(&mut canvas, w, h, &view);
@@ -5315,6 +5511,7 @@ mod tests {
             pinned: None,
             frame: Some(frame),
             color: CLAY_DEFAULT,
+            dock_show: DockShow::Both,
             skin: Skin::Clay,
         };
 

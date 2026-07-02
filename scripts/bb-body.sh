@@ -57,7 +57,9 @@ cargo build --release --manifest-path "${ROOT}/desktop-body/Cargo.toml"
 # Daily surface is clay (figure + alert halo). `BB_SKIN=ring bb-body.sh` opts into the
 # standalone ring dev/test track; its rot guard is the cargo test suite, not the launch default.
 export BB_SKIN="${BB_SKIN:-clay}"
+# Tucked appearance: head | bar | both (default both; ring skin coerces to bar at runtime).
+export BB_DOCK="${BB_DOCK:-both}"
 
-bb_log "Starting a single ${BIN} (buddy=${BB_BUDDY:-hermes}, skin=${BB_SKIN})"
+bb_log "Starting a single ${BIN} (buddy=${BB_BUDDY:-hermes}, skin=${BB_SKIN}, dock=${BB_DOCK})"
 # exec so signals (Ctrl-C, task stop) reach the body directly.
 exec "${ROOT}/desktop-body/target/release/${BIN}" "$@"

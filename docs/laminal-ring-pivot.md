@@ -1,9 +1,45 @@
 # Laminal Ring Pivot — plan & source of truth
 
-**Status:** active. R1 landed (`bbdff73`). This document is the durable anchor for the
-figure→ring visual pivot: the decisions that are locked, the slice plan (R1–R4, F1–F4),
-the "done" bar, and the drift canaries. If a slice instruction conflicts with what is
-written here, the conflict is surfaced and resolved before code — not guessed around.
+**Status:** active — **amended 2026-07-02 (owner ratified; see §Amendment below).**
+R1–R4 coded (R4 `75e8db6`, unpushed — walk failed, see R4 entry). This document is the
+durable anchor: the decisions that are locked, the slice plan, the "done" bar, and the
+drift canaries. If a slice instruction conflicts with what is written here, the conflict
+is surfaced and resolved before code — not guessed around.
+
+---
+
+## Amendment 2026-07-02 — the figure stays; the halo is the addition
+
+The owner walked the ring-skin tucked state (COSMIC, own eyes) and it failed twice over:
+the tucked edge bar's summon target was the old *invisible* bump rect, so the buddy could
+not be retrieved; and the surface read as a regression — a grey bar where the buddy used
+to be. The owner's verdict, ratified explicitly: the halo is great **as an addition, not
+as a face replacement**.
+
+This is the done-bar's own criterion 2 arriving early: removing the figure loses meaning
+(warmth, identity, retrievability), so by this document's own rules the figure-off default
+is premature. What changes:
+
+1. **Default flips: `BB_SKIN` defaults to `clay`.** The daily surface is the clay figure
+   *wearing* the 5-hue alert halo — which already works: `draw_route_boundary_chrome`
+   strokes the figure boundary from the same `ring_hue_rgba` precedence path (R2's work,
+   intact through R3/R4). Only the default flips; no render rebuild.
+2. **The standalone ring skin (`BB_SKIN=ring`) is demoted to a dev/test track.** It is not
+   deleted; its cargo tests keep it honest (the rot guard is now the test suite, not daily
+   dwelling — the reverse-tell in `bb-body.sh` inverts accordingly). It may only become
+   default by passing the full done-bar with the owner's eyes.
+3. **The figure-freeze canary is refined, not dropped:** the figure may gain *state chrome*
+   (wire-driven hue on silhouette or bump) — that is the laminate doing its job on the
+   surface the owner chose. It remains frozen against new *anthropomorphic behavior*
+   (expressions, poses, emotions) without a named flow.
+4. **F1 (identity sigil) is deprioritized** — the face is identity again. **F2 becomes the
+   F-series centerpiece**; it is skin-agnostic (the hue language renders on whichever skin).
+5. **Roles this phase:** Fable = project lead + auditor; Composer 2.5 (Cursor) = builder.
+   The lead re-runs all gates; the builder never pushes.
+
+Near-term slices under this amendment: **H1** (flip the default; make the ring-skin tuck
+retrievable) and **H2** (the tucked clay bump wears the alert hue — criterion 3's
+peripheral readability without losing the face). Specs: `docs/CURSOR_SESSION_PLAN.md`.
 
 ---
 
@@ -54,6 +90,8 @@ rejected. Different thing.
 ## Decisions locked (do not relitigate)
 
 ### 1. Figure → opt-in skin, not deletion
+**AMENDED 2026-07-02 — default is now `clay` (figure + halo); see §Amendment. Original
+text kept for history:**
 `BB_SKIN=ring|clay`, default `ring`. The clay figure is **frozen: skin-only, never
 extended.** It is not deleted (it is working, drag-stable, user-verified code; a flag
 preserves optionality at zero cost). The discipline that enforces laminality is not
@@ -154,15 +192,19 @@ CI trace harness rather than eyeballing.
   drawn but not input-region-registered or hit-tested, so clicks passed through the overlay
   — `f29f837`), now fixed and on the branch. R3 is walk-verified, not just code-verified.
 
-- **R4 — The tucked edge light bar.** When tucked, an edge-of-screen light bar mirrors the
-  ring hue. Gate: peripheral readability — bar hue === ring hue === `alert_level`, asserted
-  in the harness.
+- **R4 — The tucked edge light bar. CODED (`75e8db6`), harness gate passed; native walk
+  2026-07-02 FAILED on retrievability.** Bar hue === ring hue === `alert_level` is pinned
+  by tests (5 tests, cargo 108+0+29). But the walk's named question — "can the summon
+  click target be found with the bump invisible?" — answered **no**: the input region
+  stayed at the old invisible bump rect and the owner could not retrieve the tucked buddy.
+  Push held. The walk also triggered the owner's direction review → §Amendment. Fix lands
+  in H1 (full-bar hit target under Ring skin).
 
 ### Week 2 — one laminal flow, genuinely good
 
-- **F1 — Identity-mark slot + Forge anvil.** Per decision 2: the slot + one monochrome
-  instance + pane header. Gate: the buddy is recognizable with the face off (the §done-bar
-  criterion 2 test).
+- **F1 — Identity-mark slot + Forge anvil. DEPRIORITIZED by §Amendment** — the face is
+  identity again under the clay default. Revisit only if the ring skin ever contends for
+  default. Original gate: recognizable with the face off (done-bar criterion 2).
 
 - **F2 — The `repo_edit` flow in ring language.** Wire the real workspace `repo_edit`
   through the gate rendered entirely in the ring: amber hold → green receipt → red on
@@ -204,12 +246,13 @@ The flow is laminal when **all** hold, verified independently:
   subject is a new governance *display* (another rail, badge, receipt projection) rather
   than a user *flow*. Rule: **no new governance surface area unless a named flow requires
   it.** If the PR can't name the flow in "what border does this make visible," it's drift.
-- **Figure-as-primary drift:** any commit *adding* figure behavior (touching `draw_eyes`,
-  `draw_mouth`, `Emotion`, a pose/expression path). Rule: **the figure is frozen — skinned,
-  never extended.** A commit that adds figure behavior is the drift. Reverse-tell: if
-  `BB_SKIN=ring` starts silently breaking in normal dev because everyone tests with the
-  figure on, the figure has quietly become load-bearing again — hence `BB_SKIN=ring` in the
-  default dev task.
+- **Figure-behavior drift (refined by §Amendment):** the figure may gain wire-driven
+  *state chrome* (hue halo on silhouette or bump). It remains frozen against new
+  *anthropomorphic behavior* — any commit adding to `draw_eyes`, `draw_mouth`, `Emotion`,
+  or a pose/expression path without a named flow is still the drift. Reverse-tell
+  (inverted by §Amendment): the ring skin's rot guard is now its cargo test suite — if
+  those tests start getting skipped or deleted to "unblock" work, the dev track is dying
+  silently; surface it.
 
 The F-series is where the "display not a flow" temptation is highest (polish ahead of flow
 validation). That canary is watched hardest under the F-series lead.

@@ -875,3 +875,48 @@ None — cleanest slice of the series.
 **Verdict: PASS. Push held for owner walk** (Customize → Dock cycles → tuck shows head-only / bar-only per setting → relaunch persists → BB_DOCK env wins → optional ring-skin greyed row).
 
 **Owner walk PASSED 2026-07-03 (native, COSMIC):** dock cycle + tuck rendering per mode ✅, persistence across kill/relaunch ✅, ring launch bar-only with greyed row + explanatory tap ✅. **H-series COMPLETE — pushed.**
+
+---
+
+## Slice H5 — tucked bubble text fits (3 lines + honest ellipsis) + render tidy — brief for Composer
+
+**Status: READY FOR COMPOSER.** H-series product arc is complete; H5 is the polish slice closing the owner-walk finding from H3.1 (tucked speech cut mid-sentence, e.g. `"Edit repository" needs`). Same ground rules: gates verbatim with forced recompile, canaries, commit locally, NEVER push, STOP after H5.
+
+### Scope
+
+**`desktop-body/src/render.rs` ONLY.** No main.rs, no settings.rs, no scripts, no new deps.
+
+### Root cause (lead-diagnosed, verified against source)
+
+`draw_tucked_bubble` (render.rs ~:3683) wraps into the fixed `tucked_bubble_rect`: `max_lines = floor((TUCK_PEEK_BUBBLE_H − pad_top − 6) / LINE_H)` = `floor((60 − 18 − 6) / 20.8)` = **1 line** (~20 chars at 188px text width). And `wrap()` (~:3850) only appends `…` when the final line overflows in **width**; when the **line budget** is exhausted with input remaining, the tail is dropped silently. Two defects, two fixes.
+
+### Pinned design
+
+1. **Bubble grows to a 3-line budget, still fixed-size:** `TUCK_PEEK_BUBBLE_H` 60 → **88** (= pad_top 18 + 3×LINE_H 62.4 + bottom 6, rounded up). Nothing else about the peek geometry changes — `tucked_bubble_rect` stays the single source of truth for paint AND hit-test/input-region (the pure-geometry, no-font contract in the comment block at ~:855 is load-bearing; do NOT make the height text-dependent). `tucked_peek_origin`'s existing clamps absorb the taller group on every edge.
+2. **Honest truncation in `wrap()` itself:** when the loop stops because `lines.len() == max_lines` while input remains unconsumed, ellipsize the final line (trim chars until `…` fits `max_w`, same trim loop as the existing width-overflow path — factor it, don't duplicate). This is a shared fn (~12 call sites: chat bubble, panels, cards, pinned) — the behavior change is strictly "silently dropped tail → visible `…`", which is the desired posture everywhere. Callers passing `usize::MAX` are unaffected by construction.
+3. **Rider — stale test rename:** `bar_is_half_length_centered_on_anchor` (~:4925) no longer asserts half-length; rename to `bar_full_length_when_anchor_clear_of_edges` (or closer to what it actually asserts — read it first), body unchanged unless the name-lie extends to a stale comment.
+4. **Rider — dead-code tidy:** `Layout::initial` and `Layout::interior_rows` are test-only callers now (render.rs:4664 etc., main.rs:4131 is inside `mod tests`). Gate BOTH with `#[cfg(test)]` — do not delete. This removes one known release warning: **expected release warning count drops 10 → 9.** If cfg-gating breaks a non-test caller you find, that's a conflict stop, not a workaround.
+
+### Tests (named)
+
+- `wrap_ellipsizes_when_line_budget_exhausted` — long text, small max_lines → last line ends `…`, fits max_w
+- `wrap_unlimited_budget_never_ellipsizes` — same text, `usize::MAX` → no `…`, all content present
+- `tucked_bubble_budget_is_three_lines` — the max_lines expression at the new height = 3 (compute the same way `draw_tucked_bubble` does; keep them from drifting)
+
+### Canaries (render.rs IS touched this slice — figure canary is live, not trivial)
+
+Figure function set (`draw_figure`, `draw_clay_head_at`, `draw_clay_texture`, `draw_eyes`, `draw_closed_eyes`, `draw_mouth`, `draw_bump`, `draw_bump_halo`, `draw_route_boundary_chrome`) byte-identical. Zero new color literals. No soul/wire/presence changes.
+
+### Gates (baselines post-H4b)
+
+`cargo test` = **131 + 0** (main) / 29 (parse bin) — growth by the 3 named tests only (rename is count-neutral); `cargo build --release` = **9 warnings** after the tidy (was 10); `npx tsc --noEmit` clean; `npx vitest run` = **278 / 31**. Forced recompile (`touch src/*.rs`) before cargo gates.
+
+### Owner walk (after Fable audit)
+
+Tuck a buddy → trigger speech longer than one line (e.g. tap the Edit interior row for the repo-edit prompt) → bubble shows up to 3 wrapped lines; if still longer, last line ends in a visible `…` — never a silent mid-sentence cut. Quick regression: untucked chat bubble and Customize panel still render sanely (shared `wrap()`).
+
+### Commit subject (verbatim)
+
+`fix(body): laminal ring pivot — Slice H5 — tucked bubble 3-line budget + honest wrap ellipsis, render tidy`
+
+Append builder report below. **STOP after H5.**

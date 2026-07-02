@@ -983,3 +983,36 @@ None.
 ### Not done
 
 Push.
+
+---
+
+## Lead audit — H5 (Fable, 2026-07-03) — **PASS (pending owner walk)**
+
+Audited `e678892` (+ builder report `1a79950`).
+
+### Gates (lead re-run, forced recompile)
+
+| Gate | Result |
+|------|--------|
+| `cargo test` | **134 + 0** (main) / 29 (parse bin) — baseline 131 + exactly the 3 named wrap/bubble tests (rename count-neutral) |
+| `cargo build --release` | **9 warnings** — 10 → 9 as briefed (`initial`/`interior_rows` line gone) |
+| `npx tsc --noEmit` | clean |
+| `npx vitest run` | **278 / 31** |
+
+### Canaries (LIVE this slice — render.rs touched)
+
+All 9 protected figure functions **md5-identical** across `e678892^..e678892` (`draw_figure`, `draw_clay_head_at`, `draw_clay_texture`, `draw_eyes`, `draw_closed_eyes`, `draw_mouth`, `draw_bump`, `draw_bump_halo`, `draw_route_boundary_chrome`). **Zero** color literals in added lines. No soul/wire/presence changes.
+
+### Brief conformance
+
+- Scope exact: render.rs only. Commit subject verbatim.
+- `TUCK_PEEK_BUBBLE_H` 60 → 88; peek geometry otherwise untouched — `tucked_bubble_rect` remains sole geometry source, no font-dependence introduced.
+- `wrap()` truncation flag threaded through every early exit; `ellipsize_line_in_place` factors the trim loop (no duplication). Traced the hard-wrap branch: `carry_rev` is non-empty whenever the caller's budget-break fires, so no false ellipsis there. `usize::MAX` callers unaffected by construction, confirmed by `wrap_unlimited_budget_never_ellipsizes`.
+- Rename `bar_full_length_when_anchor_clear_of_edges` — body identical. `#[cfg(test)]` on `Layout::initial` + `Layout::interior_rows`, both compile under test (134 include their callers).
+
+### Non-blocking notes
+
+1. Trailing-`\n` landing exactly at the line budget sets `truncated` with nothing following → cosmetic false `…`. Unreachable for realistic speech strings; note only.
+2. `tucked_bubble_budget_is_three_lines` re-states `pad_top = 18.0` rather than sharing a constant with `draw_tucked_bubble` — drift-prone pair, acceptable per brief ("compute the same way").
+
+**Verdict: PASS. Push held for owner walk** (tuck → long speech shows up to 3 lines, honest `…` if longer; quick untucked chat/Customize regression for the shared `wrap()`).

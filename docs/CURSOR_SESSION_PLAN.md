@@ -505,3 +505,63 @@ let start = along - len / 2.0;
 `fix(body): laminal ring pivot — Slice H3.1 — bar shrinks symmetric on anchor (no slide) + 10px thickness`
 
 Append builder report below, STOP after H3.1.
+
+---
+
+## Builder report — H3.1 (Composer 2.5, 2026-07-02)
+
+**Status:** H3.1 complete. **Stopped after H3.1.** Not pushed.
+
+### Commit
+
+```
+457b930a14c20fb48067ba067c111e85b40f8f44
+fix(body): laminal ring pivot — Slice H3.1 — bar shrinks symmetric on anchor (no slide) + 10px thickness
+
+Replace bar_rect slide-clamp with symmetric shrink: len = min(2*room_to_nearest_end,
+extent*BAR_LENGTH_FRAC), start = along - len/2 — bar centre always tracks the head anchor
+on left/right edges. BAR_THICKNESS 12 -> 10 (visual === input via shared bar_rect).
+
+Tests: cargo test 122 passed (main), +bar_shrinks_symmetric_near_edge_left_right;
+bar_is_half_length_centered_on_anchor updated for shrink semantics; dock_head_only widened
+to W=560 so bar endpoints clear the bump circle.
+```
+
+### Gate outputs (verbatim, forced recompile via `touch src/render.rs`)
+
+**`cd desktop-body && cargo test`**
+
+```
+running 122 tests
+test result: ok. 122 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+running 29 tests (parse bin)
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+```
+
+Baseline was 121 (post-H3); H3.1 landed +1 named test (`bar_shrinks_symmetric_near_edge_left_right`).
+
+**`cd desktop-body && cargo build --release`** — 10 warnings (known set). Nothing new.
+
+**`npx tsc --noEmit`** — clean.
+
+**`npx vitest run`** — **278 / 31** unchanged.
+
+### Canary greps
+
+| Canary | Result |
+|--------|--------|
+| Figure bodies byte-identical | PASS — `render.rs` only; no figure function touched |
+| No new palette literals | PASS |
+| No defensive re-clamp added | PASS — shrink formula only; no slide-clamp |
+
+### Conflict stops
+
+None. No re-clamp added.
+
+### Scope
+
+`desktop-body/src/render.rs` only, per brief.
+
+### Not done
+
+H4, push, main.rs, scripts.

@@ -358,3 +358,72 @@ render family"; `BB_DOCK` is "what shows when tucked" — orthogonal knobs.
 **Commit:** `feat(body): laminal ring pivot — Slice H3 — dock modes (head|bar|both) + centered half-bar`
 
 Append your builder report below this brief, same format as H1/H2. **STOP after H3.**
+
+---
+
+## Builder report — H3 (Composer 2.5, 2026-07-02)
+
+**Status:** H3 complete. **Stopped after H3.** Not pushed.
+
+### Commit
+
+```
+bb203b7955ad12dba762a41866f3e8e8afcaa99e
+feat(body): laminal ring pivot — Slice H3 — dock modes (head|bar|both) + centered half-bar
+
+DockShow enum (default Both) via BB_DOCK; unset/garbage/none -> Both. Ring skin coerces
+every mode to bar-only. bar_rect(edge, w, h, along): 12px thick, half-edge length
+(BAR_LENGTH_FRAC), centered on bump_along_edge. Tucked paint/hit union per effective dock.
+
+Tests: cargo test 121 passed (main), +env_dock_parse, +bar_is_half_length_centered_on_anchor,
++bar_hit_matches_bar_paint, ring_tuck_full_bar renamed to ring_tuck_half_bar_is_hittable_within_bounds,
++dock_head_only_bump_hits_bar_misses, +dock_bar_only_bar_hits_bump_misses, +ring_skin_coerces_dock_to_bar.
+```
+
+### Gate outputs (verbatim)
+
+**`cd desktop-body && cargo test`** (after `touch src/*.rs`)
+
+```
+running 121 tests
+test result: ok. 121 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.31s
+running 29 tests (parse bin)
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+```
+
+Baseline was 115 (post-H2); H3 landed +6 named tests (121). Renamed `ring_tuck_full_bar_is_hittable` -> `ring_tuck_half_bar_is_hittable_within_bounds`.
+
+**`cd desktop-body && cargo build --release`**
+
+```
+warning: `bb-desktop-body` (bin "bb-desktop-body") generated 10 warnings
+    Finished `release` profile [optimized] target(s) in 2.46s
+```
+
+10 warnings — known set. Nothing new.
+
+**`npx tsc --noEmit`** — clean (exit 0).
+
+**`npx vitest run`** — **278 passed / 31 files** unchanged.
+
+### Canary greps
+
+| Canary | Result |
+|--------|--------|
+| No new governance RGBA literals | PASS — bar still uses `ring_hue_or_quiet`; geometry consts `BAR_LENGTH_FRAC`, `BAR_THICKNESS` |
+| Figure function bodies byte-identical | PASS — `draw_bump` / `draw_closed_eyes` / `draw_eyes` / `draw_mouth` untouched |
+| No new governance display surface | PASS |
+
+### Discoveries
+
+- **Left-edge geometry overlap:** when bar and bump share the same `along` anchor on left/right edges, the half-bar strip can lie entirely inside the bump circle. Dock-mode liveness tests use `BumpEdge::Top` so bar endpoints sit outside the bump — documented in test comments, not a product bug (head-only still summons via bump centre).
+- **`tucked_summon_rects` / `point_in_tucked_summon` / `tucked_summon_bounds`** centralize paint/hit/clamp union in `render.rs`; `main.rs` no longer skin-gates per-primitive.
+- Ring coercion is explicit in `effective_dock_show` + legible `match` at paint site.
+
+### Conflict stops
+
+None.
+
+### Not done (by design)
+
+H4 (Customize toggles + disk persistence), eyes-as-activity, soul/TS changes, push.

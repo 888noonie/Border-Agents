@@ -873,3 +873,5 @@ Audited `c83a038` (+ builder report `4b60bc5`).
 None — cleanest slice of the series.
 
 **Verdict: PASS. Push held for owner walk** (Customize → Dock cycles → tuck shows head-only / bar-only per setting → relaunch persists → BB_DOCK env wins → optional ring-skin greyed row).
+
+**Owner walk PASSED 2026-07-03 (native, COSMIC):** dock cycle + tuck rendering per mode ✅, persistence across kill/relaunch ✅, ring launch bar-only with greyed row + explanatory tap ✅. **H-series COMPLETE — pushed.**

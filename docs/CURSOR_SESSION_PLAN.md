@@ -781,3 +781,65 @@ Launch plain → Customize → Dock row reads "Head + bar" → tap → "Head" �
 `feat(body): laminal ring pivot — Slice H4b — Dock setting row (head/bar/both cycle, persisted)`
 
 Append builder report below. **STOP after H4b.** (Backlog after: tucked bubble text cut-off — small render.rs slice, will also carry the stale `bar_is_half_length_centered_on_anchor` rename and the `Layout::initial` orphan cleanup.)
+
+---
+
+## Builder report — H4b (Composer 2.5, 2026-07-02)
+
+**Status:** H4b complete. **Stopped after H4b.** Not pushed.
+
+### Commit
+
+```
+feat(body): laminal ring pivot — Slice H4b — Dock setting row (head/bar/both cycle, persisted)
+
+Dock row at Customize index 2 cycles Both→Head→Bar through persist_settings.
+Ring skin makes the row read-only with an explanatory tap message.
+
+Tests: cargo test 131 passed (main), +dock_cycle_order, +dock_label_covers_all_variants.
+```
+
+### Gate outputs (verbatim, forced recompile via `touch src/*.rs`)
+
+**`cd desktop-body && cargo test`**
+
+```
+running 131 tests
+test result: ok. 131 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+running 29 tests (parse bin)
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+```
+
+Baseline was 129 (post-H4a); H4b landed +2 named tests.
+
+**`cd desktop-body && cargo build --release`** — 10 warnings (known set). Nothing new.
+
+**`npx tsc --noEmit`** — clean.
+
+**`npx vitest run`** — **278 / 31** unchanged.
+
+### Canary greps
+
+| Canary | Result |
+|--------|--------|
+| `render.rs` untouched | PASS — SettingsRow already generic |
+| `settings.rs` untouched | PASS — `persist_settings` already writes `dock_show` |
+| No soul/wire/presence changes | PASS — law 7 body-local only |
+
+### Conflict stops
+
+None.
+
+### Scope
+
+`desktop-body/src/main.rs` only, per brief.
+
+### Implementation notes
+
+- `settings_data` inserts Dock at index 2; `settings_row_count` 4 → 5; Posture/Buddy shifted to indices 3/4.
+- `dock_label` / `next_dock` pure fns; `cycle_dock` mirrors `cycle_color` (speech + `update_input_region` + `persist_settings`).
+- Ring skin: Dock row `editable: false`; tap speaks `"Dock is bar-only under the ring skin."` — no mutation, no persist.
+
+### Not done
+
+Push, tucked bubble backlog slice.

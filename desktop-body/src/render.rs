@@ -184,6 +184,7 @@ pub struct Layout {
 }
 
 impl Layout {
+    #[cfg(test)]
     pub fn initial() -> Layout {
         Layout { facing: Facing::Right, body_len: BODY_LEN_DEFAULT }
     }
@@ -327,6 +328,7 @@ impl Layout {
 
     /// Kept for the closed-chat case (surfaces only, 7 rows). Callers that need the chat
     /// controls too should build their own list and call `interior_rows_for`.
+    #[cfg(test)]
     pub fn interior_rows(&self) -> Vec<(PerimeterId, Rect)> {
         let ids = [
             PerimeterId::ArrowN,
@@ -860,7 +862,7 @@ const BUMP_HALO_STROKE: f32 = 3.0;
 // on its on-screen side; for left/right edges it straddles the bump centre, for top/bottom
 // it hangs inward from the edge.
 const TUCK_PEEK_W: f32 = 212.0;
-const TUCK_PEEK_BUBBLE_H: f32 = 60.0;
+const TUCK_PEEK_BUBBLE_H: f32 = 88.0;
 const TUCK_PEEK_INPUT_H: f32 = 34.0;
 const TUCK_PEEK_GAP: f32 = 6.0;
 
@@ -3851,11 +3853,13 @@ fn wrap(font: &Font, text: &str, px: f32, max_w: f32, max_lines: usize) -> Vec<S
     let mut lines: Vec<String> = Vec::new();
     let mut current = String::new();
     let mut last_break: Option<usize> = None;
+    let mut truncated = false;
 
     for ch in text.chars() {
         if ch == '\n' {
-            push_wrapped_line(&mut lines, &mut current, &mut last_break, max_lines);
+            push_wrapped_line(&mut lines, &mut current, &mut last_break, max_lines, &mut truncated);
             if lines.len() == max_lines {
+                truncated = true;
                 break;
             }
             continue;
@@ -3874,21 +3878,24 @@ fn wrap(font: &Font, text: &str, px: f32, max_w: f32, max_lines: usize) -> Vec<S
             let mut overflow = current[idx..].trim_start().to_string();
             current.truncate(idx);
             trim_line_end(&mut current);
-            push_wrapped_line(&mut lines, &mut current, &mut last_break, max_lines);
+            push_wrapped_line(&mut lines, &mut current, &mut last_break, max_lines, &mut truncated);
             if lines.len() == max_lines {
+                truncated = true;
                 break;
             }
             current = std::mem::take(&mut overflow);
             last_break = find_break_idx(&current);
             while measure(font, &current, px) > max_w && !current.is_empty() {
-                hard_wrap_current(font, px, max_w, &mut lines, &mut current, &mut last_break, max_lines);
+                hard_wrap_current(font, px, max_w, &mut lines, &mut current, &mut last_break, max_lines, &mut truncated);
                 if lines.len() == max_lines {
+                    truncated = true;
                     break;
                 }
             }
         } else {
-            hard_wrap_current(font, px, max_w, &mut lines, &mut current, &mut last_break, max_lines);
+            hard_wrap_current(font, px, max_w, &mut lines, &mut current, &mut last_break, max_lines, &mut truncated);
             if lines.len() == max_lines {
+                truncated = true;
                 break;
             }
         }
@@ -3897,12 +3904,13 @@ fn wrap(font: &Font, text: &str, px: f32, max_w: f32, max_lines: usize) -> Vec<S
     if lines.len() < max_lines && !current.is_empty() {
         trim_line_end(&mut current);
         lines.push(current);
+    } else if !current.is_empty() {
+        truncated = true;
     }
     if lines.len() == max_lines {
         if let Some(last) = lines.last_mut() {
-            if measure(font, last, px) > max_w {
-                while measure(font, &format!("{last}…"), px) > max_w && last.pop().is_some() {}
-                last.push('…');
+            if truncated || measure(font, last, px) > max_w {
+                ellipsize_line_in_place(font, last, px, max_w);
             }
         }
     }
@@ -3917,6 +3925,7 @@ fn hard_wrap_current(
     current: &mut String,
     last_break: &mut Option<usize>,
     max_lines: usize,
+    truncated: &mut bool,
 ) {
     let mut carry_rev = String::new();
     while measure(font, current, px) > max_w {
@@ -3924,8 +3933,11 @@ fn hard_wrap_current(
         carry_rev.push(ch);
     }
     trim_line_end(current);
-    push_wrapped_line(lines, current, last_break, max_lines);
+    push_wrapped_line(lines, current, last_break, max_lines, truncated);
     if lines.len() == max_lines {
+        if !carry_rev.is_empty() {
+            *truncated = true;
+        }
         return;
     }
     *current = carry_rev.chars().rev().collect::<String>().trim_start().to_string();
@@ -3937,14 +3949,33 @@ fn push_wrapped_line(
     current: &mut String,
     last_break: &mut Option<usize>,
     max_lines: usize,
+    truncated: &mut bool,
 ) {
     trim_line_end(current);
-    if !current.is_empty() && lines.len() < max_lines {
-        lines.push(std::mem::take(current));
+    if !current.is_empty() {
+        if lines.len() < max_lines {
+            lines.push(std::mem::take(current));
+        } else {
+            *truncated = true;
+            current.clear();
+        }
     } else {
         current.clear();
     }
     *last_break = None;
+}
+
+/// Trim a line until `…` fits `max_w`, then append the ellipsis.
+fn ellipsize_line_in_place(font: &Font, line: &mut String, px: f32, max_w: f32) {
+    trim_line_end(line);
+    if line.is_empty() {
+        if measure(font, "…", px) <= max_w {
+            line.push('…');
+        }
+        return;
+    }
+    while measure(font, &format!("{line}…"), px) > max_w && line.pop().is_some() {}
+    line.push('…');
 }
 
 fn trim_line_end(current: &mut String) {
@@ -4922,7 +4953,7 @@ mod tests {
     }
 
     #[test]
-    fn bar_is_half_length_centered_on_anchor() {
+    fn bar_full_length_when_anchor_clear_of_edges() {
         // Top/bottom: along-edge length matches the left/right bar at the head anchor.
         const W: u32 = 560;
         const H: u32 = 120;
@@ -5460,6 +5491,36 @@ mod tests {
             }
         }
         assert!(drew_something, "passport should have drawn its rows");
+    }
+
+    #[test]
+    fn wrap_ellipsizes_when_line_budget_exhausted() {
+        let font = load_font().expect("system font available for wrap test");
+        let text = "Edit repository needs a longer explanation than one line allows";
+        let lines = wrap(&font, text, TEXT_PX, 188.0, 2);
+        assert_eq!(lines.len(), 2);
+        let last = lines.last().expect("budgeted wrap should produce lines");
+        assert!(last.ends_with('…'), "exhausted budget should ellipsize, got {last:?}");
+        assert!(measure(&font, last, TEXT_PX) <= 188.0);
+    }
+
+    #[test]
+    fn wrap_unlimited_budget_never_ellipsizes() {
+        let font = load_font().expect("system font available for wrap test");
+        let text = "Edit repository needs a longer explanation than one line allows";
+        let lines = wrap(&font, text, TEXT_PX, 188.0, usize::MAX);
+        let joined: String = lines.join("");
+        assert!(!joined.contains('…'));
+        assert!(joined.contains("Edit repository"));
+        assert!(joined.contains("allows"));
+    }
+
+    #[test]
+    fn tucked_bubble_budget_is_three_lines() {
+        let pad_top = 18.0;
+        let max_lines =
+            (((TUCK_PEEK_BUBBLE_H - pad_top - 6.0) / LINE_H).floor() as i32).max(1) as usize;
+        assert_eq!(max_lines, 3);
     }
 
     #[test]

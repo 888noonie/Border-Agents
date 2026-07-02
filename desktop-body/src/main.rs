@@ -21,6 +21,7 @@
 
 mod presence;
 mod render;
+mod settings;
 
 use std::{
     collections::{HashMap, VecDeque},
@@ -125,36 +126,12 @@ fn debug_log_enabled() -> bool {
     })
 }
 
-/// Parse `BB_COLOR` ("#C96D3C" or "C96D3C") into the clay colour; falls back to
-/// the Morph terracotta default. Easy per-buddy recolouring without a rebuild.
-fn env_color(key: &str) -> [u8; 3] {
-    let Some(raw) = std::env::var(key).ok() else { return render::CLAY_DEFAULT };
-    let hex = raw.trim().trim_start_matches('#');
-    if hex.len() != 6 {
-        return render::CLAY_DEFAULT;
-    }
-    match u32::from_str_radix(hex, 16) {
-        Ok(v) => [(v >> 16) as u8, (v >> 8) as u8, v as u8],
-        Err(_) => render::CLAY_DEFAULT,
-    }
-}
-
 /// Parse `BB_SKIN` — default `clay` (figure + alert halo); `ring` opts into the standalone
 /// state-halo dev/test track. Read once at startup; the skin never changes at runtime.
 fn env_skin() -> render::Skin {
     match std::env::var("BB_SKIN").ok().map(|v| v.trim().to_ascii_lowercase()).as_deref() {
         Some("ring") => render::Skin::Ring,
         _ => render::Skin::Clay,
-    }
-}
-
-/// Parse `BB_DOCK` — `head` / `bar` / `both`; unset, garbage, and `none` -> `Both`.
-fn env_dock() -> render::DockShow {
-    match std::env::var("BB_DOCK").ok().map(|v| v.trim().to_ascii_lowercase()).as_deref() {
-        Some("head") => render::DockShow::Head,
-        Some("bar") => render::DockShow::Bar,
-        Some("both") => render::DockShow::Both,
-        _ => render::DockShow::Both,
     }
 }
 
@@ -621,8 +598,12 @@ fn main() {
         eprintln!("[bb-desktop-body] wp_relative_pointer unavailable — dragging disabled");
     }
 
+    let buddy = std::env::var("BB_BUDDY").unwrap_or_else(|_| "hermes".to_string());
+    let config_dir = settings::config_dir();
+    let startup_settings = settings::resolve_startup(&buddy, &config_dir);
+
     let mut app = App {
-        buddy: std::env::var("BB_BUDDY").unwrap_or_else(|_| "hermes".to_string()),
+        buddy,
         registry_state: RegistryState::new(&globals),
         seat_state: SeatState::new(&globals, &qh),
         output_state: OutputState::new(&globals, &qh),
@@ -638,7 +619,11 @@ fn main() {
         loop_signal: None,
         screen: None,
         width: render::SURFACE_W,
-        height: render::Layout::initial().surface_h(),
+        height: render::Layout {
+            facing: Facing::Right,
+            body_len: startup_settings.body_len,
+        }
+        .surface_h(),
         margin_left: env_i32("BB_MARGIN_LEFT", 48) as f64,
         margin_top: env_i32("BB_MARGIN_TOP", 48) as f64,
         start: Instant::now(),
@@ -692,10 +677,11 @@ fn main() {
         active_alert_level: None,
         route_flash_until: None,
         facing: Facing::Right,
-        body_len: render::BODY_LEN_DEFAULT,
-        color: env_color("BB_COLOR"),
+        body_len: startup_settings.body_len,
+        color: startup_settings.color,
         skin: env_skin(),
-        dock_show: env_dock(),
+        dock_show: startup_settings.dock,
+        config_dir,
     };
     app.init_hermes_surface();
 
@@ -1261,8 +1247,10 @@ struct App {
     color: [u8; 3],
     /// Which skin paints the presence, from `BB_SKIN` (default `clay`). Set once at startup.
     skin: render::Skin,
-    /// Tucked appearance, from `BB_DOCK` (default `both`). Set once at startup.
+    /// Tucked appearance — env → persisted → default at startup; written on save.
     dock_show: render::DockShow,
+    /// Config root for body-settings.json (`BB_CONFIG_DIR` / XDG / ~/.config).
+    config_dir: std::path::PathBuf,
 }
 
 /// Map a presence-protocol edge onto the renderer's bump edge.
@@ -2617,9 +2605,12 @@ impl App {
         }
 
         if press.dist > CLICK_SLOP {
+            if press.target == PressTarget::Feet {
+                self.persist_settings();
+                return;
+            }
             // A head or body drag ended. If it came to rest near an edge, tuck it there;
             // otherwise report where it landed so the placement can be persisted.
-            // (Feet drags are local resizes — nothing to tuck or report.)
             if matches!(press.target, PressTarget::Head | PressTarget::Body) {
                 if let Some(edge) = self.nearest_edge_within_threshold() {
                     self.tuck_to(edge);
@@ -3214,6 +3205,7 @@ impl App {
         self.color = next_color(self.color);
         self.speech = Some(format!("Colour: {}", color_swatch_name(self.color)));
         self.update_input_region();
+        self.persist_settings();
     }
 
     /// Cycle the body size through the local presets (reuses the feet-drag resize path).
@@ -3221,6 +3213,19 @@ impl App {
         self.set_body_len(next_size(self.body_len));
         self.speech = Some(format!("Size: {}", size_preset_name(self.body_len)));
         self.update_input_region();
+        self.persist_settings();
+    }
+
+    /// Write dock + colour + body_len for this buddy (atomic; failures are logged only).
+    fn persist_settings(&self) {
+        let entry = settings::BuddySettings {
+            dock: self.dock_show,
+            color: self.color,
+            body_len: self.body_len,
+        };
+        if let Err(err) = settings::save_buddy_settings(&self.config_dir, &self.buddy, &entry) {
+            eprintln!("[bb-desktop-body] settings persist failed: {err}");
+        }
     }
 
     fn on_torso_action(&mut self, action: TorsoAction) {
@@ -3681,23 +3686,12 @@ mod tests {
 
     #[test]
     fn env_dock_parse() {
-        let saved = std::env::var("BB_DOCK").ok();
-        std::env::set_var("BB_DOCK", "head");
-        assert_eq!(env_dock(), render::DockShow::Head);
-        std::env::set_var("BB_DOCK", "bar");
-        assert_eq!(env_dock(), render::DockShow::Bar);
-        std::env::set_var("BB_DOCK", "both");
-        assert_eq!(env_dock(), render::DockShow::Both);
-        std::env::set_var("BB_DOCK", "none");
-        assert_eq!(env_dock(), render::DockShow::Both);
-        std::env::set_var("BB_DOCK", "garbage");
-        assert_eq!(env_dock(), render::DockShow::Both);
-        std::env::remove_var("BB_DOCK");
-        assert_eq!(env_dock(), render::DockShow::Both);
-        match saved {
-            Some(v) => std::env::set_var("BB_DOCK", v),
-            None => std::env::remove_var("BB_DOCK"),
-        }
+        use crate::settings;
+        assert_eq!(settings::parse_dock_str("head"), Some(render::DockShow::Head));
+        assert_eq!(settings::parse_dock_str("bar"), Some(render::DockShow::Bar));
+        assert_eq!(settings::parse_dock_str("both"), Some(render::DockShow::Both));
+        assert_eq!(settings::dock_from_env_value("none"), render::DockShow::Both);
+        assert_eq!(settings::dock_from_env_value("garbage"), render::DockShow::Both);
     }
 
     #[test]

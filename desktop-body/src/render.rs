@@ -74,7 +74,7 @@ const RING_THICKNESS: f32 = 7.0;
 // flush to the tucked edge mirrors the ring hue, so the governance tier stays peripheral-
 // readable with the figure gone. Thin enough to read as chrome, thick enough to read at a
 // glance from the corner of the eye.
-const BAR_THICKNESS: f32 = 12.0;
+const BAR_THICKNESS: f32 = 10.0;
 /// Fraction of the along-edge extent used as bar length (half-edge, centered on the tuck anchor).
 pub const BAR_LENGTH_FRAC: f32 = 0.5;
 
@@ -739,30 +739,35 @@ pub fn point_in_bump(edge: BumpEdge, w: u32, h: u32, px: f64, py: f64) -> bool {
 }
 
 /// Bounding box of the tucked edge light bar — shared geometry for `draw_edge_bar` paint and
-/// tuck hit-testing. Half the along-edge extent, centered on `along`, clamped on-surface.
+/// tuck hit-testing. Centered on `along`; length is the lesser of half the edge extent and
+/// the symmetric room to each surface end (shrink near corners, never slide).
 pub fn bar_rect(edge: BumpEdge, w: u32, h: u32, along: f32) -> Rect {
     let wf = w as f32;
     let hf = h as f32;
     let t = BAR_THICKNESS;
-    let len = match edge {
-        BumpEdge::Left | BumpEdge::Right => hf * BAR_LENGTH_FRAC,
-        BumpEdge::Top | BumpEdge::Bottom => wf * BAR_LENGTH_FRAC,
-    };
     match edge {
         BumpEdge::Left => {
-            let y = (along - len / 2.0).clamp(0.0, (hf - len).max(0.0));
+            let extent = hf;
+            let len = (2.0 * along.min(extent - along)).min(extent * BAR_LENGTH_FRAC);
+            let y = along - len / 2.0;
             Rect { x: 0.0, y, w: t, h: len }
         }
         BumpEdge::Right => {
-            let y = (along - len / 2.0).clamp(0.0, (hf - len).max(0.0));
+            let extent = hf;
+            let len = (2.0 * along.min(extent - along)).min(extent * BAR_LENGTH_FRAC);
+            let y = along - len / 2.0;
             Rect { x: wf - t, y, w: t, h: len }
         }
         BumpEdge::Top => {
-            let x = (along - len / 2.0).clamp(0.0, (wf - len).max(0.0));
+            let extent = wf;
+            let len = (2.0 * along.min(extent - along)).min(extent * BAR_LENGTH_FRAC);
+            let x = along - len / 2.0;
             Rect { x, y: 0.0, w: len, h: t }
         }
         BumpEdge::Bottom => {
-            let x = (along - len / 2.0).clamp(0.0, (wf - len).max(0.0));
+            let extent = wf;
+            let len = (2.0 * along.min(extent - along)).min(extent * BAR_LENGTH_FRAC);
+            let x = along - len / 2.0;
             Rect { x, y: hf - t, w: len, h: t }
         }
     }
@@ -4906,17 +4911,33 @@ mod tests {
 
     #[test]
     fn bar_is_half_length_centered_on_anchor() {
-        const W: u32 = 200;
+        // Top/bottom mid-anchor: full half-length, centred (never slides on these edges).
+        const W: u32 = 400;
         const H: u32 = 120;
-        let along = bump_along_edge(BumpEdge::Left, W, H);
-        let rect = bar_rect(BumpEdge::Left, W, H, along);
-        assert!((rect.h - H as f32 * BAR_LENGTH_FRAC).abs() < 0.5);
-        assert!((rect.y + rect.h / 2.0 - along).abs() < 0.5);
+        let along = bump_along_edge(BumpEdge::Top, W, H);
+        let rect = bar_rect(BumpEdge::Top, W, H, along);
+        assert!((rect.w - W as f32 * BAR_LENGTH_FRAC).abs() < 0.5);
+        assert!((rect.x + rect.w / 2.0 - along).abs() < 0.5);
 
-        let near_top = 4.0_f32;
-        let clamped = bar_rect(BumpEdge::Left, W, H, near_top);
-        assert!(clamped.y >= 0.0);
-        assert!(clamped.y + clamped.h <= H as f32);
+        // Left/right near-edge: shrinks symmetrically; centre stays on the anchor.
+        let anchor = 40.0_f32;
+        let extent = 560.0_f32;
+        let shrunk = bar_rect(BumpEdge::Left, 40, extent as u32, anchor);
+        assert!((shrunk.y + shrunk.h / 2.0 - anchor).abs() < 0.5);
+        assert!((shrunk.h - 80.0).abs() < 0.5, "len = 2*anchor when room allows");
+        assert!((shrunk.y - 0.0).abs() < 0.5);
+        assert!(shrunk.y + shrunk.h <= extent);
+    }
+
+    #[test]
+    fn bar_shrinks_symmetric_near_edge_left_right() {
+        let extent = 560.0_f32;
+        let along = HEAD_CY;
+        let rect = bar_rect(BumpEdge::Left, 40, extent as u32, along);
+        assert!((rect.y + rect.h / 2.0 - along).abs() < 0.5, "bar centre must track the head anchor");
+        assert!(rect.y >= 0.0);
+        assert!(rect.y + rect.h <= extent);
+        assert!(rect.h >= 2.0 * BUMP_R, "never shrinks below the bump diameter");
     }
 
     #[test]
@@ -4935,21 +4956,29 @@ mod tests {
 
     #[test]
     fn dock_head_only_bump_hits_bar_misses() {
-        const W: u32 = 200;
+        // Wide surface so the half-bar's along-edge endpoints clear the bump circle.
+        const W: u32 = 560;
         const H: u32 = 120;
-        // Top edge: bar runs along x; endpoints can sit outside the bump circle centred on the edge.
         let edge = BumpEdge::Top;
         let along = bump_along_edge(edge, W, H);
         let (cx, cy) = bump_center(edge, W, H);
         let bar = bar_rect(edge, W, H, along);
         let bar_y = (BAR_THICKNESS / 2.0) as f64;
-        let far_x = (bar.x + 2.0) as f64;
-        assert!(
-            !point_in_bump(edge, W, H, far_x, bar_y),
-            "test point must lie outside the bump circle",
-        );
+        let bar_endpoint_outside_bump = [bar.x + 2.0, bar.x + bar.w - 2.0]
+            .into_iter()
+            .map(|x| (x as f64, bar_y))
+            .find(|(x, y)| !point_in_bump(edge, W, H, *x, *y))
+            .expect("bar endpoint outside bump");
         assert!(point_in_tucked_summon(Skin::Clay, DockShow::Head, edge, W, H, cx as f64, cy as f64));
-        assert!(!point_in_tucked_summon(Skin::Clay, DockShow::Head, edge, W, H, far_x, bar_y));
+        assert!(!point_in_tucked_summon(
+            Skin::Clay,
+            DockShow::Head,
+            edge,
+            W,
+            H,
+            bar_endpoint_outside_bump.0,
+            bar_endpoint_outside_bump.1,
+        ));
     }
 
     #[test]

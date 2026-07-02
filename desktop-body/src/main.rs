@@ -177,6 +177,24 @@ fn size_preset_name(body_len: f32) -> &'static str {
     SIZE_PRESETS.iter().find(|(v, _)| (*v - body_len).abs() < 0.5).map(|(_, n)| *n).unwrap_or("Custom")
 }
 
+/// Human-readable dock mode for the settings panel.
+fn dock_label(dock: render::DockShow) -> &'static str {
+    match dock {
+        render::DockShow::Both => "Head + bar",
+        render::DockShow::Head => "Head",
+        render::DockShow::Bar => "Bar",
+    }
+}
+
+/// Cycle tucked appearance: Both → Head → Bar → Both.
+fn next_dock(dock: render::DockShow) -> render::DockShow {
+    match dock {
+        render::DockShow::Both => render::DockShow::Head,
+        render::DockShow::Head => render::DockShow::Bar,
+        render::DockShow::Bar => render::DockShow::Both,
+    }
+}
+
 /// The next size preset after the one nearest `body_len` (wrapping), so cycling from a custom
 /// feet-drag length lands on a sensible step rather than jumping arbitrarily.
 fn next_size(body_len: f32) -> f32 {
@@ -945,7 +963,7 @@ enum PressTarget {
     /// Every perimeter control now lives here: surfaces always, Paste/Review/Edit when chat is
     /// open. Dispatches through `on_perimeter_control` (surfaces) or the chat-control handlers.
     Interior(PerimeterId),
-    /// A row of the body-local settings panel (colour/size editable; posture/buddy read-only).
+    /// A row of the body-local settings panel (colour/size/dock editable; posture/buddy read-only).
     SettingsRow(usize),
     /// A selectable row in the wizard onboarding panel (provider/posture/buddy toggle).
     OnboardingOption(usize),
@@ -1214,7 +1232,7 @@ struct App {
     /// When the open dial is the right-click commandeer picker (not the surface switcher), which
     /// phase it is in. `None` → the dial shows surfaces. Reuses the bloom render/hit-test path.
     picker: Option<PickerPhase>,
-    /// Body-local settings panel open over the torso (colour/size editable; posture/buddy shown
+    /// Body-local settings panel open over the torso (colour/size/dock editable; posture/buddy
     /// read-only). Reached from the dial's Customize entry. Pure presentation state (law 7).
     settings_open: bool,
     /// Wizard onboarding form section soul-pushed via `panel` cues (Build C). When present it owns
@@ -1497,11 +1515,13 @@ impl App {
             Vec::new()
         };
         // Body-local settings panel rows (owned values, then borrowed into SettingsRow like the
-        // interior texts above). Editable: colour + size; read-only: posture + buddy (law 7).
+        // interior texts above). Editable: colour + size + dock (clay); read-only: posture + buddy.
         let settings_data: Vec<(&'static str, String, bool)> = if self.settings_open {
+            let dock_editable = !matches!(self.skin, render::Skin::Ring);
             vec![
                 ("Colour", color_swatch_name(self.color).to_string(), true),
                 ("Size", size_preset_name(self.body_len).to_string(), true),
+                ("Dock", dock_label(self.dock_show).to_string(), dock_editable),
                 ("Posture", posture_label(&self.active_posture), false),
                 ("Buddy", self.name_label.clone(), false),
             ]
@@ -3148,9 +3168,9 @@ impl App {
 
     // --- body-local settings panel ------------------------------------------------
 
-    /// The settings rows are a fixed set: Colour, Size, Posture, Buddy.
+    /// The settings rows are a fixed set: Colour, Size, Dock, Posture, Buddy.
     fn settings_row_count(&self) -> usize {
-        4
+        5
     }
 
     /// Which settings row (if any) a torso-panel press lands on, using the shared interior-row
@@ -3181,18 +3201,26 @@ impl App {
         self.update_input_region();
     }
 
-    /// Act on a settings row tap. Colour and size are genuinely body-local (changed here, now);
-    /// posture and buddy are governance/identity the body only reflects — tapping explains where
-    /// they are actually set, never mutating them locally (AGENTS.md law 7).
+    /// Act on a settings row tap. Colour, size, and dock are genuinely body-local (changed here,
+    /// now); posture and buddy are governance/identity the body only reflects — tapping explains
+    /// where they are actually set, never mutating them locally (AGENTS.md law 7).
     fn on_settings_row(&mut self, idx: usize) {
         match idx {
             0 => self.cycle_color(),
             1 => self.cycle_size(),
             2 => {
+                if matches!(self.skin, render::Skin::Ring) {
+                    self.speech = Some("Dock is bar-only under the ring skin.".to_string());
+                    self.update_input_region();
+                } else {
+                    self.cycle_dock();
+                }
+            }
+            3 => {
                 self.speech = Some("Posture is set with the soul (Work / Play / Private).".to_string());
                 self.update_input_region();
             }
-            3 => {
+            4 => {
                 self.speech = Some(format!("Buddy \"{}\" is chosen at launch (BB_BUDDY).", self.name_label));
                 self.update_input_region();
             }
@@ -3212,6 +3240,14 @@ impl App {
     fn cycle_size(&mut self) {
         self.set_body_len(next_size(self.body_len));
         self.speech = Some(format!("Size: {}", size_preset_name(self.body_len)));
+        self.update_input_region();
+        self.persist_settings();
+    }
+
+    /// Cycle tucked dock appearance (Both → Head → Bar). Pure presentation (law 7).
+    fn cycle_dock(&mut self) {
+        self.dock_show = next_dock(self.dock_show);
+        self.speech = Some(format!("Dock: {}", dock_label(self.dock_show)));
         self.update_input_region();
         self.persist_settings();
     }
@@ -3790,6 +3826,25 @@ mod tests {
         let off = [1, 2, 3];
         assert_eq!(color_swatch_name(off), "Custom");
         assert_eq!(next_color(off), COLOR_SWATCHES[0].0);
+    }
+
+    #[test]
+    fn dock_cycle_order() {
+        let mut dock = render::DockShow::Both;
+        for expected in [render::DockShow::Head, render::DockShow::Bar, render::DockShow::Both] {
+            dock = next_dock(dock);
+            assert_eq!(dock, expected);
+        }
+    }
+
+    #[test]
+    fn dock_label_covers_all_variants() {
+        for dock in [render::DockShow::Both, render::DockShow::Head, render::DockShow::Bar] {
+            assert!(!dock_label(dock).is_empty());
+        }
+        assert_eq!(dock_label(render::DockShow::Both), "Head + bar");
+        assert_eq!(dock_label(render::DockShow::Head), "Head");
+        assert_eq!(dock_label(render::DockShow::Bar), "Bar");
     }
 
     #[test]

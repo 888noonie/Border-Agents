@@ -585,3 +585,59 @@ Noted, non-blocking:
 - **New owner walk finding (logged for backlog, not H-series):** tucked speech-bubble text is cut off (e.g. `"Edit repository" needs` truncated). Bubble render/positioning works well in the tucked space otherwise. Candidate small slice after H4: tucked bubble wrap/height vs. fixed bubble rect.
 
 **Process note:** owner asked Composer directly for the T/B match mid-slice — fine outcome this time (small, well-tested, audited clean), but preference stands: route scope adds through the lead brief so the audit knows what it's checking before it reads the diff.
+
+---
+
+## Slice H4a — settings persistence (dock + color + size, per-buddy JSON) — brief for Composer
+
+**Status: READY FOR COMPOSER.** Owner ratified 2026-07-02: persist the full current settings set, not dock-only. Lead split H4: **H4a = persistence layer** (this slice — disk I/O is new territory for the body, it gets its own audit+walk), **H4b = Customize "Dock" toggles UI** (brief cut after H4a's walk passes). Same ground rules: gates verbatim with forced recompile, canaries, commit locally, NEVER push, STOP after H4a.
+
+### Scope (amended for this slice)
+
+`desktop-body/src/main.rs`, **new file** `desktop-body/src/settings.rs`, `scripts/bb-body.sh`. **render.rs untouched** — figure canary should be trivially green. No new Cargo deps: `serde_json = "1"` is already in the tree.
+
+### Pinned design
+
+**File:** `<config>/border-buddies/body-settings.json` where `<config>` resolves `BB_CONFIG_DIR` (tests/dev override) → `XDG_CONFIG_HOME` → `~/.config`. One file, keyed per buddy:
+
+```json
+{ "forge": { "dock": "both", "color": [201, 109, 60], "body_len": 320.0 } }
+```
+
+**Persisted fields (exactly three):** `dock` (`"head"|"bar"|"both"`), `color` (`[u8;3]`), `body_len` (f32, re-clamped to `BODY_LEN_MIN..=BODY_LEN_MAX` on load). **`BB_SKIN` is NOT persisted** — skin stays a dev knob. Buddy identity is the key, not a field.
+
+**Precedence at startup (per field):** explicit env (`BB_DOCK`, `BB_COLOR`/per-buddy color env) → persisted value for this buddy → compiled default. This requires a `bb-body.sh` change: **delete the `export BB_DOCK="${BB_DOCK:-both}"` default line** (added in H3) — a script default makes env always look "set" and would shadow persistence forever. Pass `BB_DOCK` through only if the user set it. Keep `BB_SKIN="${BB_SKIN:-clay}"` as is. Update the bb_log line to print the *resolved* dock source if convenient, else drop dock from it.
+
+**Save-on-change through ONE funnel:** `App::persist_settings(&self)` — serializes this buddy's three fields into the file (read-modify-write so other buddies' entries survive; atomic: write `.tmp` sibling then `rename`). Call sites, exactly these:
+- color cycle handler (`self.color = next_color(...)`, main.rs ~:3214)
+- size-preset cycle handler (settings panel)
+- pointer **release** after a leg/feet drag that changed `body_len` — NOT inside `set_body_len` itself (feet-drag calls it every motion event; one write per drag, not per pixel)
+- `dock` has no in-session mutator until H4b — on any save, write the startup-resolved dock value so the file stays complete.
+
+**Failure posture (never crash, never block paint):** missing file / unreadable / garbage JSON / wrong-typed field → that field falls back to default, log one line (existing eprintln/log style), continue. Write failure → log, continue. No retries, no dialogs.
+
+**Law 7:** settings are body-local presentation. No soul messages, no wire changes, nothing in `presence`.
+
+### Tests (named)
+
+In `settings.rs` (pure fns take the dir path / parsed JSON — keep file-path resolution separate from (de)serialization so most tests need no env):
+- `settings_roundtrip_per_buddy` — save forge + hermes, reload, both intact
+- `settings_missing_file_yields_defaults`
+- `settings_garbage_file_yields_defaults` (invalid JSON, and valid JSON with wrong-typed fields)
+- `settings_partial_entry_fills_defaults` (entry with only `color` → dock/body_len default)
+- `body_len_reclamped_on_load` (out-of-range value in file)
+- `env_overrides_persisted_dock` — env-mutating: standing note applies (serialize, don't delete, if it flakes under parallel threads); use `BB_CONFIG_DIR` pointed at a temp dir
+
+### Gates (baselines post-H3.1)
+
+`cargo test` = **123 + 0** (main) / 29 (parse bin) — growth by the named tests above only; `cargo build --release` = **10 known warnings**; `npx tsc --noEmit` clean; `npx vitest run` = **278 / 31**. Forced recompile (`touch src/*.rs`) before cargo gates.
+
+### Owner walk (after Fable audit)
+
+Launch plain → cycle color + size in the settings panel → kill → relaunch plain → **color and size survive**. Drag feet to stretch → relaunch → survives. `BB_DOCK=head` launch → env wins over file. Open `~/.config/border-buddies/body-settings.json` → human-readable, one entry per buddy walked.
+
+### Commit subject (verbatim)
+
+`feat(body): laminal ring pivot — Slice H4a — settings persistence (dock+color+size, per-buddy JSON)`
+
+Append builder report below. **STOP after H4a** — H4b (Dock toggles UI) brief follows the walk.

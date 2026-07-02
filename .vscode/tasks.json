@@ -82,6 +82,29 @@
       "detail": "Build C smoke: real soul (BB_SOUL=wizard) + native host body (BB_BUDDY=host). No browser/frame."
     },
     {
+      "label": "BB forge + soul (ring)",
+      "type": "shell",
+      "command": "bash",
+      "args": ["scripts/bb-start.sh"],
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": {
+          "BB_SKIN": "ring",
+          "BB_BUDDY": "forge"
+        }
+      },
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true,
+        "focus": true,
+        "group": "bb"
+      },
+      "problemMatcher": ["$rustc"],
+      "detail": "Laminal dev path: governance soul + forge body (BB_SKIN=ring, BB_BUDDY=forge). Logs → .bb-logs/"
+    },
+    {
       "label": "BB forge + soul + frame",
       "type": "shell",
       "command": "bash",

@@ -1018,3 +1018,53 @@ All 9 protected figure functions **md5-identical** across `e678892^..e678892` (`
 **Verdict: PASS. Push held for owner walk** (tuck → long speech shows up to 3 lines, honest `…` if longer; quick untucked chat/Customize regression for the shared `wrap()`).
 
 **Owner walk PASSED 2026-07-03 (native, COSMIC):** tucked bubble renders the full three-line speech (blocked-effector message complete, no mid-sentence cut) ✅; untucked chat bubble + torso text output regression clean (shared `wrap()`) ✅. **H5 COMPLETE — pushed. Tucked state polish done.**
+
+---
+
+## Slice F2 — activity green: in-flight action paints the halo (grant→result bracket) — brief for Composer
+
+**Status: READY FOR COMPOSER** (owner walks tomorrow's results; brief cut 2026-07-03 at session close).
+
+**DIRECTION RULING (owner ratified 2026-07-03, amends the R-series orthogonality note):** **Green = activity-in-progress; absence of green = at rest.** Amber/red/violet stay governance. The old "when does confirm-green decay?" question is dissolved: green's lifecycle is the wire bracket `action_request` → `action_result` — no decay timer (adding one back would be policy creep; ratified). Palette fact check: green is `AlertLevel::Ready` (`Confirm` is amber) — the activity hue REUSES the Ready green via the existing table; the "only literal hues live in `alert_level_ring_rgba`" constraint holds with **zero new color literals**.
+
+### Scope
+
+**`desktop-body/src/main.rs` ONLY.** render.rs untouched (figure canary trivially green) — the hue threads through the existing `BodyView.alert_level` into `draw_route_boundary_chrome` AND `draw_bump_halo`, so figure ring and tucked bump both go green with no render change. presence.rs untouched — `action_request_json`/`action_request_intent_json` already take `request_id`, and `Cue::ActionResult` already parses `request_id` (currently discarded by `..` in the destructure at ~main.rs:2015).
+
+### Pinned design
+
+- **One bit of presentation memory:** `action_in_flight: Option<InFlightAction>` on `App`, where `InFlightAction { request_id: String, effector: String }`. This is body-local fact ("I asked and have not heard back"), not soul inference — law 7 intact; say so in the field's doc comment.
+- **Request ids:** `App` gains a `u64` counter; ids formatted by a pure fn (e.g. `format_request_id(n) -> String`, `"body-req-{n}"`). BOTH `request_review` (~:2897) and `request_repo_edit` (~:2935) generate an id, pass it through the existing `request_id: Option<&str>` param (today they pass `None`), and set `action_in_flight`. A new request while one is in flight **replaces** the slot (single-slot v0.1; overlaps accepted as last-writer — one-line comment).
+- **Clear rules (pinned, all three cases):**
+  1. An `action_result` whose `request_id` matches the slot → clear. (Stop discarding `request_id` in the `Cue::ActionResult` destructure.)
+  2. An `action_result` with NO `request_id` on the wire → clear if `effector` matches the slot (soul didn't echo the id; don't strand green).
+  3. **Any decision clears** — allow, needs_confirmation, blocked: the bracket is over either way. On needs_confirmation the soul's `alertLevel` (amber Confirm) takes the halo; the confirmed re-press mints a NEW id and green relights for the second bracket. Unrelated results (different id AND different effector) leave the slot alone.
+- **Halo precedence, one pure decision fn:** `halo_alert_level(in_flight: bool, tier: Option<AlertLevel>) -> Option<AlertLevel>` = `if in_flight { Some(AlertLevel::Ready) } else { tier }`. The BodyView construction site (~:1618, `alert_level: self.active_alert_level`) calls it. While flying, green overrides the previous tier ("we're doing the thing"); the landing result repaints via the existing `active_alert_level` path. Steady green — a pulse is an F3/expression-pass candidate, NOT this slice.
+- **Known v0.1 limit (documented, not solved):** if the soul never answers and never disconnects, green stays lit. No timer (ratified). If main.rs already has a soul-stream-close path, clear the slot there too; if there is none, note that in the builder report — do NOT invent disconnect handling.
+- **Law 7:** no soul messages added, no wire shape changes, nothing in presence.rs.
+
+### Tests (named — keep the logic in pure fns so no App/Wayland needed)
+
+- `in_flight_clears_on_matching_request_id`
+- `in_flight_clears_on_effector_when_result_has_no_id`
+- `in_flight_survives_unrelated_result` (different id AND different effector)
+- `halo_prefers_activity_green_while_in_flight` (and passes the tier through when idle)
+- `request_ids_are_unique_and_nonempty` (counter/format fn)
+
+### Gates (baselines post-H5)
+
+`cargo test` = **134 + 0** (main) / 29 (parse bin) — growth by the named tests only; `cargo build --release` = **9 known warnings**; `npx tsc --noEmit` clean; `npx vitest run` = **278 / 31**. Forced recompile (`touch src/*.rs`) before cargo gates.
+
+### Canaries
+
+render.rs untouched → figure canary trivially green. Zero new color literals anywhere. presence.rs untouched.
+
+### Owner walk (after Fable audit; needs soul + body, the governance walk setup)
+
+Launch soul + body → tap **Edit** (repo_edit proof flow) → halo goes GREEN while the request flies → result lands: green clears, result's tier paints (amber on needs_confirmation) → press Confirm → green again → allow lands: receipt on rail, halo shows the result tier. Tap **Review** on an ungranted buddy → brief green, then blocked red. Tuck the buddy mid-flow → bump halo speaks the same green/tier language. Note: with the local dev gateway the bracket is fast — green may be a flash; that is honest (the parked soul `activity` signal will give green real duration later).
+
+### Commit subject (verbatim)
+
+`feat(body): laminal ring pivot — Slice F2 — activity green (in-flight action_request paints Ready-green halo, request-id bracket)`
+
+Append builder report below. **STOP after F2.** (F3 expression pass — bar eyes first, only-while-green, `BAR_EYES_MIN_LEN` named constant + pure-geometry test; then tucked-head attentive eyes; untucked figure LAST, canary-briefed — brief follows F2's walk.)

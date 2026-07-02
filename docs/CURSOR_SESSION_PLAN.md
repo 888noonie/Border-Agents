@@ -641,3 +641,68 @@ Launch plain → cycle color + size in the settings panel → kill → relaunch 
 `feat(body): laminal ring pivot — Slice H4a — settings persistence (dock+color+size, per-buddy JSON)`
 
 Append builder report below. **STOP after H4a** — H4b (Dock toggles UI) brief follows the walk.
+
+---
+
+## Builder report — H4a (Composer 2.5, 2026-07-02)
+
+**Status:** H4a complete. **Stopped after H4a.** Not pushed.
+
+### Commit
+
+```
+69ac888
+feat(body): laminal ring pivot — Slice H4a — settings persistence (dock+color+size, per-buddy JSON)
+
+Per-buddy body-settings.json under ~/.config/border-buddies (BB_CONFIG_DIR override).
+Precedence env → persisted → default for dock, colour, body_len. Atomic tmp+rename
+writes via App::persist_settings on colour/size cycle and feet-drag release.
+Remove BB_DOCK script default in bb-body.sh so persistence is not shadowed.
+
+Tests: cargo test 129 passed (main), +6 settings::*; parse bin 29 unchanged.
+```
+
+### Gate outputs (verbatim, forced recompile via `touch src/*.rs`)
+
+**`cd desktop-body && cargo test`**
+
+```
+running 129 tests
+test result: ok. 129 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.63s
+running 29 tests (parse bin)
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+```
+
+Baseline was 123 (post-H3.1+T/B); H4a landed +6 named tests in `settings.rs`.
+
+**`cd desktop-body && cargo build --release`** — 10 warnings (known set). Nothing new.
+
+**`npx tsc --noEmit`** — clean.
+
+**`npx vitest run`** — **278 / 31** unchanged.
+
+### Canary greps
+
+| Canary | Result |
+|--------|--------|
+| `render.rs` untouched | PASS — figure-freeze trivially green |
+| No soul/wire/presence changes | PASS — law 7 body-local only |
+| No new Cargo deps | PASS — `serde_json` only |
+
+### Conflict stops
+
+None.
+
+### Scope
+
+`desktop-body/src/settings.rs` (new), `desktop-body/src/main.rs`, `scripts/bb-body.sh`. `render.rs` untouched.
+
+### Implementation notes
+
+- `settings::resolve_startup` applies env → persisted → default per field; `dock_from_env_value` preserves pre-H4a garbage/`none` → `Both` semantics when `BB_DOCK` is explicitly set.
+- `App::persist_settings` called from `cycle_color`, `cycle_size`, and feet-drag release (`PressTarget::Feet` + `dist > CLICK_SLOP`) — not inside `set_body_len`.
+- `bb-body.sh`: removed `export BB_DOCK="${BB_DOCK:-both}"`; log line no longer prints dock (resolved at runtime from file/env).
+
+### Not done
+
+H4b (Dock toggles UI), push.

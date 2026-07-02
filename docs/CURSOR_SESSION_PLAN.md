@@ -706,3 +706,37 @@ None.
 ### Not done
 
 H4b (Dock toggles UI), push.
+
+---
+
+## Lead audit — H4a (Fable, 2026-07-02) — **PASS**
+
+Audited `69ac888` (+ builder report `d163d90`). Owner walk **PASSED** same evening: colour/kill/persist ✅, stretch/kill/persist ✅. Persisted file inspected on the walk machine — human-readable, one entry per buddy walked, feet-dragged `body_len` and cycled colour recorded exactly as briefed.
+
+### Gates (lead re-run, forced recompile)
+
+| Gate | Result |
+|------|--------|
+| `cargo test` | **129 + 0** (main) / 29 (parse bin) — baseline 123 + exactly the 6 named `settings::` tests |
+| `cargo build --release` | **10 warnings** — known set (one line changed content, see note) |
+| `npx tsc --noEmit` | clean |
+| `npx vitest run` | **278 / 31** |
+
+### Brief conformance
+
+- Scope exact: `settings.rs` (new), `main.rs`, `bb-body.sh`. **render.rs untouched** → figure canary trivially green. No new deps (`serde_json` only). Commit subject verbatim.
+- Precedence env → persisted → default per field via `resolve_startup`; `BB_COLOR` + per-buddy colour env both honoured as briefed; `BB_SKIN` not persisted.
+- **One funnel** `App::persist_settings` at exactly the briefed call sites: colour cycle, size cycle, feet-drag **release** (`PressTarget::Feet` + `dist > CLICK_SLOP` early-return — verified behaviorally identical to the old fall-through, one write per drag not per pixel). Not inside `set_body_len`. Dock written from startup-resolved value pending H4b.
+- `bb-body.sh` `BB_DOCK:-both` default **deleted**; BB_DOCK now passes through only when user-set. `BB_SKIN` default kept.
+- Atomic write (tmp + rename, parent `create_dir_all`); read-modify-write preserves other buddies' entries; never-crash posture on missing/garbage/wrong-typed (per-field fallback + one eprintln); write failure logged, paint never blocked.
+- Env-mutating test uses the standing serialize pattern (`ENV_LOCK` mutex + save/restore); old `env_dock_parse` test correctly retargeted at `settings::parse_dock_str`/`dock_from_env_value`.
+- Builder-flagged semantic ratified: explicitly-set-but-garbage `BB_DOCK` → `Both` (overrides persisted) — preserves H3's never-neither contract; acceptable, revisit only if a user complains a typo'd env hid their persisted dock.
+
+### Non-blocking notes
+
+1. `render::Layout::initial` is now dead (startup height computed from `Layout { facing, body_len }` directly) — it merged into the existing `interior_rows` never-used warning, count still 10 but the line's content changed. Cleanup candidate alongside the stale `bar_is_half_length_centered_on_anchor` rename.
+2. `buddy_env_key` now exists in both `main.rs` and `settings.rs` — harmless duplication, fold when convenient.
+3. `settings.rs` missing trailing newline.
+4. Concurrent-writer read-modify-write race (two buddy processes saving at once could drop each other's entry) — single-buddy reality today, becomes real if multi-buddy launch lands; note for then.
+
+**Verdict: PASS. Pushing `69ac888..` + this audit. H4b brief follows below.**

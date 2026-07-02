@@ -462,3 +462,46 @@ Noted, non-blocking:
 - Left/right-edge bar⊂bump overlap discovery is well-handled (top-edge tests + product behavior unaffected); worth revisiting only if H4 makes bar-only the persisted default.
 
 **Owner walk (pending):** plain launch → figure+halo, tuck → head+bar; `BB_DOCK=head` → bump+halo only; `BB_DOCK=bar` → 12px half-bar only, centered on tuck point, summons; `BB_SKIN=ring` (any dock) → bar-only coercion.
+
+---
+
+## Slice H3.1 — bar centering fix (shrink-don't-slide) + 10px width — brief for Composer
+
+**Status: READY FOR COMPOSER.** Owner walked H3 2026-07-02: all four passes summon correctly — H3 core (union hit-test, dock modes, ring coercion) is ratified. Two geometry findings from the walk; both fixes land in this one small slice. Same ground rules as H1–H3 (scope, gates verbatim with forced recompile, canaries, commit locally, NEVER push, STOP after).
+
+### Finding 1 — left/right bar is off-centre on the head (owner screenshot)
+
+Root cause (lead-diagnosed, confirmed against constants): on `Left`/`Right` the along anchor is `HEAD_CY = 58` (via `bump_center`), near the surface top. `bar_rect` computes `len = extent * BAR_LENGTH_FRAC` (≈280 on a ~560 surface), wants `y = 58 − 140 = −82`, and the current `.clamp(0.0, …)` **slides** the whole bar to `y = 0` — full length preserved, centre at 140, head at 58 → "top heavy off-centre." Top/bottom never show it because `FIG_CX = 280` is mid-surface.
+
+**Pinned fix — shrink, don't slide.** In `bar_rect`, replace the slide-clamp with symmetric shrink:
+
+```rust
+let len = (2.0 * along.min(extent - along)).min(extent * BAR_LENGTH_FRAC);
+let start = along - len / 2.0;
+```
+
+(`extent` = `hf` for Left/Right, `wf` for Top/Bottom.) Invariant becomes: **the bar is always centered on `along`**; length is what yields near a surface end. Safety already holds structurally: `bump_center` clamps the anchor into `[BUMP_R, extent − BUMP_R]`, so `len ≥ 2 × BUMP_R` (68px — never a sliver) and `start ≥ 0`, `start + len ≤ extent` by construction. Do not add a defensive re-clamp that could reintroduce sliding; if you feel one is needed, that is a conflict stop.
+
+### Finding 2 — 12px thickness obscures underlying window controls
+
+`BAR_THICKNESS: 12.0 → 10.0`. Owner suggested 9–10; lead pins 10 (keeps most of the grab-depth win over the original 8px). Visual === input still holds automatically — paint and hit share `bar_rect`.
+
+### Tests
+
+- Adjust `bar_is_half_length_centered_on_anchor`: top/bottom case unchanged (mid anchor → full half-length). The near-edge sub-case now asserts **centre stays on the anchor and length shrinks** (e.g. anchor 40 → len 80, span [0, 80]) instead of asserting a slid full-length rect.
+- New named test `bar_shrinks_symmetric_near_edge_left_right`: `Left` edge with realistic dims (extent where `HEAD_CY`-style anchor < len/2), assert `(rect.y + rect.h/2 − along).abs() < 0.5`, `rect.y >= 0`, `rect.y + rect.h <= extent`, `rect.h >= 2.0 * BUMP_R`.
+- Existing hue-sampling tests sample bar centres via `bar_rect` already (H3) — they should pass untouched; if one samples a point that shrinkage moved off-bar, adjust the sampling point, never the tolerance.
+
+### Gates (baselines post-H3)
+
+`cargo test` = 121 + 0 (main) / 29 (parse bin) — growth by the one named test only; `cargo build --release` = 10 known warnings; `npx tsc --noEmit` clean; `npx vitest run` = 278 / 31. Forced recompile (`touch src/*.rs`) before cargo gates.
+
+### Scope
+
+`desktop-body/src/render.rs` only (both changes live there). No main.rs, no script changes.
+
+### Commit subject (verbatim)
+
+`fix(body): laminal ring pivot — Slice H3.1 — bar shrinks symmetric on anchor (no slide) + 10px thickness`
+
+Append builder report below, STOP after H3.1.

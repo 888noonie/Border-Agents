@@ -118,17 +118,16 @@ pub enum Facing {
     Right,
 }
 
-/// Which body skin renders. `Ring` (the default) is the laminal surface: a standalone
-/// state halo that stands on its own geometry, no figure. `Clay` restores the original
-/// anthropomorphic figure — frozen, skin-only, never extended (docs/laminal-ring-pivot.md
-/// decision 1). Selected once at startup from `BB_SKIN`; the figure is never the default and
-/// nothing new renders against it. State and identity are orthogonal: the ring speaks state
-/// (hue), the figure is a legacy skin, not a signal path.
+/// Which body skin renders. `Clay` (the default) is the daily surface: the frozen
+/// anthropomorphic figure wearing the alert halo. `Ring` is the dev/test track: a standalone
+/// state halo with the figure absent (docs/laminal-ring-pivot.md §Amendment 2026-07-02).
+/// Selected once at startup from `BB_SKIN`. State and identity are orthogonal: the halo
+/// speaks state (hue); the figure is identity, not a governance inference path.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
 pub enum Skin {
     #[default]
-    Ring,
     Clay,
+    Ring,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -699,6 +698,24 @@ pub fn point_in_bump(edge: BumpEdge, w: u32, h: u32, px: f64, py: f64) -> bool {
     let dx = px as f32 - cx;
     let dy = py as f32 - cy;
     dx * dx + dy * dy <= BUMP_R * BUMP_R
+}
+
+/// Bounding box of the tucked edge light bar — shared geometry for `draw_edge_bar` paint and
+/// ring-skin tuck hit-testing/input region.
+pub fn bar_rect(edge: BumpEdge, w: u32, h: u32) -> Rect {
+    let wf = w as f32;
+    let hf = h as f32;
+    let t = BAR_THICKNESS;
+    match edge {
+        BumpEdge::Left => Rect { x: 0.0, y: 0.0, w: t, h: hf },
+        BumpEdge::Right => Rect { x: wf - t, y: 0.0, w: t, h: hf },
+        BumpEdge::Top => Rect { x: 0.0, y: 0.0, w: wf, h: t },
+        BumpEdge::Bottom => Rect { x: 0.0, y: hf - t, w: wf, h: t },
+    }
+}
+
+pub fn point_in_bar(edge: BumpEdge, w: u32, h: u32, px: f64, py: f64) -> bool {
+    bar_rect(edge, w, h).contains(px, py)
 }
 
 pub fn torso_action_at(layout: &Layout, px: f64, py: f64) -> Option<TorsoAction> {
@@ -1700,15 +1717,7 @@ fn draw_edge_bar(
     route_health: Option<&str>,
 ) {
     let [r, g, b, a] = ring_hue_or_quiet(alert_level, route_health);
-    let wf = w as f32;
-    let hf = h as f32;
-    let t = BAR_THICKNESS;
-    let rect = match edge {
-        BumpEdge::Left => Rect { x: 0.0, y: 0.0, w: t, h: hf },
-        BumpEdge::Right => Rect { x: wf - t, y: 0.0, w: t, h: hf },
-        BumpEdge::Top => Rect { x: 0.0, y: 0.0, w: wf, h: t },
-        BumpEdge::Bottom => Rect { x: 0.0, y: hf - t, w: wf, h: t },
-    };
+    let rect = bar_rect(edge, w, h);
     if let Some(path) = round_rect_path(rect, 0.0) {
         pixmap.fill_path(
             &path,
@@ -4713,6 +4722,39 @@ mod tests {
             bar_only(BumpEdge::Left, None, Some("ready")),
             bar_only(BumpEdge::Left, Some(AlertLevel::Ready), None),
             "route health is still the fallback on the bar",
+        );
+    }
+
+    #[test]
+    fn skin_default_is_clay() {
+        assert_eq!(Skin::default(), Skin::Clay, "BB_SKIN unset must resolve to the clay figure");
+    }
+
+    #[test]
+    fn ring_tuck_full_bar_is_hittable() {
+        const W: u32 = 200;
+        const H: u32 = 120;
+        let edge = BumpEdge::Left;
+        let (cx, cy) = bump_center(edge, W, H);
+        // Far from the bump centre, still inside the full edge bar.
+        let far_y = (H as f64) - (BAR_THICKNESS as f64) - 2.0;
+        assert!(
+            far_y > cy as f64 + BUMP_R as f64,
+            "test point must lie outside the bump circle",
+        );
+        let bar_x = (BAR_THICKNESS as f64) / 2.0;
+        assert!(point_in_bar(edge, W, H, bar_x, far_y), "ring tuck: full bar must be hittable");
+        assert!(
+            !point_in_bump(edge, W, H, bar_x, far_y),
+            "ring tuck: the same point must miss the bump circle",
+        );
+        assert!(
+            point_in_bump(edge, W, H, cx as f64, cy as f64),
+            "clay tuck: bump centre must still hit",
+        );
+        assert!(
+            !point_in_bump(edge, W, H, bar_x, far_y),
+            "clay tuck: far bar point must miss the bump",
         );
     }
 

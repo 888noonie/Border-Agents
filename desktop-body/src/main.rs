@@ -139,13 +139,12 @@ fn env_color(key: &str) -> [u8; 3] {
     }
 }
 
-/// Parse `BB_SKIN` — `clay` restores the frozen anthropomorphic figure; anything else, including
-/// unset, is the laminal `ring` default (the standalone state halo). Read once at startup; the
-/// skin never changes at runtime. Default ring so the laminal path is the one we live in.
+/// Parse `BB_SKIN` — default `clay` (figure + alert halo); `ring` opts into the standalone
+/// state-halo dev/test track. Read once at startup; the skin never changes at runtime.
 fn env_skin() -> render::Skin {
     match std::env::var("BB_SKIN").ok().map(|v| v.trim().to_ascii_lowercase()).as_deref() {
-        Some("clay") => render::Skin::Clay,
-        _ => render::Skin::Ring,
+        Some("ring") => render::Skin::Ring,
+        _ => render::Skin::Clay,
     }
 }
 
@@ -1249,7 +1248,7 @@ struct App {
     body_len: f32,
     /// Clay colour from `BB_COLOR`.
     color: [u8; 3],
-    /// Which skin paints the presence, from `BB_SKIN` (default `ring`). Set once at startup.
+    /// Which skin paints the presence, from `BB_SKIN` (default `clay`). Set once at startup.
     skin: render::Skin,
 }
 
@@ -1387,11 +1386,19 @@ impl App {
     }
 
     fn tucked_bump_rect(&self, edge: presence::Edge) -> render::Rect {
-        render::bump_rect(edge_to_bump(edge), self.width, self.height)
+        let bump = edge_to_bump(edge);
+        match self.skin {
+            render::Skin::Ring => render::bar_rect(bump, self.width, self.height),
+            render::Skin::Clay => render::bump_rect(bump, self.width, self.height),
+        }
     }
 
     fn point_in_tucked_bump(&self, edge: presence::Edge, x: f64, y: f64) -> bool {
-        render::point_in_bump(edge_to_bump(edge), self.width, self.height, x, y)
+        let bump = edge_to_bump(edge);
+        match self.skin {
+            render::Skin::Ring => render::point_in_bar(bump, self.width, self.height, x, y),
+            render::Skin::Clay => render::point_in_bump(bump, self.width, self.height, x, y),
+        }
     }
 
     fn draw(&mut self) {
@@ -3646,6 +3653,19 @@ impl Dispatch<ZwpRelativePointerV1, ()> for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn env_skin_defaults_to_clay_without_bb_skin() {
+        let saved = std::env::var("BB_SKIN").ok();
+        std::env::remove_var("BB_SKIN");
+        assert_eq!(env_skin(), render::Skin::Clay);
+        std::env::set_var("BB_SKIN", "ring");
+        assert_eq!(env_skin(), render::Skin::Ring);
+        match saved {
+            Some(v) => std::env::set_var("BB_SKIN", v),
+            None => std::env::remove_var("BB_SKIN"),
+        }
+    }
 
     #[test]
     fn onboarding_panel_single_select_sections() {

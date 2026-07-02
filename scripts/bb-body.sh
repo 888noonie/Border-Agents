@@ -54,10 +54,9 @@ stop_existing
 bb_log "Building ${BIN} (release)…"
 cargo build --release --manifest-path "${ROOT}/desktop-body/Cargo.toml"
 
-# The laminal path is the one we live in: default to the ring skin unless the caller pins a
-# skin explicitly. `BB_SKIN=clay bb-body.sh` still restores the frozen figure. (Keeping the
-# figure the default would let BB_SKIN=ring silently rot — see docs/laminal-ring-pivot.md.)
-export BB_SKIN="${BB_SKIN:-ring}"
+# Daily surface is clay (figure + alert halo). `BB_SKIN=ring bb-body.sh` opts into the
+# standalone ring dev/test track; its rot guard is the cargo test suite, not the launch default.
+export BB_SKIN="${BB_SKIN:-clay}"
 
 bb_log "Starting a single ${BIN} (buddy=${BB_BUDDY:-hermes}, skin=${BB_SKIN})"
 # exec so signals (Ctrl-C, task stop) reach the body directly.

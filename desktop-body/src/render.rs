@@ -748,9 +748,9 @@ pub fn point_in_bump(edge: BumpEdge, w: u32, h: u32, px: f64, py: f64) -> bool {
     dx * dx + dy * dy <= BUMP_R * BUMP_R
 }
 
-/// Predicate for waking the tucked head's eyes: ONLY while the F2 activity bracket
-/// (alert_level == Ready). Route health "ready" must not wake them (predicate takes
-/// alert_level only).
+/// Predicate for waking the tucked head's eyes: ONLY while an action is in flight (the
+/// F4 activity wire). Soul tiers and route health never wake them — the predicate takes
+/// the activity bool alone.
 fn bump_eyes_awake(activity: bool) -> bool {
     activity
 }
@@ -1612,8 +1612,17 @@ fn draw_body_content(
         // self-backed, so it still renders; polishing that pane into ring language is F-series.
         Skin::Ring => draw_ring(pixmap, view.alert_level, view.route_health, view.route_flash),
         // The frozen figure — byte-identical to before the pivot (the ring rides its silhouette).
+        // F4: the presented tier (activity wins as Ready green) drives the boundary chrome, and
+        // route health no longer reaches the clay — `None` at this call site, not a fn change.
         Skin::Clay => draw_figure(
-            pixmap, &view.layout, view.color, bob, pose, view.alert_level, view.route_health, view.route_flash,
+            pixmap,
+            &view.layout,
+            view.color,
+            bob,
+            pose,
+            presented_alert_level(view.activity, view.alert_level),
+            None,
+            view.route_flash,
         ),
     }
     if let Some(font) = font {
@@ -1924,12 +1933,15 @@ fn draw_edge_bar(
             None,
         );
     }
-    // Tips only for non-Quiet presented tier.
+    // Tips only for non-Quiet presented tier. Source blend: the tip zone IS the palette
+    // value, not a palette-over-clay blend — the traffic light must read the same hue on
+    // every instance color (the ratified tip law: tip pixel == palette hue).
     if let Some(level) = presented_alert_level(activity, tier) {
         if level != AlertLevel::Quiet {
             let tips = bar_tip_rects(&rect, edge);
             let [tr, tg, tb, ta] = alert_level_ring_rgba(level);
-            let tip_paint = solid(Color::from_rgba8(tr, tg, tb, ta));
+            let mut tip_paint = solid(Color::from_rgba8(tr, tg, tb, ta));
+            tip_paint.blend_mode = tiny_skia::BlendMode::Source;
             for &tip in &tips {
                 if let Some(path) = round_rect_path(tip, 0.0) {
                     pixmap.fill_path(&path, &tip_paint, FillRule::Winding, Transform::identity(), None);
@@ -4982,7 +4994,7 @@ mod tests {
                 let idx = ((sy * BW + sx) * 4) as usize;
                 let tip_px = [buf[idx], buf[idx+1], buf[idx+2], buf[idx+3]];
                 let tdem = demultiply_rgba(tip_px);
-                assert!(rgba_close(tdem, expected, 40));
+                assert!(rgba_close(tdem, expected, 2), "tip pixel must be the palette hue exactly (Source blend), got {:?} want {:?}", tdem, expected);
                 // bar center still color
                 let cidx = (( (rect.y + rect.h/2.0) as u32 * BW + (rect.x + rect.w/2.0) as u32 ) * 4) as usize;
                 let cpx = [buf[cidx], buf[cidx+1], buf[cidx+2], buf[cidx+3]];
@@ -5016,15 +5028,65 @@ mod tests {
 
     #[test]
     fn route_health_paints_neither_bar_nor_halo() {
+        // `draw_edge_bar` and `draw_bump_halo` no longer take route_health at all — the type
+        // signature enforces the law for those two. The remaining leak path is the untucked
+        // clay figure's boundary chrome (`draw_figure` still accepts route for signature
+        // freeze), so pin it through the FULL paint path: same view, route "ready" vs None,
+        // no tier, no activity ⇒ byte-identical clay canvases (route paints nothing).
+        let layout = Layout::initial();
+        let w = SURFACE_W;
+        let h = layout.surface_h();
+        let sprite = Sprite::new();
+        let paint = |route_health: Option<&str>| -> Vec<u8> {
+            let mut canvas = vec![0_u8; (w * h * 4) as usize];
+            let view = BodyView {
+                t: 0.0,
+                emotion: Emotion::Neutral,
+                speech: None,
+                torso_output: TorsoOutput::Text(TextCard { title: "", body: "" }),
+                chat_open: false,
+                tucked: None,
+                tucked_show_bubble: false,
+                tucked_show_input: false,
+                input_text: "",
+                input_placeholder: "",
+                input_focused: false,
+                review_pending: false,
+                edit_pending: false,
+                posture_badge: None,
+                surface_bloom: &[],
+                route_health,
+                route_flash: false,
+                alert_level: None,
+                activity: false,
+                receipt_rail: &[],
+                interior_rows: &[],
+                settings: &[],
+                onboarding: None,
+                layout,
+                pinned: None,
+                frame: None,
+                color: CLAY_DEFAULT,
+                dock_show: DockShow::Both,
+                skin: Skin::Clay,
+            };
+            sprite.paint(&mut canvas, w, h, &view);
+            canvas
+        };
+        assert_eq!(
+            paint(Some("ready")),
+            paint(None),
+            "route health must not paint any clay chrome (figure ring, bar, halo)",
+        );
+        // And the resting bar law: no tier === Quiet === pure identity color.
         let color = [180, 90, 60];
         let bar = bar_render(BumpEdge::Left, color, false, None);
-        // bar same as quiet
         let quiet_bar = bar_render(BumpEdge::Left, color, false, Some(AlertLevel::Quiet));
         assert_eq!(bar, quiet_bar);
-        // halo quiet
-        let hquiet = bump_halo_only(BumpEdge::Left, Some(AlertLevel::Quiet), None);
-        let hroute = bump_halo_only(BumpEdge::Left, None, Some("ready"));
-        assert_eq!(hquiet, hroute);
+        // Halo: absent tier rests at Quiet (route can't even be passed — no parameter).
+        let hquiet = bump_halo_only(BumpEdge::Left, false, Some(AlertLevel::Quiet));
+        let hidle = bump_halo_only(BumpEdge::Left, false, None);
+        assert_eq!(hquiet, hidle);
     }
 
     #[test]
@@ -5032,7 +5094,25 @@ mod tests {
         // activity true, tier None: green tips, eyes open
         let color = [180, 90, 60];
         let buf_act = bar_render(BumpEdge::Left, color, true, None);
-        // check tip has green-ish
+        // tips: activity presents Ready — tip-center pixel must be the Ready palette hue,
+        // and it must vanish (back to identity color) once activity clears (result side).
+        const BW: u32 = 200;
+        const BH: u32 = 120;
+        let along = bump_along_edge(BumpEdge::Left, BW, BH);
+        let rect = bar_rect(BumpEdge::Left, BW, BH, along);
+        let tip = bar_tip_rects(&rect, BumpEdge::Left)[0];
+        let tidx = (((tip.y + tip.h * 0.5) as u32 * BW + (tip.x + tip.w * 0.5) as u32) * 4) as usize;
+        let tip_act = demultiply_rgba([buf_act[tidx], buf_act[tidx + 1], buf_act[tidx + 2], buf_act[tidx + 3]]);
+        assert!(
+            rgba_close(tip_act, alert_level_ring_rgba(AlertLevel::Ready), 2),
+            "activity with no soul tier must green the tips",
+        );
+        let buf_done = bar_render(BumpEdge::Left, color, false, None);
+        let tip_done = demultiply_rgba([buf_done[tidx], buf_done[tidx + 1], buf_done[tidx + 2], buf_done[tidx + 3]]);
+        assert!(
+            rgba_close([tip_done[0], tip_done[1], tip_done[2], tip_done[3]], [color[0], color[1], color[2], BAR_BODY_ALPHA], 10),
+            "activity cleared: tips must return to the identity color",
+        );
         // for eyes, use bump compose
         let mut b = Pixmap::new(200, 120).unwrap();
         draw_bump(&mut b, BumpEdge::Left, 200, 120, color);
@@ -5050,6 +5130,17 @@ mod tests {
         let color = [180, 90, 60];
         // activity false, tier Ready: tips green, eyes closed
         let buf = bar_render(BumpEdge::Left, color, false, Some(AlertLevel::Ready));
+        const BW: u32 = 200;
+        const BH: u32 = 120;
+        let along = bump_along_edge(BumpEdge::Left, BW, BH);
+        let rect = bar_rect(BumpEdge::Left, BW, BH, along);
+        let tip = bar_tip_rects(&rect, BumpEdge::Left)[0];
+        let tidx = (((tip.y + tip.h * 0.5) as u32 * BW + (tip.x + tip.w * 0.5) as u32) * 4) as usize;
+        let tip_px = demultiply_rgba([buf[tidx], buf[tidx + 1], buf[tidx + 2], buf[tidx + 3]]);
+        assert!(
+            rgba_close(tip_px, alert_level_ring_rgba(AlertLevel::Ready), 2),
+            "a soul-emitted Ready tier must green the tips",
+        );
         // eyes closed means bump + no eyes == bump + eyes false
         let mut b = Pixmap::new(200, 120).unwrap();
         draw_bump(&mut b, BumpEdge::Left, 200, 120, color);
@@ -5267,15 +5358,15 @@ mod tests {
 
     // --- H2: the tucked clay bump wears the alert hue ---------------------------------
 
-    fn bump_halo_only(edge: BumpEdge, alert: Option<AlertLevel>, route: Option<&str>) -> Vec<u8> {
+    fn bump_halo_only(edge: BumpEdge, activity: bool, alert: Option<AlertLevel>) -> Vec<u8> {
         const BW: u32 = 200;
         const BH: u32 = 120;
         let mut pixmap = Pixmap::new(BW, BH).unwrap();
-        draw_bump_halo(&mut pixmap, edge, BW, BH, false, alert);
+        draw_bump_halo(&mut pixmap, edge, BW, BH, activity, alert);
         pixmap.data().to_vec()
     }
 
-    fn sample_bump_halo_rgba(edge: BumpEdge, alert: Option<AlertLevel>, route: Option<&str>) -> [u8; 4] {
+    fn sample_bump_halo_rgba(edge: BumpEdge, alert: Option<AlertLevel>) -> [u8; 4] {
         const BW: u32 = 200;
         const BH: u32 = 120;
         let mut pixmap = Pixmap::new(BW, BH).unwrap();
@@ -5296,7 +5387,7 @@ mod tests {
     #[test]
     fn bump_halo_reads_all_five_states_distinctly() {
         use std::collections::HashSet;
-        let blank = vec![0_u8; bump_halo_only(BumpEdge::Left, None, None).len()];
+        let blank = vec![0_u8; bump_halo_only(BumpEdge::Left, false, None).len()];
         let renders: Vec<Vec<u8>> = [
             AlertLevel::Quiet,
             AlertLevel::Ready,
@@ -5305,7 +5396,7 @@ mod tests {
             AlertLevel::Critical,
         ]
         .iter()
-        .map(|&l| bump_halo_only(BumpEdge::Left, Some(l), None))
+        .map(|&l| bump_halo_only(BumpEdge::Left, false, Some(l)))
         .collect();
         for (i, r) in renders.iter().enumerate() {
             assert_ne!(r, &blank, "state {i} must paint a visible bump halo");
@@ -5325,7 +5416,7 @@ mod tests {
         ] {
             let expected = alert_level_ring_rgba(level);
             for &edge in &[BumpEdge::Left, BumpEdge::Right, BumpEdge::Top, BumpEdge::Bottom] {
-                let sampled = demultiply_rgba(sample_bump_halo_rgba(edge, Some(level), None));
+                let sampled = demultiply_rgba(sample_bump_halo_rgba(edge, Some(level)));
                 assert!(
                     rgba_close(sampled, expected, 1),
                     "level {:?} edge {:?}: bump halo hue {:?} != palette {:?}",
@@ -5339,37 +5430,33 @@ mod tests {
     }
 
     #[test]
-    fn bump_halo_precedence_alert_over_route() {
-        let with_alert = bump_halo_only(BumpEdge::Left, Some(AlertLevel::Confirm), Some("ready"));
-        let route_only = bump_halo_only(BumpEdge::Left, None, Some("ready"));
+    fn bump_halo_precedence_activity_over_tier() {
+        // F4: the precedence that used to be alert-over-route is now activity-over-tier.
+        // In flight, the halo presents Ready green no matter what the soul tier says —
+        // and it is exactly the Ready halo, not a blend.
+        let in_flight_confirm = bump_halo_only(BumpEdge::Left, true, Some(AlertLevel::Confirm));
+        let confirm_only = bump_halo_only(BumpEdge::Left, false, Some(AlertLevel::Confirm));
         assert_ne!(
-            with_alert, route_only,
-            "alert_level must take the bump halo over route_health when both are present",
+            in_flight_confirm, confirm_only,
+            "activity must take the bump halo over the soul tier while in flight",
         );
-        let confirm_only = bump_halo_only(BumpEdge::Left, Some(AlertLevel::Confirm), None);
+        let ready_only = bump_halo_only(BumpEdge::Left, false, Some(AlertLevel::Ready));
         assert_eq!(
-            with_alert, confirm_only,
-            "the alert tier fully wins on the bump halo, not a blend with route",
+            in_flight_confirm, ready_only,
+            "the activity halo is exactly the Ready halo, not a blend with the tier",
         );
     }
 
     #[test]
     fn bump_halo_never_vanishes_absent_rests_at_quiet() {
-        let idle = bump_halo_only(BumpEdge::Left, None, None);
+        let idle = bump_halo_only(BumpEdge::Left, false, None);
         let blank = vec![0_u8; idle.len()];
         assert_ne!(&idle, &blank, "an idle bump halo (no tier) must still be visible");
         assert_eq!(
             idle,
-            bump_halo_only(BumpEdge::Left, Some(AlertLevel::Quiet), None),
+            bump_halo_only(BumpEdge::Left, false, Some(AlertLevel::Quiet)),
             "absent tier === Quiet on the bump halo",
         );
-        // route no longer affects halo; absent == Quiet
-        let idle = bump_halo_only(BumpEdge::Left, None, None);
-        let q = bump_halo_only(BumpEdge::Left, Some(AlertLevel::Quiet), None);
-        assert_eq!(idle, q);
-        // route ready with no tier is same as quiet
-        let r = bump_halo_only(BumpEdge::Left, None, Some("ready"));
-        assert_eq!(r, q);
     }
 
     #[test]

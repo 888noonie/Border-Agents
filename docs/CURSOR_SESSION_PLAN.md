@@ -1379,7 +1379,52 @@ None in core design. The interaction between "eyes only on alert Ready" + pre-ex
 
 ---
 
-## Lead audit (Fable) — pending
+## Lead audit — F3a (Fable, 2026-07-04)
+
+**Verdict: PASS pending owner walk** — with one lead-applied test-coverage repair (`c82175d`), detailed below. Grok Build's second slice: code matches the brief pin-for-pin, the one deviation was forced by the brief itself and honestly disclosed in both report and commit message.
+
+### Independent verification (all re-run, not trusted from the report)
+
+| Gate | Result |
+|---|---|
+| `git diff ccf80ac..6186eef --name-only` | render.rs ONLY (report commit: plan doc only) |
+| `cargo test` (after `touch src/*.rs`) | **143 passed + 0 / 29** — growth exactly the 4 briefed named tests, all observed by name |
+| `cargo build --release` | **9 known warnings**, nothing new (verified by warning-text diff, not count) |
+| `npx tsc --noEmit` | clean |
+| `npx vitest run` | **278 passed / 31 files** |
+| Ratified center-pixel gate `edge_bar_hue_equals_ring_hue_exactly` | **byte-unmodified, passes** — the CENTER-PIXEL GATE held; midpoint sits in the eye gap as pinned |
+| `edge_bar_precedence_alert_over_route`, `edge_bar_reads_all_five_states_distinctly` | byte-unmodified, pass |
+
+### Canaries
+
+| Canary | Status |
+|---|---|
+| main.rs / presence.rs | byte-untouched (git-level) |
+| draw_eyes / draw_bump / draw_bump_halo / all figure fns | untouched — diff hunks are constants block, 2 new pure fns, `draw_edge_bar` tail, tests only |
+| Color literals | exactly one added RGBA literal = `BAR_EYE_INK [28,22,18,255]`, the pinned pupil-ink reuse with pointer comment |
+| bar_rect / point_in_bar / summon unions / input region | untouched (paint-only confirmed in diff) |
+| Constants | BAR_EYES_MIN_LEN=28, BAR_EYE_R=2, BAR_EYE_HALF_GAP=5 — gap floor 5−2=3 ≥ 2 ✓, eyes fit in 10px thickness ✓ |
+| Predicate gates on alert_level, never route_health | confirmed at both fn signature and call site |
+
+### The deviation, adjudicated
+
+GB removed the `route "ready" === Some(Ready)` full-buffer `assert_eq` from `edge_bar_never_vanishes_absent_rests_at_quiet`. **Ruling: the removal was correct and unavoidable** — the brief's own pin ("route-health green must NOT summon eyes") makes those two renders intentionally different, so the equality was doomed by design; I failed to foresee that collision when cutting the brief. GB's choices (adjust minimally, never touch the pinned hue tests, disclose in report + commit message) were the right ones.
+
+**But the replacement comment was wrong**: it claimed route-fallback hue coverage survives in `edge_bar_hue_equals_ring_hue_exactly` — that test only samples alert levels with `route=None` and never exercises the fallback. After the removal, nothing proved route="ready" still resolves to green, and the pixel-level proof that route green paints no eyes was gone. **Lead fix `c82175d`** restores both, stronger than before: (a) route-"ready" center pixel == Ready palette hue; (b) route-ready bar paints pure hue (no ink) at the eye position, and route-ready vs alert-Ready buffers now `assert_ne` — the two greens are provably distinguishable, which is F3a's whole point. Also silenced GB's new test-profile-only `unused c1` warning. Gates re-run after fix: 143+0/29 unchanged, all green.
+
+### Notes (no action)
+
+- `bar_eyes_pixels_visible_when_ready`'s Quiet-contrast assert uses an OR (`hue-close || not-ink`) that leans on its weaker disjunct — harmless (the Ready-side ink assert is strict), left as-is.
+- Pre-existing unused `cx`/`cy` test warnings predate F3a (verified against `ccf80ac`).
+- GB report format matches ritual; STOP honored (no F3b started).
+
+### Owner walk script (native, `cargo run`)
+
+1. Dock=Bar (Customize or `BB_DOCK=bar`), tuck the buddy → plain bar, **no eyes** at rest.
+2. Fire an Edit (repo_edit) from the interior → bar goes activity green **and a small dark pair of eyes appears at the bar midpoint**, gap at the exact center.
+3. Result arrives → green clears, eyes vanish with it — clean chrome again.
+4. (If reachable) route-health green without an action in flight → green bar, **no eyes**.
+5. Optional: shrink the buddy until the bar is short → eyes disappear below min length, bar stays.
 
 (Owner walk pending.)
 

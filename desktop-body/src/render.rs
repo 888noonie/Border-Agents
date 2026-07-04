@@ -78,15 +78,13 @@ const BAR_THICKNESS: f32 = 10.0;
 /// Fraction of the along-edge extent used as bar length (half-edge, centered on the tuck anchor).
 pub const BAR_LENGTH_FRAC: f32 = 0.5;
 
-/// Minimum bar along-length to show the activity eyes (smaller bars stay clean chrome).
-const BAR_EYES_MIN_LEN: f32 = 28.0;
-/// Radius of each eye dot on the bar.
-const BAR_EYE_R: f32 = 2.0;
-/// Half the gap between the pair (full gap = 10px). Must satisfy BAR_EYE_HALF_GAP - BAR_EYE_R >= 2.0
-/// so the exact midpoint pixel sampled by edge_bar_hue_equals_ring_hue_exactly remains pure bar hue.
-const BAR_EYE_HALF_GAP: f32 = 5.0;
-/// Dark pupil ink reused verbatim from draw_eyes (no new color literals).
-const BAR_EYE_INK: [u8; 4] = [28, 22, 18, 255]; // draw_eyes dark pupil
+/// Alpha for the bar body (always the buddy's instance color).
+const BAR_BODY_ALPHA: u8 = 180;
+/// Fraction of bar length used for each traffic-light tip (one at each end).
+const BAR_TIP_FRAC: f32 = 0.2;
+
+/// Shared eye pupil ink (reused from draw_eyes; no new color).
+const EYE_INK: [u8; 4] = [28, 22, 18, 255]; // draw_eyes dark pupil
 
 // --- UI geometry -----------------------------------------------------------------
 
@@ -753,8 +751,8 @@ pub fn point_in_bump(edge: BumpEdge, w: u32, h: u32, px: f64, py: f64) -> bool {
 /// Predicate for waking the tucked head's eyes: ONLY while the F2 activity bracket
 /// (alert_level == Ready). Route health "ready" must not wake them (predicate takes
 /// alert_level only).
-fn bump_eyes_awake(alert_level: Option<AlertLevel>) -> bool {
-    alert_level == Some(AlertLevel::Ready)
+fn bump_eyes_awake(activity: bool) -> bool {
+    activity
 }
 
 /// The white-eye centers for the awake tucked head. Mirrors the sleeping-face anchor
@@ -875,28 +873,6 @@ pub fn tucked_summon_rects(skin: Skin, dock: DockShow, edge: BumpEdge, w: u32, h
         rects.push(bar_rect(edge, w, h, along));
     }
     rects
-}
-
-/// Visibility for the bar activity eyes: ONLY when alert_level is exactly Ready (activity green)
-/// **and** the bar's along-edge length is >= BAR_EYES_MIN_LEN. Deliberately takes alert_level,
-/// not the resolved hue — route-health "ready" (which produces the same green) must not paint eyes.
-/// Pure so the named tests exercise it with no pixmap/App/Wayland.
-fn bar_eyes_visible(alert_level: Option<AlertLevel>, bar_along_len: f32) -> bool {
-    alert_level == Some(AlertLevel::Ready) && bar_along_len >= BAR_EYES_MIN_LEN
-}
-
-/// Two eye centers symmetric about the bar rect's midpoint. Offset is strictly along the long
-/// axis of the bar (±HALF_GAP): horizontal for Top/Bottom bars, vertical for Left/Right.
-/// Centers are thickness-centered. The gap guarantees the midpoint pixel is untouched by eyes.
-/// Pure geometry (no drawing) for the center-symmetry and min-gap tests.
-fn bar_eye_centers(rect: &Rect, edge: BumpEdge) -> [(f32, f32); 2] {
-    let mx = rect.x + rect.w / 2.0;
-    let my = rect.y + rect.h / 2.0;
-    let g = BAR_EYE_HALF_GAP;
-    match edge {
-        BumpEdge::Left | BumpEdge::Right => [(mx, my - g), (mx, my + g)],
-        BumpEdge::Top | BumpEdge::Bottom => [(mx - g, my), (mx + g, my)],
-    }
 }
 
 pub fn torso_action_at(layout: &Layout, px: f64, py: f64) -> Option<TorsoAction> {
@@ -1432,6 +1408,9 @@ pub struct BodyView<'a> {
     /// inferred). Drives the figure's boundary ring hue via `alert_level_ring_rgba` (the primary
     /// ring voice; route health is the fallback until a tier is set). Absent → no governance ring.
     pub alert_level: Option<AlertLevel>,
+    /// Whether an action is in flight (body's view of its own request bracket). Used to present
+    /// activity green for tips/halo/eyes without polluting the raw soul tier.
+    pub activity: bool,
     /// Expanded-mode receipt rail items, newest first. Empty still draws the rail panel.
     pub receipt_rail: &'a [ReceiptRailItem<'a>],
     /// The interior view: perimeter controls folded into a labeled list inside the torso,
@@ -1506,8 +1485,8 @@ impl Sprite {
             let along = bump_along_edge(edge, w, h);
             if shows_tucked_head(dock) {
                 draw_bump(&mut pixmap, edge, w, h, view.color);
-                draw_bump_halo(&mut pixmap, edge, w, h, view.alert_level, view.route_health);
-                if bump_eyes_awake(view.alert_level) {
+                draw_bump_halo(&mut pixmap, edge, w, h, view.activity, view.alert_level);
+                if bump_eyes_awake(view.activity) {
                     draw_bump_eyes_awake(&mut pixmap, edge, w, h);
                 }
             }
@@ -1518,8 +1497,9 @@ impl Sprite {
                     w,
                     h,
                     along,
+                    view.color,
+                    view.activity,
                     view.alert_level,
-                    view.route_health,
                 );
             }
             if let Some(font) = &self.font {
@@ -1860,6 +1840,12 @@ fn ring_hue_or_quiet(alert_level: Option<AlertLevel>, route_health: Option<&str>
     ring_hue_rgba(alert_level, route_health).unwrap_or_else(|| alert_level_ring_rgba(AlertLevel::Quiet))
 }
 
+/// One pure precedence: activity (F2 bracket) presents as Ready green; otherwise the raw soul tier.
+/// Used for bar tips, bump halo, untucked chrome. Retires F2 halo_alert_level.
+pub fn presented_alert_level(activity: bool, tier: Option<AlertLevel>) -> Option<AlertLevel> {
+    if activity { Some(AlertLevel::Ready) } else { tier }
+}
+
 /// R3 — the ring detached from the figure. A standalone state halo on its **own** geometry (a
 /// clean circle centred on the presence column), not a stroke of the figure's silhouette, so it
 /// reads correctly with the figure absent (`BB_SKIN=ring`). It always paints: an absent tier
@@ -1913,48 +1899,63 @@ fn draw_ring(
     }
 }
 
-/// R4 — the tucked edge light bar. Under `Skin::Ring`, a tucked buddy paints a uniform bar
-/// flush against the tucked edge (spanning the surface's full extent along that edge) in
-/// exactly the ring's hue, so the governance tier stays peripheral-readable with the figure
-/// gone. Hue comes from `ring_hue_or_quiet` (shared with `draw_ring`) — bar hue === ring hue
-/// by construction. Uniform: no node/marker at the old bump position, no route_flash leg, no
-/// pulse cadence — those are F-series ring-behavior work, not R4's hue-mirroring gate.
+/// The bar body is always the buddy's instance color. Traffic-light tips (if any) carry the
+/// presented tier hue at the ends. Quiet/None: no tips — pure identity color. Route health
+/// no longer affects the bar.
 fn draw_edge_bar(
     pixmap: &mut Pixmap,
     edge: BumpEdge,
     w: u32,
     h: u32,
     along: f32,
-    alert_level: Option<AlertLevel>,
-    route_health: Option<&str>,
+    color: [u8; 3],
+    activity: bool,
+    tier: Option<AlertLevel>,
 ) {
-    let [r, g, b, a] = ring_hue_or_quiet(alert_level, route_health);
     let rect = bar_rect(edge, w, h, along);
+    // Body: instance color.
+    let [br, bg, bb] = color;
     if let Some(path) = round_rect_path(rect, 0.0) {
         pixmap.fill_path(
             &path,
-            &solid(Color::from_rgba8(r, g, b, a)),
+            &solid(Color::from_rgba8(br, bg, bb, BAR_BODY_ALPHA)),
             FillRule::Winding,
             Transform::identity(),
             None,
         );
     }
-    // Activity eyes: small watching pair only on Ready green (F2 bracket), only when bar long
-    // enough. Paint-only — does not affect bar_rect, point_in_bar, input regions or summons.
-    // Center gap ensures the exact midpoint (sampled by edge_bar_hue_equals_ring_hue_exactly)
-    // is untouched and still matches the bar hue exactly.
-    let bar_along_len = match edge {
-        BumpEdge::Left | BumpEdge::Right => rect.h,
-        BumpEdge::Top | BumpEdge::Bottom => rect.w,
-    };
-    if bar_eyes_visible(alert_level, bar_along_len) {
-        let centers = bar_eye_centers(&rect, edge);
-        let [er, eg, eb, ea] = BAR_EYE_INK;
-        let ink = solid(Color::from_rgba8(er, eg, eb, ea));
-        for &(cx, cy) in &centers {
-            if let Some(p) = PathBuilder::from_circle(cx, cy, BAR_EYE_R) {
-                pixmap.fill_path(&p, &ink, FillRule::Winding, Transform::identity(), None);
+    // Tips only for non-Quiet presented tier.
+    if let Some(level) = presented_alert_level(activity, tier) {
+        if level != AlertLevel::Quiet {
+            let tips = bar_tip_rects(&rect, edge);
+            let [tr, tg, tb, ta] = alert_level_ring_rgba(level);
+            let tip_paint = solid(Color::from_rgba8(tr, tg, tb, ta));
+            for &tip in &tips {
+                if let Some(path) = round_rect_path(tip, 0.0) {
+                    pixmap.fill_path(&path, &tip_paint, FillRule::Winding, Transform::identity(), None);
+                }
             }
+        }
+    }
+}
+
+/// Two tip rects, each BAR_TIP_FRAC of the bar's along-length, at the ends. Pure geometry.
+fn bar_tip_rects(rect: &Rect, edge: BumpEdge) -> [Rect; 2] {
+    let f = BAR_TIP_FRAC;
+    match edge {
+        BumpEdge::Left | BumpEdge::Right => {
+            let tip_h = rect.h * f;
+            [
+                Rect { x: rect.x, y: rect.y, w: rect.w, h: tip_h },
+                Rect { x: rect.x, y: rect.y + rect.h - tip_h, w: rect.w, h: tip_h },
+            ]
+        }
+        BumpEdge::Top | BumpEdge::Bottom => {
+            let tip_w = rect.w * f;
+            [
+                Rect { x: rect.x, y: rect.y, w: tip_w, h: rect.h },
+                Rect { x: rect.x + rect.w - tip_w, y: rect.y, w: tip_w, h: rect.h },
+            ]
         }
     }
 }
@@ -2897,16 +2898,21 @@ fn draw_bump(pixmap: &mut Pixmap, edge: BumpEdge, w: u32, h: u32, color: [u8; 3]
 
 /// H2 — alert hue stroked around the tucked bump circle. Hue only (no pulse/cadence), same
 /// precedence as the ring and edge bar. `draw_bump` stays byte-identical; this is a sibling call.
+/// Route health no longer falls back into the halo (clay chrome is identity only).
 fn draw_bump_halo(
     pixmap: &mut Pixmap,
     edge: BumpEdge,
     w: u32,
     h: u32,
-    alert_level: Option<AlertLevel>,
-    route_health: Option<&str>,
+    activity: bool,
+    tier: Option<AlertLevel>,
 ) {
     let (cx, cy) = bump_center(edge, w, h);
-    let [r, g, b, a] = ring_hue_or_quiet(alert_level, route_health);
+    let [r, g, b, a] = if let Some(level) = presented_alert_level(activity, tier) {
+        alert_level_ring_rgba(level)
+    } else {
+        alert_level_ring_rgba(AlertLevel::Quiet)
+    };
     let mut stroke = Stroke::default();
     stroke.width = BUMP_HALO_STROKE;
     stroke.line_cap = tiny_skia::LineCap::Round;
@@ -2928,7 +2934,7 @@ fn draw_bump_halo(
 fn draw_bump_eyes_awake(pixmap: &mut Pixmap, edge: BumpEdge, w: u32, h: u32) {
     let centers = bump_eye_centers(edge, w, h);
     let white = solid(Color::from_rgba8(BUMP_EYE_WHITE[0], BUMP_EYE_WHITE[1], BUMP_EYE_WHITE[2], BUMP_EYE_WHITE[3]));
-    let pupil = solid(Color::from_rgba8(BAR_EYE_INK[0], BAR_EYE_INK[1], BAR_EYE_INK[2], BAR_EYE_INK[3]));
+    let pupil = solid(Color::from_rgba8(EYE_INK[0], EYE_INK[1], EYE_INK[2], EYE_INK[3]));
     for &(ex, ey) in &centers {
         if let Some(eye) = PathBuilder::from_circle(ex, ey, BUMP_EYE_WHITE_R) {
             pixmap.fill_path(&eye, &white, FillRule::Winding, Transform::identity(), None);
@@ -4592,6 +4598,7 @@ mod tests {
                 route_health: None,
                 route_flash: false,
                 alert_level: None,
+                activity: false,
                 receipt_rail: &[],
                 interior_rows: interior,
                 settings: &[],
@@ -4695,6 +4702,7 @@ mod tests {
                 route_health: None,
                 route_flash: false,
                 alert_level: None,
+                activity: false,
                 receipt_rail: &[],
                 interior_rows: &interior,
                 settings: &[],
@@ -4873,6 +4881,7 @@ mod tests {
                 route_health: None,
                 route_flash: false,
                 alert_level: Some(AlertLevel::Confirm),
+                activity: false,
                 receipt_rail: &[],
                 interior_rows: &[],
                 settings: &[],
@@ -4894,24 +4903,24 @@ mod tests {
     // --- R4: the tucked edge light bar (BB_SKIN=ring, tucked) -------------------------
 
     /// Render just the edge bar into a fresh canvas (mirror of `ring_only`).
-    fn bar_only(edge: BumpEdge, alert: Option<AlertLevel>, route: Option<&str>) -> Vec<u8> {
+    fn bar_render(edge: BumpEdge, color: [u8; 3], activity: bool, tier: Option<AlertLevel>) -> Vec<u8> {
         const BW: u32 = 200;
         const BH: u32 = 120;
         let along = bump_along_edge(edge, BW, BH);
         let mut pixmap = Pixmap::new(BW, BH).unwrap();
-        draw_edge_bar(&mut pixmap, edge, BW, BH, along, alert, route);
+        draw_edge_bar(&mut pixmap, edge, BW, BH, along, color, activity, tier);
         pixmap.data().to_vec()
     }
 
     /// Sample the center pixel of the bar (clean fill, away from anti-aliased edges), returned
     /// as premultiplied RGBA bytes — the form tiny-skia's `Pixmap::data()` stores (RGBA; the
     /// BGRA swap happens later in `blit_premultiplied_bgra` for the Wayland SHM canvas).
-    fn sample_bar_center_rgba(edge: BumpEdge, alert: Option<AlertLevel>, route: Option<&str>) -> [u8; 4] {
+    fn sample_bar_center_rgba(edge: BumpEdge, color: [u8; 3], activity: bool, tier: Option<AlertLevel>) -> [u8; 4] {
         const BW: u32 = 200;
         const BH: u32 = 120;
         let along = bump_along_edge(edge, BW, BH);
         let mut pixmap = Pixmap::new(BW, BH).unwrap();
-        draw_edge_bar(&mut pixmap, edge, BW, BH, along, alert, route);
+        draw_edge_bar(&mut pixmap, edge, BW, BH, along, color, activity, tier);
         let rect = bar_rect(edge, BW, BH, along);
         let half_t = (BAR_THICKNESS as u32) / 2;
         let (sx, sy) = match edge {
@@ -4944,213 +4953,111 @@ mod tests {
     }
 
     #[test]
-    fn edge_bar_reads_all_five_states_distinctly() {
-        use std::collections::HashSet;
-        let blank = vec![0_u8; bar_only(BumpEdge::Left, None, None).len()];
-        // The gate: the bar alone must render every one of the five governance states, and no
-        // two may collapse to the same pixels — the R3 `standalone_ring_reads_all_five_states`
-        // shape, applied to the bar.
-        let renders: Vec<Vec<u8>> = [
-            AlertLevel::Quiet,
-            AlertLevel::Ready,
-            AlertLevel::Confirm,
-            AlertLevel::Blocked,
-            AlertLevel::Critical,
-        ]
-        .iter()
-        .map(|&l| bar_only(BumpEdge::Left, Some(l), None))
-        .collect();
-        for (i, r) in renders.iter().enumerate() {
-            assert_ne!(r, &blank, "state {i} must paint a visible bar");
+    fn bar_body_wears_instance_color_for_all_tiers() {
+        let color = [180, 90, 60];
+        for &level in &[Some(AlertLevel::Quiet), Some(AlertLevel::Ready), Some(AlertLevel::Confirm), Some(AlertLevel::Blocked), Some(AlertLevel::Critical), None] {
+            for &edge in &[BumpEdge::Left, BumpEdge::Right, BumpEdge::Top, BumpEdge::Bottom] {
+                let sampled = sample_bar_center_rgba(edge, color, false, level);
+                let dem = demultiply_rgba(sampled);
+                // after demul, should be close to color (alpha preserved)
+                assert!(rgba_close([dem[0], dem[1], dem[2], dem[3]], [color[0], color[1], color[2], BAR_BODY_ALPHA], 10), "bar body must use instance color");
+            }
         }
-        let distinct: HashSet<&Vec<u8>> = renders.iter().collect();
-        assert_eq!(distinct.len(), renders.len(), "each state must read as its own bar");
     }
 
     #[test]
-    fn edge_bar_hue_equals_ring_hue_exactly() {
-        // The literal R4 gate: bar hue === ring hue === alert_level. The bar resolves through
-        // ring_hue_or_quiet (shared with draw_ring), and the ring's hue is pinned to
-        // alert_level_ring_rgba by R3 — so asserting the bar's demultiplied center pixel
-        // equals the palette entry closes bar===ring===alert_level. ±1 absorbs premultiply/
-        // demultiply rounding (e.g. Confirm 218/205 round-trips to 217). All four edges are
-        // sampled so the gate isn't accidentally true for one edge only.
-        for &level in &[
-            AlertLevel::Quiet,
-            AlertLevel::Ready,
-            AlertLevel::Confirm,
-            AlertLevel::Blocked,
-            AlertLevel::Critical,
-        ] {
+    fn bar_tips_carry_the_tier_hue() {
+        let color = [180, 90, 60];
+        for &level in &[AlertLevel::Confirm, AlertLevel::Blocked, AlertLevel::Critical] {
             let expected = alert_level_ring_rgba(level);
             for &edge in &[BumpEdge::Left, BumpEdge::Right, BumpEdge::Top, BumpEdge::Bottom] {
-                let sampled = demultiply_rgba(sample_bar_center_rgba(edge, Some(level), None));
-                assert!(
-                    rgba_close(sampled, expected, 1),
-                    "level {:?} edge {:?}: bar hue {:?} != ring hue {:?}",
-                    level,
-                    edge,
-                    sampled,
-                    expected,
-                );
+                let buf = bar_render(edge, color, false, Some(level));
+                // sample inside tip (near end)
+                const BW: u32 = 200; const BH: u32 = 120;
+                let along = bump_along_edge(edge, BW, BH);
+                let rect = bar_rect(edge, BW, BH, along);
+                let tip = bar_tip_rects(&rect, edge)[0];
+                let sx = (tip.x + tip.w * 0.5) as u32;
+                let sy = (tip.y + tip.h * 0.5) as u32;
+                let idx = ((sy * BW + sx) * 4) as usize;
+                let tip_px = [buf[idx], buf[idx+1], buf[idx+2], buf[idx+3]];
+                let tdem = demultiply_rgba(tip_px);
+                assert!(rgba_close(tdem, expected, 40));
+                // bar center still color
+                let cidx = (( (rect.y + rect.h/2.0) as u32 * BW + (rect.x + rect.w/2.0) as u32 ) * 4) as usize;
+                let cpx = [buf[cidx], buf[cidx+1], buf[cidx+2], buf[cidx+3]];
+                let cdem = demultiply_rgba(cpx);
+                assert!(rgba_close([cdem[0], cdem[1], cdem[2], BAR_BODY_ALPHA], [color[0], color[1], color[2], BAR_BODY_ALPHA], 10));
             }
         }
     }
 
     #[test]
-    fn edge_bar_precedence_alert_over_route() {
-        // R2's precedence proof, applied to the bar: alert=Confirm(amber) over route=ready
-        // (green) must differ from route=ready alone — the governance tier wins the bar hue,
-        // not the route health.
-        let with_alert = bar_only(BumpEdge::Left, Some(AlertLevel::Confirm), Some("ready"));
-        let route_only = bar_only(BumpEdge::Left, None, Some("ready"));
-        assert_ne!(
-            with_alert, route_only,
-            "alert_level must take the bar over route_health when both are present",
-        );
-        // And the Confirm-over-ready bar is exactly the Confirm bar (not a blend):
-        let confirm_only = bar_only(BumpEdge::Left, Some(AlertLevel::Confirm), None);
-        assert_eq!(with_alert, confirm_only, "the alert tier fully wins, not a blend with route");
-    }
-
-    #[test]
-    fn edge_bar_never_vanishes_absent_rests_at_quiet() {
-        // In ring skin the bar *is* the tucked buddy — it can never be blank. No tier + no
-        // route resolves to the Quiet resting hue, not nothing (the idle-decay stance R3
-        // ratified, now holding for the tucked bar too).
-        let idle = bar_only(BumpEdge::Left, None, None);
-        let blank = vec![0_u8; idle.len()];
-        assert_ne!(&idle, &blank, "an idle bar (no tier) must still be visible");
-        assert_eq!(
-            idle,
-            bar_only(BumpEdge::Left, Some(AlertLevel::Quiet), None),
-            "absent tier === Quiet on the bar",
-        );
-        // Route health "ready" still falls back to the Ready green — but the old full-buffer
-        // eq vs Some(Ready) can no longer hold: an alert-Ready bar wears activity eyes and a
-        // route-ready bar must not (F3a: eyes gate on alert_level, never route health).
-        // Assert both halves directly instead. (a) hue fallback survives at the center pixel:
-        let center = demultiply_rgba(sample_bar_center_rgba(BumpEdge::Left, None, Some("ready")));
-        assert!(
-            rgba_close(center, alert_level_ring_rgba(AlertLevel::Ready), 1),
-            "route 'ready' with no tier must still fall back to the Ready green hue",
-        );
-        // (b) route green summons NO eyes — the eye position on a route-ready bar stays pure
-        // bar hue, and the two greens now read as different bars (only activity wears eyes):
-        const BW: u32 = 200;
-        const BH: u32 = 120;
+    fn bar_rests_clean_no_tips_on_quiet() {
+        let color = [180, 90, 60];
+        let buf = bar_render(BumpEdge::Left, color, false, None);
+        const BW: u32 = 200; const BH: u32 = 120;
         let along = bump_along_edge(BumpEdge::Left, BW, BH);
         let rect = bar_rect(BumpEdge::Left, BW, BH, along);
-        let [c0, _] = bar_eye_centers(&rect, BumpEdge::Left);
-        let route_ready = bar_only(BumpEdge::Left, None, Some("ready"));
-        let idx = ((c0.1 as u32 * BW + c0.0 as u32) * 4) as usize;
-        let eye_px = demultiply_rgba([
-            route_ready[idx],
-            route_ready[idx + 1],
-            route_ready[idx + 2],
-            route_ready[idx + 3],
-        ]);
-        assert!(
-            rgba_close(eye_px, alert_level_ring_rgba(AlertLevel::Ready), 1),
-            "route-health green must not summon eyes — eye position stays pure bar hue",
-        );
-        assert_ne!(
-            route_ready,
-            bar_only(BumpEdge::Left, Some(AlertLevel::Ready), None),
-            "route green and activity green must read differently — only activity wears eyes",
-        );
+        // center
+        let cx = (rect.x + rect.w / 2.0) as u32;
+        let cy = (rect.y + rect.h / 2.0) as u32;
+        let cidx = ((cy * BW + cx) * 4) as usize;
+        let cdem = demultiply_rgba([buf[cidx], buf[cidx+1], buf[cidx+2], buf[cidx+3]]);
+        assert!(rgba_close([cdem[0], cdem[1], cdem[2], BAR_BODY_ALPHA], [color[0], color[1], color[2], BAR_BODY_ALPHA], 10));
+        // tip zone also color
+        let tip = bar_tip_rects(&rect, BumpEdge::Left)[0];
+        let tx = (tip.x + tip.w / 2.0) as u32;
+        let ty = (tip.y + tip.h / 2.0) as u32;
+        let tidx = ((ty * BW + tx) * 4) as usize;
+        let tdem = demultiply_rgba([buf[tidx], buf[tidx+1], buf[tidx+2], buf[tidx+3]]);
+        assert!(rgba_close([tdem[0], tdem[1], tdem[2], BAR_BODY_ALPHA], [color[0], color[1], color[2], BAR_BODY_ALPHA], 10));
     }
 
     #[test]
-    fn bar_eyes_only_on_ready_green() {
-        // Predicate gates strictly on alert_level == Ready (activity), not hue or route health.
-        let len = BAR_EYES_MIN_LEN + 10.0;
-        assert!(bar_eyes_visible(Some(AlertLevel::Ready), len));
-        assert!(!bar_eyes_visible(None, len));
-        assert!(!bar_eyes_visible(Some(AlertLevel::Quiet), len));
-        assert!(!bar_eyes_visible(Some(AlertLevel::Confirm), len));
-        assert!(!bar_eyes_visible(Some(AlertLevel::Blocked), len));
-        assert!(!bar_eyes_visible(Some(AlertLevel::Critical), len));
+    fn route_health_paints_neither_bar_nor_halo() {
+        let color = [180, 90, 60];
+        let bar = bar_render(BumpEdge::Left, color, false, None);
+        // bar same as quiet
+        let quiet_bar = bar_render(BumpEdge::Left, color, false, Some(AlertLevel::Quiet));
+        assert_eq!(bar, quiet_bar);
+        // halo quiet
+        let hquiet = bump_halo_only(BumpEdge::Left, Some(AlertLevel::Quiet), None);
+        let hroute = bump_halo_only(BumpEdge::Left, None, Some("ready"));
+        assert_eq!(hquiet, hroute);
     }
 
     #[test]
-    fn bar_eyes_hidden_below_min_len() {
-        assert!(!bar_eyes_visible(Some(AlertLevel::Ready), BAR_EYES_MIN_LEN - 0.1));
-        assert!(!bar_eyes_visible(Some(AlertLevel::Ready), BAR_EYES_MIN_LEN - 1.0));
-        // exactly at min is visible
-        assert!(bar_eyes_visible(Some(AlertLevel::Ready), BAR_EYES_MIN_LEN));
+    fn activity_green_tips_and_eyes_without_soul_tier() {
+        // activity true, tier None: green tips, eyes open
+        let color = [180, 90, 60];
+        let buf_act = bar_render(BumpEdge::Left, color, true, None);
+        // check tip has green-ish
+        // for eyes, use bump compose
+        let mut b = Pixmap::new(200, 120).unwrap();
+        draw_bump(&mut b, BumpEdge::Left, 200, 120, color);
+        if bump_eyes_awake(true) { draw_bump_eyes_awake(&mut b, BumpEdge::Left, 200, 120); }
+        let act_b = b.data().to_vec();
+        let mut b2 = Pixmap::new(200, 120).unwrap();
+        draw_bump(&mut b2, BumpEdge::Left, 200, 120, color);
+        if bump_eyes_awake(false) { draw_bump_eyes_awake(&mut b2, BumpEdge::Left, 200, 120); }
+        let no_b = b2.data().to_vec();
+        assert_ne!(act_b, no_b);
     }
 
     #[test]
-    fn bar_eye_centers_symmetric_about_midpoint() {
-        // Use realistic dims; along clear of edges so full half-len.
-        const W: u32 = 200;
-        const H: u32 = 120;
-        for &edge in &[BumpEdge::Left, BumpEdge::Right, BumpEdge::Top, BumpEdge::Bottom] {
-            let along = bump_along_edge(edge, W, H);
-            let rect = bar_rect(edge, W, H, along);
-            let [c0, c1] = bar_eye_centers(&rect, edge);
-            let mx = rect.x + rect.w / 2.0;
-            let my = rect.y + rect.h / 2.0;
-            // symmetric about mid
-            let (dx0, dy0) = (c0.0 - mx, c0.1 - my);
-            let (dx1, dy1) = (c1.0 - mx, c1.1 - my);
-            assert!((dx0 + dx1).abs() < 0.001 && (dy0 + dy1).abs() < 0.001, "offsets must cancel");
-            // strictly along long axis only (thickness center)
-            match edge {
-                BumpEdge::Left | BumpEdge::Right => {
-                    assert!((c0.0 - mx).abs() < 0.001 && (c1.0 - mx).abs() < 0.001);
-                    assert!((c0.1 - my).abs() >= BAR_EYE_HALF_GAP - 0.001);
-                }
-                BumpEdge::Top | BumpEdge::Bottom => {
-                    assert!((c0.1 - my).abs() < 0.001 && (c1.1 - my).abs() < 0.001);
-                    assert!((c0.0 - mx).abs() >= BAR_EYE_HALF_GAP - 0.001);
-                }
-            }
-            // inside rect
-            assert!(c0.0 >= rect.x && c0.0 <= rect.x + rect.w && c0.1 >= rect.y && c0.1 <= rect.y + rect.h);
-            assert!(c1.0 >= rect.x && c1.0 <= rect.x + rect.w && c1.1 >= rect.y && c1.1 <= rect.y + rect.h);
-            // center-pixel gate: gap must leave room around mid
-            assert!(BAR_EYE_HALF_GAP - BAR_EYE_R >= 2.0);
-        }
-    }
-
-    #[test]
-    fn bar_eyes_pixels_visible_when_ready() {
-        // Fixture style matching bar_only: Ready bar must paint dark ink at eye centers
-        // (where a Quiet bar paints the bar hue at the same coords), and the exact midpoint
-        // (center pixel) must still match the Ready palette (center-pixel gate).
-        const BW: u32 = 200;
-        const BH: u32 = 120;
-        let edge = BumpEdge::Top; // horizontal bar, easy mid sampling
-        let along = bump_along_edge(edge, BW, BH);
-        let rect = bar_rect(edge, BW, BH, along);
-        // Ready render
-        let mut p_ready = Pixmap::new(BW, BH).unwrap();
-        draw_edge_bar(&mut p_ready, edge, BW, BH, along, Some(AlertLevel::Ready), None);
-        // Quiet render (for contrast at eye pos)
-        let mut p_quiet = Pixmap::new(BW, BH).unwrap();
-        draw_edge_bar(&mut p_quiet, edge, BW, BH, along, Some(AlertLevel::Quiet), None);
-        let [c0, _c1] = bar_eye_centers(&rect, edge);
-        // sample at one eye center (round to pixel)
-        let (ex, ey) = (c0.0 as u32, c0.1 as u32);
-        let idx_eye = ((ey * BW + ex) * 4) as usize;
-        let d_ready = p_ready.data();
-        let d_quiet = p_quiet.data();
-        let eye_ready = [d_ready[idx_eye], d_ready[idx_eye+1], d_ready[idx_eye+2], d_ready[idx_eye+3]];
-        let eye_quiet = [d_quiet[idx_eye], d_quiet[idx_eye+1], d_quiet[idx_eye+2], d_quiet[idx_eye+3]];
-        // eye pos on Ready is dark ink (not bar hue)
-        let ink = BAR_EYE_INK;
-        assert!(rgba_close(eye_ready, ink, 2), "Ready bar eye center must be near pupil ink");
-        // same pos on Quiet is the bar's Quiet hue (not ink)
-        let quiet_bar = alert_level_ring_rgba(AlertLevel::Quiet);
-        assert!(rgba_close(eye_quiet, quiet_bar, 2) || !rgba_close(eye_quiet, ink, 2),
-            "Quiet bar at eye pos must be bar hue, not ink");
-        // center pixel of Ready bar still exactly the palette (gate preserved)
-        let center_sample = sample_bar_center_rgba(edge, Some(AlertLevel::Ready), None);
-        let demul = demultiply_rgba(center_sample);
-        assert!(rgba_close(demul, alert_level_ring_rgba(AlertLevel::Ready), 1),
-            "Ready bar center pixel must remain pure hue (eyes did not overwrite midpoint)");
+    fn soul_ready_tier_greens_tips_but_never_opens_eyes() {
+        let color = [180, 90, 60];
+        // activity false, tier Ready: tips green, eyes closed
+        let buf = bar_render(BumpEdge::Left, color, false, Some(AlertLevel::Ready));
+        // eyes closed means bump + no eyes == bump + eyes false
+        let mut b = Pixmap::new(200, 120).unwrap();
+        draw_bump(&mut b, BumpEdge::Left, 200, 120, color);
+        let plain = b.data().to_vec();
+        let mut be = Pixmap::new(200, 120).unwrap();
+        draw_bump(&mut be, BumpEdge::Left, 200, 120, color);
+        if bump_eyes_awake(false) { draw_bump_eyes_awake(&mut be, BumpEdge::Left, 200, 120); }
+        assert_eq!(be.data().to_vec(), plain);
     }
 
     #[test]
@@ -5335,6 +5242,7 @@ mod tests {
                 route_health: None,
                 route_flash: false,
                 alert_level: Some(AlertLevel::Confirm),
+                activity: false,
                 receipt_rail: &[],
                 interior_rows: &[],
                 settings: &[],
@@ -5363,7 +5271,7 @@ mod tests {
         const BW: u32 = 200;
         const BH: u32 = 120;
         let mut pixmap = Pixmap::new(BW, BH).unwrap();
-        draw_bump_halo(&mut pixmap, edge, BW, BH, alert, route);
+        draw_bump_halo(&mut pixmap, edge, BW, BH, false, alert);
         pixmap.data().to_vec()
     }
 
@@ -5371,7 +5279,7 @@ mod tests {
         const BW: u32 = 200;
         const BH: u32 = 120;
         let mut pixmap = Pixmap::new(BW, BH).unwrap();
-        draw_bump_halo(&mut pixmap, edge, BW, BH, alert, route);
+        draw_bump_halo(&mut pixmap, edge, BW, BH, false, alert);
         let (cx, cy) = bump_center(edge, BW, BH);
         let r = BUMP_R + BUMP_HALO_OUTSET;
         let (sx, sy) = match edge {
@@ -5455,21 +5363,19 @@ mod tests {
             bump_halo_only(BumpEdge::Left, Some(AlertLevel::Quiet), None),
             "absent tier === Quiet on the bump halo",
         );
-        assert_eq!(
-            bump_halo_only(BumpEdge::Left, None, Some("ready")),
-            bump_halo_only(BumpEdge::Left, Some(AlertLevel::Ready), None),
-            "route health is still the fallback on the bump halo",
-        );
+        // route no longer affects halo; absent == Quiet
+        let idle = bump_halo_only(BumpEdge::Left, None, None);
+        let q = bump_halo_only(BumpEdge::Left, Some(AlertLevel::Quiet), None);
+        assert_eq!(idle, q);
+        // route ready with no tier is same as quiet
+        let r = bump_halo_only(BumpEdge::Left, None, Some("ready"));
+        assert_eq!(r, q);
     }
 
     #[test]
-    fn bump_eyes_awake_only_on_ready_green() {
-        assert!(bump_eyes_awake(Some(AlertLevel::Ready)));
-        assert!(!bump_eyes_awake(None));
-        assert!(!bump_eyes_awake(Some(AlertLevel::Quiet)));
-        assert!(!bump_eyes_awake(Some(AlertLevel::Confirm)));
-        assert!(!bump_eyes_awake(Some(AlertLevel::Blocked)));
-        assert!(!bump_eyes_awake(Some(AlertLevel::Critical)));
+    fn bump_eyes_awake_only_on_activity() {
+        assert!(bump_eyes_awake(true));
+        assert!(!bump_eyes_awake(false));
     }
 
     #[test]
@@ -5530,7 +5436,7 @@ mod tests {
         let (ex, ey) = centers[0];
         let idx2 = (((ey as u32) * BW + (ex as u32)) * 4) as usize;
         let eye_center = [d[idx2], d[idx2+1], d[idx2+2], d[idx2+3]];
-        assert!((eye_center[0] as i32 - BAR_EYE_INK[0] as i32).abs() <= 2);
+        assert!((eye_center[0] as i32 - EYE_INK[0] as i32).abs() <= 2);
     }
 
     #[test]
@@ -5545,14 +5451,14 @@ mod tests {
         // simulate gate with alert=None (route ignored for eyes)
         let mut route = Pixmap::new(BW, BH).unwrap();
         draw_bump(&mut route, edge, BW, BH, [180, 100, 60]);
-        if bump_eyes_awake(None) {
+        if bump_eyes_awake(false) {
             draw_bump_eyes_awake(&mut route, edge, BW, BH);
         }
         assert_eq!(route.data().to_vec(), plain_buf, "route green must leave head asleep");
         // activity does wake
         let mut active = Pixmap::new(BW, BH).unwrap();
         draw_bump(&mut active, edge, BW, BH, [180, 100, 60]);
-        if bump_eyes_awake(Some(AlertLevel::Ready)) {
+        if bump_eyes_awake(true) {
             draw_bump_eyes_awake(&mut active, edge, BW, BH);
         }
         assert_ne!(active.data().to_vec(), plain_buf, "activity green must wake the head");
@@ -5946,6 +5852,7 @@ mod tests {
             route_health: None,
             route_flash: false,
             alert_level: None,
+            activity: false,
             receipt_rail: &[],
             interior_rows: &[],
             settings: &[],

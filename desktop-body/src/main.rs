@@ -1303,16 +1303,6 @@ fn format_request_id(n: u64) -> String {
     format!("body-req-{}", n)
 }
 
-/// Precedence for the halo: in-flight activity paints Ready (green) regardless of prior tier.
-/// When not in flight, the soul-derived tier (if any) passes through. One pure fn, no side effects.
-fn halo_alert_level(in_flight: bool, tier: Option<presence::AlertLevel>) -> Option<presence::AlertLevel> {
-    if in_flight {
-        Some(presence::AlertLevel::Ready)
-    } else {
-        tier
-    }
-}
-
 /// Returns true if an incoming action_result addresses the in-flight slot per the pinned rules:
 /// 1) result carries a request_id that matches the slot, or
 /// 2) result carries no request_id and its effector matches the slot's effector.
@@ -1660,7 +1650,8 @@ impl App {
             surface_bloom: &bloom_items,
             route_health: route_health.as_deref(),
             route_flash,
-            alert_level: halo_alert_level(self.action_in_flight.is_some(), self.active_alert_level),
+            alert_level: self.active_alert_level,
+            activity: self.action_in_flight.is_some(),
             receipt_rail: &receipt_rail_items,
             interior_rows: if onboarding_view.is_some() { &[] } else { &interior_rows },
             settings: if onboarding_view.is_some() { &[] } else { &settings_rows },
@@ -2066,6 +2057,7 @@ impl App {
                 // Thread the soul-derived alert tier onto body state (law 7: painted, never
                 // inferred). R1 stores it; the state ring that reads it lands in a later slice.
                 self.active_alert_level = alert_level;
+                let was_held = self.action_in_flight.is_some();
                 // Activity green bracket ends on a matching result. Three pinned rules:
                 // 1. result.request_id matches the slot's → clear (exact correlation).
                 // 2. result has no request_id → clear on effector match (soul didn't echo id).
@@ -2077,6 +2069,12 @@ impl App {
                     if should_clear_in_flight(inflight, rid, &effector) {
                         self.action_in_flight = None;
                     }
+                }
+                if was_held && self.action_in_flight.is_some() {
+                    eprintln!(
+                        "[bb-desktop-body] ActionResult did not clear in-flight slot (held={:?}, arrived request_id={:?}, effector={})",
+                        self.action_in_flight, request_id, effector
+                    );
                 }
                 let executed = outcome.as_ref().map(|o| o.executed);
                 let route_label = outcome
@@ -4352,17 +4350,16 @@ mod tests {
     }
 
     #[test]
-    fn halo_prefers_activity_green_while_in_flight() {
+    fn presented_alert_level_activity_wins() {
         use presence::AlertLevel;
-        // In flight always Ready (green), overriding whatever tier is present
-        assert_eq!(halo_alert_level(true, Some(AlertLevel::Quiet)), Some(AlertLevel::Ready));
-        assert_eq!(halo_alert_level(true, Some(AlertLevel::Confirm)), Some(AlertLevel::Ready));
-        assert_eq!(halo_alert_level(true, Some(AlertLevel::Blocked)), Some(AlertLevel::Ready));
-        assert_eq!(halo_alert_level(true, None), Some(AlertLevel::Ready));
-        // Not in flight passes the tier through (or None)
-        assert_eq!(halo_alert_level(false, Some(AlertLevel::Blocked)), Some(AlertLevel::Blocked));
-        assert_eq!(halo_alert_level(false, Some(AlertLevel::Confirm)), Some(AlertLevel::Confirm));
-        assert_eq!(halo_alert_level(false, None), None);
+        // activity presents Ready green
+        assert_eq!(render::presented_alert_level(true, Some(AlertLevel::Quiet)), Some(AlertLevel::Ready));
+        assert_eq!(render::presented_alert_level(true, Some(AlertLevel::Confirm)), Some(AlertLevel::Ready));
+        assert_eq!(render::presented_alert_level(true, None), Some(AlertLevel::Ready));
+        // no activity passes tier (or None)
+        assert_eq!(render::presented_alert_level(false, Some(AlertLevel::Blocked)), Some(AlertLevel::Blocked));
+        assert_eq!(render::presented_alert_level(false, Some(AlertLevel::Confirm)), Some(AlertLevel::Confirm));
+        assert_eq!(render::presented_alert_level(false, None), None);
     }
 
     #[test]

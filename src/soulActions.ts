@@ -151,11 +151,16 @@ export function decisionEmotion(decision: string): PresenceEmotion {
  * soul sends on `action_result`. Face and chrome derive from the same decision so the body
  * never infers policy state from a facial-expression string (law 7). Garbage fails loud at
  * `critical`, the same "never a reassuring face on bad input" stance as `decisionEmotion`.
+ *
+ * `allow` rests at `quiet`: green is the activity-in-progress channel (ruling 2026-07-03 —
+ * the request→result bracket, presented body-side), so a landed allow paints no persistent
+ * chrome. A `ready` tier on a result would sit green forever after the action finished —
+ * the stuck-green the 2026-07-04 amendment killed. Amber/red stay: they demand attention.
  */
 export function decisionAlertLevel(decision: string): PresenceAlertLevel {
   switch (decision) {
     case "allow":
-      return "ready";
+      return "quiet";
     case "needs_confirmation":
       return "confirm";
     case "blocked":

@@ -1483,13 +1483,9 @@ impl Sprite {
             // gains the awake-eyes gate (F3b), the same move as H2/R3.
             let dock = effective_dock_show(view.skin, view.dock_show);
             let along = bump_along_edge(edge, w, h);
-            if shows_tucked_head(dock) {
-                draw_bump(&mut pixmap, edge, w, h, view.color);
-                draw_bump_halo(&mut pixmap, edge, w, h, view.activity, view.alert_level);
-                if bump_eyes_awake(view.activity) {
-                    draw_bump_eyes_awake(&mut pixmap, edge, w, h);
-                }
-            }
+            // Bar first, head second: in Both mode the head sits ON TOP of the bar (owner
+            // walk ruling 2026-07-04) — the face is never cut by the bar stripe. Paint order
+            // only; no fn bodies change.
             if shows_tucked_bar(dock) {
                 draw_edge_bar(
                     &mut pixmap,
@@ -1501,6 +1497,13 @@ impl Sprite {
                     view.activity,
                     view.alert_level,
                 );
+            }
+            if shows_tucked_head(dock) {
+                draw_bump(&mut pixmap, edge, w, h, view.color);
+                draw_bump_halo(&mut pixmap, edge, w, h, view.activity, view.alert_level);
+                if bump_eyes_awake(view.activity) {
+                    draw_bump_eyes_awake(&mut pixmap, edge, w, h);
+                }
             }
             if let Some(font) = &self.font {
                 if view.tucked_show_bubble {
@@ -5353,6 +5356,79 @@ mod tests {
             paint(Skin::Ring),
             paint(Skin::Clay),
             "a tucked ring-skin buddy must paint the bar, not the clay bump",
+        );
+    }
+
+    #[test]
+    fn tucked_head_paints_over_bar_in_both_dock() {
+        // Owner ruling 2026-07-04: in Both mode the head renders ON TOP of the bar — the
+        // face is never cut by the bar stripe. Pin it through the real paint path: at a
+        // pixel inside BOTH the bump circle and the bar strip, Both must equal Head-only
+        // (the bar contributes nothing under the head), while Bar-only proves the bar
+        // genuinely paints that pixel when the head is absent.
+        let layout = Layout::initial();
+        let w = SURFACE_W;
+        let h = layout.surface_h();
+        let sprite = Sprite::new();
+        let edge = BumpEdge::Left;
+
+        let paint = |dock_show: DockShow| -> Vec<u8> {
+            let mut canvas = vec![0_u8; (w * h * 4) as usize];
+            let view = BodyView {
+                t: 0.0,
+                emotion: Emotion::Neutral,
+                speech: None,
+                torso_output: TorsoOutput::Text(TextCard { title: "", body: "" }),
+                chat_open: false,
+                tucked: Some(edge),
+                tucked_show_bubble: false,
+                tucked_show_input: false,
+                input_text: "",
+                input_placeholder: "",
+                input_focused: false,
+                review_pending: false,
+                edit_pending: false,
+                posture_badge: None,
+                surface_bloom: &[],
+                route_health: None,
+                route_flash: false,
+                alert_level: None,
+                activity: false,
+                receipt_rail: &[],
+                interior_rows: &[],
+                settings: &[],
+                onboarding: None,
+                layout,
+                pinned: None,
+                frame: None,
+                color: CLAY_DEFAULT,
+                dock_show,
+                skin: Skin::Clay,
+            };
+            sprite.paint(&mut canvas, w, h, &view);
+            canvas
+        };
+
+        let (cx, cy) = bump_center(edge, w, h);
+        let px = (BAR_THICKNESS / 2.0) as u32; // inside the bar strip on the left edge
+        let py = cy as u32;
+        assert!(
+            point_in_bump(edge, w, h, px as f64, py as f64),
+            "sample pixel must sit inside the bump circle (cx={cx})",
+        );
+        let idx = ((py * w + px) * 4) as usize;
+        let both = paint(DockShow::Both);
+        let head = paint(DockShow::Head);
+        let bar = paint(DockShow::Bar);
+        assert_eq!(
+            &both[idx..idx + 4],
+            &head[idx..idx + 4],
+            "Both dock: the head must fully cover the bar where they overlap",
+        );
+        assert_ne!(
+            &bar[idx..idx + 4],
+            &head[idx..idx + 4],
+            "guard: the bar really paints this pixel when the head is absent",
         );
     }
 

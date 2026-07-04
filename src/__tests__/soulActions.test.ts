@@ -76,7 +76,8 @@ describe("handleActionRequest", () => {
     expect(blocked.result.decision).toBe("blocked");
     expect(blocked.result.alertLevel).toBe("blocked");
 
-    // allow path — low-risk receipt_review under play → decision "allow" → alertLevel "ready"
+    // allow path — low-risk receipt_review under play → decision "allow" → alertLevel "quiet"
+    // (green = activity-in-progress only; a landed allow rests, it does not stay green)
     const allowed = handleActionRequest({
       buddy: "veritas",
       effectorId: "receipt_review",
@@ -87,7 +88,7 @@ describe("handleActionRequest", () => {
       now: "2026-06-13T12:00:01Z",
     });
     expect(allowed.result.decision).toBe("allow");
-    expect(allowed.result.alertLevel).toBe("ready");
+    expect(allowed.result.alertLevel).toBe("quiet");
   });
 
   test("low-risk receipt_review under play posture is allowed and recorded", () => {
@@ -836,7 +837,9 @@ describe("decisionEmotion", () => {
 
 describe("decisionAlertLevel", () => {
   test("each gate decision maps to its passport/ring alert tier", () => {
-    expect(decisionAlertLevel("allow")).toBe("ready");
+    // allow rests at quiet: green is the activity-in-progress channel (2026-07-03 ruling),
+    // so a landed allow paints no persistent chrome — no stuck green after the result.
+    expect(decisionAlertLevel("allow")).toBe("quiet");
     expect(decisionAlertLevel("needs_confirmation")).toBe("confirm");
     expect(decisionAlertLevel("blocked")).toBe("blocked");
   });
@@ -849,7 +852,7 @@ describe("decisionAlertLevel", () => {
   test("face and chrome derive from one decision (Law 7 — body never infers policy)", () => {
     // The emotion twin colours the face; the alert twin colours the passport/ring. They are
     // sent together on action_result so the body reads chrome from a cue, not from the face.
-    expect([decisionEmotion("allow"), decisionAlertLevel("allow")]).toEqual(["happy", "ready"]);
+    expect([decisionEmotion("allow"), decisionAlertLevel("allow")]).toEqual(["happy", "quiet"]);
     expect([decisionEmotion("needs_confirmation"), decisionAlertLevel("needs_confirmation")]).toEqual([
       "curious",
       "confirm",

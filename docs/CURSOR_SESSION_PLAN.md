@@ -1840,7 +1840,17 @@ presence.rs untouched. `draw_bump`, `draw_closed_eyes`, `draw_eyes`, `draw_ring`
 4. **Result lands**: tips vanish, eyes close, ring gone — back to rest. If green ever sticks, check the terminal: the new `[bb-desktop-body]` eprintln will name the held vs arriving request_id/effector.
 5. **Both dock**: eyes on the head only; bar shows tips only.
 
-(Owner walk pending.)
+## Owner walk — combined F-series (2026-07-04): PASS with two fixes, then SHIP
+
+**Walk result:** "Everything working apart from the eyes not opening when it turns green on '/confirm' — also if we can make the head + bar mode render the head on top of the bar. Once those are in we can push."
+
+**Finding 1 — green-but-no-eyes was soul-side, not the F4 wire** (`ad0505e`). The screenshots showed green tips + green halo with the result bubble already rendered — i.e. AFTER the bracket closed. Root cause: `decisionAlertLevel` in soulActions.ts mapped **allow → "ready"**, so every successful result stamped a permanent Ready tier: green forever after the action finished, eyes (correctly) asleep because activity was over. This mapping predates the green=activity ruling and was the last stuck-green source. Fix: **allow → "quiet"** — a landed allow paints no persistent chrome; in flight the activity wire greens tips/halo AND opens the eyes; on result everything rests. `needs_confirmation`→amber and `blocked`→red keep painting (they demand attention); garbage still fails loud at critical. Vitest mapping tests amended in place (278/31 unchanged).
+
+**Finding 2 — head over bar in Both dock** (`ad0505e`). Paint order swapped in the `Sprite::paint` tucked block: bar first, head second — the face is never cut by the bar stripe. Call-order only; every draw fn byte-identical. New named test `tucked_head_paints_over_bar_in_both_dock` pins it through the real paint path (Both == Head-only at an overlap pixel; Bar-only proves the bar paints there when the head is absent).
+
+**Gates at ship:** cargo **146+0/29**, release **9 known warnings**, tsc clean, vitest **278/31**. Canaries md5-identical vs `ccf80ac`.
+
+**Owner ruling: PUSH.** F-series ships: F3a (superseded bar eyes, retired by F4), F3b (waking eyes), F4 (identity bar + traffic-light tips + activity wire), walk fixes. Next: F3c (untucked figure eyes) LAST of the expression pass.
 
 
 

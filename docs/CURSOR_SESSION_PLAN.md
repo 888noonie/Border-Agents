@@ -1426,5 +1426,60 @@ GB removed the `route "ready" === Some(Ready)` full-buffer `assert_eq` from `edg
 4. (If reachable) route-health green without an action in flight → green bar, **no eyes**.
 5. Optional: shrink the buddy until the bar is short → eyes disappear below min length, bar stays.
 
-(Owner walk pending.)
+### Owner walk — 2026-07-04: functional PASS, shipping HELD
+
+Observed live: grey bar at rest → **amber (Confirm gate) with no eyes** → **activity green with eyes** → clean clear on result. Every briefed state in order, and the channels proved orthogonal on screen: governance amber never wore eyes, only activity green did.
+
+**But the eyes flunked the anatomy board**: on a left-dock (vertical) bar the pair stacks along the long axis and reads as a colon, not a face. Root cause is the brief's own geometry pin (offset along the long axis) plus a hard limit — a perpendicular pair cannot fit the 10px bar thickness while keeping the ≥2px center-pixel gap.
+
+**Owner ruling**: F3a stays local, **NOT pushed**. F3b (tucked-head eyes) goes first so the head sets the eye design language; the bar restyle becomes F3a.1 after that; F3a+F3b(+F3a.1) walk together and ship together.
+
+---
+
+## Slice F3b — waking eyes: activity green opens the tucked head's sleeping eyes (expression pass, part 2)
+
+**Context.** F3a is local-only (`6186eef` code, `c82175d` lead fix, `e3a713a` audit — build ON TOP of these, do not push anything). Scouting for this brief found the design gift: **the tucked head already has a face.** `draw_bump` (render.rs:2839) ends by calling `draw_closed_eyes` — two sleeping lid arcs at `eye_x = anchor_x ± 8.0`, always screen-horizontal on every edge, at the anchor `(cx + dx, cy + dy - 2.0)` where `(dx, dy)` nudges `±BUMP_R * 0.45` toward the on-screen side. So F3b is not "add eyes" — it is **wake them**: while tucked with the head showing and `alert_level == Some(AlertLevel::Ready)` (the F2 activity bracket), the sleeping lids open into small Morph eyes (white + dark pupil, the `draw_eyes` look at render.rs:2904). At rest, on any other tier, or on route-health green: the head stays asleep.
+
+### Design pins
+
+1. **Sibling fn, NOT a `draw_bump` edit** (H2 precedent — see the comment at render.rs:2861 and the call-site comment at :1467). New `draw_bump_eyes_awake(pixmap, edge, w, h)` called from the tucked head block in `Sprite::paint` (:1473–1476), AFTER `draw_bump` + `draw_bump_halo`:
+   ```rust
+   if shows_tucked_head(dock) {
+       draw_bump(&mut pixmap, edge, w, h, view.color);
+       draw_bump_halo(&mut pixmap, edge, w, h, view.alert_level, view.route_health);
+       if bump_eyes_awake(view.alert_level) {
+           draw_bump_eyes_awake(&mut pixmap, edge, w, h);
+       }
+   }
+   ```
+   This gate + call is the ONLY edit to existing code in the whole slice.
+2. **Pure predicate** `bump_eyes_awake(alert_level: Option<AlertLevel>) -> bool` = `alert_level == Some(AlertLevel::Ready)`. Takes alert_level ONLY — route_health has no parameter to sneak through (same law as F3a: route green must not wake the head). No size condition; `BUMP_R` is fixed.
+3. **Pure geometry** `bump_eye_centers(edge: BumpEdge, w: u32, h: u32) -> [(f32, f32); 2]` returning the two WHITE centers. Mirror the sleeping-face anchor exactly: `(cx, cy) = bump_center(edge, w, h)`; nudge `(dx, dy) = ±BUMP_R * BUMP_FACE_NUDGE` per edge (new constant `BUMP_FACE_NUDGE: f32 = 0.45` with a keep-in-sync comment pointing at `draw_bump`'s literal — `draw_bump` is canary-frozen, so we mirror, we do not refactor); anchor `(ax, ay) = (cx + dx, cy + dy - 2.0)`; whites at `(ax ± BUMP_EYE_DX, ay + 1.5)` with `BUMP_EYE_DX: f32 = 8.0` (matches `draw_closed_eyes`' ±8). **Always screen-horizontal** — that is what makes head eyes read as a face on every edge (the F3a colon lesson).
+4. **Awake look (mini-Morph)**: per eye, white circle `BUMP_EYE_WHITE_R: f32 = 7.0`, then pupil `BUMP_EYE_PUPIL_R: f32 = 3.0` at the same center. Colors: `BUMP_EYE_WHITE: [u8; 4] = [250, 250, 248, 255]` (reuses the `draw_eyes` white verbatim, named constant + pointer comment); pupil ink reuses the existing `BAR_EYE_INK` constant — do NOT mint a second ink. **Zero new color values.**
+5. **Occlusion is why r=7.0 and the +1.5 y-shift**: the lid ink (3px round stroke on the quad arc) reaches at most ≈6.67px from the white center — `√(6.5² + 1.5²)` at the arc endpoints — so a 7.0 white fully swallows the sleeping lids; and the farthest white edge sits `0.45·34 + 8 + 7 = 30.3 < BUMP_R = 34` inside the bump, clear of the halo stroke. Whites are 16px apart at r=7 → they do not merge.
+6. **Fixture safety (pre-checked by lead)**: all four `bump_halo_*` tests render `draw_bump_halo` in isolation and therefore CANNOT see your eyes — including the route==Ready full-buffer eq in `bump_halo_never_vanishes_absent_rests_at_quiet`. Keep it that way: eyes never move into `draw_bump` or `draw_bump_halo`. **All existing tests pass UNMODIFIED — no exceptions this slice.** If anything seems to force a test edit, that is a conflict stop: STOP and report.
+7. **Paint-only**: `bump_center`/`point_in_bump`/summon unions/input regions untouched.
+
+### Named tests (exactly these 4)
+
+- `bump_eyes_awake_only_on_ready_green` — predicate true only for `Some(Ready)`; false for `None`, `Quiet`, `Confirm`, `Blocked`, `Critical`.
+- `bump_eye_centers_ride_the_sleeping_face_anchor` — all 4 edges at 200×120: pair shares one y (screen-horizontal), x = anchor ± `BUMP_EYE_DX`, and each white stays fully inside the bump (`dist(center, bump_center) + BUMP_EYE_WHITE_R <= BUMP_R`).
+- `awake_eyes_cover_the_sleeping_lids` — fixture composes `draw_bump` then `draw_bump_eyes_awake` (Left edge, 200×120): sample a lid arc endpoint (`anchor_x - BUMP_EYE_DX - 5.0`, `anchor_y`) → white ±2 (the lid is gone); sample a white center → `BAR_EYE_INK` ±2 (the pupil is watching).
+- `route_green_head_stays_asleep` — compose through the same gate used at the call site with `alert = None, route = Some("ready")` → buffer identical to the plain sleeping bump; with `alert = Some(Ready)` → buffer differs. (F3a's route-coverage lesson, asserted from day one.)
+
+### Gates (forced recompile first: `touch desktop-body/src/*.rs`)
+
+- `cargo test` → baseline **143 + 0 (main) / 29** (includes lead fix `c82175d`), growth by these 4 named tests only → expect 147.
+- `cargo build --release` → 9 known warnings, nothing new.
+- `npx tsc --noEmit` clean; `npx vitest run` 278/31.
+
+### Canaries (lead re-checks all)
+
+main.rs / presence.rs byte-untouched; `draw_bump`, `draw_bump_halo`, `draw_closed_eyes`, `draw_eyes`, and every figure fn byte-identical; only existing-code edit = the gated sibling call in `Sprite::paint`'s tucked head block; zero new color values; existing tests byte-unmodified.
+
+### Commit
+
+`feat(body): laminal ring pivot — Slice F3b — waking eyes (activity green opens the tucked head's sleeping eyes)`
+
+Builder report appended below this brief, committed separately as `docs: builder report — Slice F3b waking eyes`. **Commit but DO NOT push** — F3a+F3b ship together after the combined owner walk. **STOP after F3b** (F3a.1 bar restyle and F3c untucked figure are separately briefed).
 

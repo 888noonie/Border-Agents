@@ -1584,8 +1584,47 @@ None. Followed "all existing tests unmodified" strictly; "only edit to existing 
 
 ---
 
-## Lead audit (Fable) — pending
+## Lead audit — F3b (Fable, 2026-07-04)
 
-(Owner walk for F3a+F3b pending.)
+**Verdict: PASS pending owner walk — zero required fixes.** Attribution correction for the record: the builder report heading above says "Grok Build," but F3b was built by **Composer 2.5** (owner passed the baton back after F3a; heading inherited from the brief's template). The work matches the brief pin-for-pin.
+
+### Independent verification (all re-run)
+
+| Gate | Result |
+|---|---|
+| `git diff 542179d..0fe5dec --name-only` | render.rs ONLY (report commit: plan doc only) |
+| `cargo test` (after `touch src/*.rs`) | **147 passed + 0 / 29** — growth exactly the 4 named tests, all observed by name |
+| `cargo build --release` | **9 known warnings** ("generated 9 warnings" line verified; naive `^warning:` grep says 10 because it counts the summary line — same artifact as F2) |
+| `npx tsc --noEmit` | clean |
+| `npx vitest run` | **278 passed / 31 files** |
+
+### Canaries
+
+| Canary | Status |
+|---|---|
+| main.rs / presence.rs | byte-untouched |
+| `draw_bump` / `draw_bump_halo` / `draw_closed_eyes` / `draw_eyes` / all figure fns | byte-identical — diff hunks are: constants, 2 pure fns, the gated call, the new sibling fn, 4 new tests |
+| Only existing-code edit | the gated sibling call in `Sprite::paint`'s tucked-head block (+ the adjacent call-site comment updated to name the F3b gate — accurate, accepted) |
+| Existing tests | byte-unmodified, all green — including all four `bump_halo_*` fixtures (isolated from eyes by construction, as pre-checked in the brief) |
+| Color values | zero new: `BUMP_EYE_WHITE` is the pinned `draw_eyes` white reuse; pupil reuses `BAR_EYE_INK` (no second ink minted) |
+| Constants | BUMP_FACE_NUDGE=0.45 (keep-in-sync comment present), BUMP_EYE_DX=8.0, WHITE_R=7.0, PUPIL_R=3.0 — all per brief |
+| Predicate | takes `alert_level` only; route_health has no path to the eyes |
+| Paint-only | `bump_center` / `point_in_bump` / summon unions / input regions untouched |
+
+### Notes (cosmetic, no action)
+
+- `awake_eyes_cover_the_sleeping_lids` asserts only the red channel at both sample points — sufficient here (250 white vs ~34 lid ink vs ~81 inner clay are unambiguous in red), but full-RGBA closeness would be sturdier.
+- `bump_eye_centers_ride_the_sleeping_face_anchor` asserts each center is at left-x OR right-x — a degenerate both-at-left pair would slip past; the horizontal-y + inside-bump asserts and the trivially-symmetric construction make this moot.
+- `[180, 100, 60]` clay literal appears in the new test fixtures (4 uses). Test-fixture clay, not a governance hue — outside the palette rule's intent. Fine.
+
+### Combined owner walk — F3a + F3b (native, `cargo run`)
+
+1. **Head walk (F3b)**: Dock=Head or Both, tuck → sleeping bump, closed lids, at rest. Fire an Edit → confirm (amber halo, still asleep) → flight: halo goes green **and the eyes open** — white Morph eyes with dark pupils at the sleeping face's spot. Result lands → green clears, **lids close again**.
+2. **Bar walk (F3a re-check, known colon caveat)**: Dock=Bar, tuck → same Edit → green bar + midpoint dots (the colon — F3a.1 will restyle; this pass is only confirming behavior).
+3. Route-health green (if reachable) → halo/bar green but head stays **asleep**, bar stays dotless.
+
+On PASS: push all 7 local commits, then brief F3a.1 (bar restyle in the head's eye language).
+
+(Combined owner walk pending.)
 
 

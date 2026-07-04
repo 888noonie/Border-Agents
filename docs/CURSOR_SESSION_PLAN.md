@@ -1217,3 +1217,50 @@ Audited `a28c278` (code) + `cd39ee0` (builder report). First slice built by **Gr
 
 **Owner walk PASSED 2026-07-04 (native, COSMIC): F2 activity green complete — pushed.**
 
+
+---
+
+## Slice F3a — bar eyes: activity green summons a watching pair (expression pass, part 1) — brief for Grok Build
+
+**Status: READY FOR GROK BUILD** (brief cut 2026-07-04 after F2 owner walk PASSED).
+
+**Direction context:** F2 landed the ruling — green = activity-in-progress, painted by `AlertLevel::Ready` through the existing table, lifecycle = the request→result bracket. F3 is the expression pass on top: the buddy *looks attentive* while working. Bar mode goes first because the bar is the most face-less dock state — a 10px strip with no identity. Eyes appear ONLY while green (activity), so at rest the bar stays clean chrome. Tucked-head attentive eyes and the untucked figure come in later F3 slices (figure LAST — it touches canary-protected `draw_eyes` and will be briefed separately).
+
+### Scope
+
+**`desktop-body/src/render.rs` ONLY.** main.rs untouched (`BodyView.alert_level` already carries the green — F2 finished that plumbing). presence.rs untouched. `bb-desktop-body` binary only; no TS/soul changes.
+
+### Pinned design
+
+- **Named constants** (top of render.rs near `BAR_THICKNESS`): `BAR_EYES_MIN_LEN: f32 = 28.0`, `BAR_EYE_R: f32 = 2.0`, `BAR_EYE_HALF_GAP: f32 = 5.0`. Exact values are the builder's aesthetic call within HARD limits: eyes must fit inside `BAR_THICKNESS` (10px), and **`BAR_EYE_HALF_GAP - BAR_EYE_R >= 2.0`** — see the center-pixel gate below.
+- **Visibility predicate, one pure fn:** `bar_eyes_visible(alert_level: Option<AlertLevel>, bar_along_len: f32) -> bool` = `alert_level == Some(AlertLevel::Ready) && bar_along_len >= BAR_EYES_MIN_LEN`. Gate on the ALERT LEVEL, **not** on the resolved hue: route-health `"ready"` resolves to the same green rgba but is route state, not activity — it must NOT summon eyes. (The predicate never sees route_health by construction; say so in its doc comment.)
+- **Geometry, one pure fn:** `bar_eye_centers(rect: &Rect, edge: BumpEdge) -> [(f32, f32); 2]` — two dot centers symmetric about the bar's midpoint, offset `±BAR_EYE_HALF_GAP` ALONG the bar's long axis (horizontal offsets for Top/Bottom bars, vertical for Left/Right), centered across the thickness. Pure geometry so tests need no pixmap.
+- **Paint:** inside `draw_edge_bar`, after the existing fill: if `bar_eyes_visible(...)` (length from the already-computed `bar_rect`'s long side), fill two circles of radius `BAR_EYE_R` at the centers, ink `BAR_EYE_INK: [u8; 4] = [28, 22, 18, 255]` — a named constant that **reuses the figure pupil ink from `draw_eyes` verbatim** (comment pointing there). This repeats an existing figure literal; the no-new-literals rule guards the RING palette (`alert_level_ring_rgba` stays the only hue table) and this is ink, not a governance hue. Zero NEW color values in the diff.
+- **CENTER-PIXEL GATE (the reason for the half-gap floor):** the ratified R4 test `edge_bar_hue_equals_ring_hue_exactly` samples the bar's exact center pixel for ALL levels including Ready and must keep passing **UNMODIFIED** — the midpoint sits in the clear gap BETWEEN the eyes, so it stays pure bar hue (±1 premultiply). Do not touch that test, `edge_bar_precedence_alert_over_route`, or any existing test. If your eye geometry breaks one, fix the geometry, not the test.
+- **Paint-only:** `bar_rect`, hit-testing (`point_in_bar`), summon unions, and the input region are UNTOUCHED — eyes add pixels, never interaction surface.
+- **Figure canary:** `draw_eyes`, `draw_bump`, `draw_bump_halo`, and every figure draw fn byte-untouched. `draw_edge_bar` is the ONLY existing fn that changes.
+
+### Tests (named — pure fns + one pixel fixture in the existing style)
+
+- `bar_eyes_only_on_ready_green` — predicate true for `Some(Ready)` at ample length; false for None/Quiet/Confirm/Blocked/Critical at the same length.
+- `bar_eyes_hidden_below_min_len` — `Some(Ready)` + length just under `BAR_EYES_MIN_LEN` → false.
+- `bar_eye_centers_symmetric_about_midpoint` — both orientations: offsets along the long axis only, symmetric about the rect midpoint, both centers inside the rect, and `BAR_EYE_HALF_GAP - BAR_EYE_R >= 2.0` asserted.
+- `bar_eyes_pixels_visible_when_ready` — render fixture (existing `bar_only` style): Ready bar has ink at an eye center where the Quiet bar has bar hue; Ready bar's exact center pixel still equals the Ready palette entry.
+
+### Gates (baselines post-F2)
+
+`cargo test` = **139 + 0** (main) / 29 (parse bin) — growth by the named tests only; `cargo build --release` = **9 known warnings**; `npx tsc --noEmit` clean; `npx vitest run` = **278 / 31**. Forced recompile (`touch src/*.rs`) before cargo gates.
+
+### Canaries
+
+main.rs + presence.rs byte-untouched. Figure draw fns byte-untouched (`draw_edge_bar` only). Zero new color values (BAR_EYE_INK is the existing pupil ink, named). `bar_rect`/hit geometry unchanged. All existing tests pass unmodified.
+
+### Owner walk (after Fable audit; soul + body, Dock=Bar)
+
+Cycle Dock to Bar (or `BB_DOCK=bar`) → tuck → bar is clean chrome (no eyes at rest, Quiet hue) → untuck, tap **Edit**, re-tuck fast (or tuck first, drive via a second buddy surface) → while the bracket flies the bar goes green AND a small pair of eyes watches from the midpoint → result lands: eyes vanish with the green, tier hue paints (amber on needs_confirmation — no eyes on amber). Dock=Both: same eyes on the bar leg, bump halo unchanged. Note: dev-gateway brackets are fast — the eyes are a blink, same honesty note as F2.
+
+### Commit subject (verbatim)
+
+`feat(body): laminal ring pivot — Slice F3a — bar eyes (activity green summons a watching pair at bar midpoint)`
+
+Append builder report below. **STOP after F3a.** (F3b tucked-head attentive eyes and F3c untucked figure follow separately — figure LAST, canary-briefed.)

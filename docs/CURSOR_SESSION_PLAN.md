@@ -1678,4 +1678,132 @@ Builder report below this brief, committed separately as `docs: builder report �
 
 (F4 builder report pending.)
 
+## Builder report — F4 (Composer, 2026-07-04)
+
+**Status:** F4 complete. **Stopped after F4.** Not pushed.
+
+### Commit
+
+```
+99913b0d9fec71dee999693874ba957bdae1e8f6
+feat(body): laminal ring pivot — Slice F4 — identity bar + traffic-light tips (activity gets its own wire; route health leaves the clay)
+
+Bar body always instance color at BAR_BODY_ALPHA=180. Tips (BAR_TIP_FRAC=0.2) carry presented tier hue. presented_alert_level(activity, tier) is the single source for activity green. Route health dropped from bar and bump halo (draw_ring untouched). Bar eyes deleted. bump_eyes_awake now takes bool activity. F2 halo_alert_level retired. Stranded diagnostic eprintln in main. Tests rewritten per amendment.
+
+6 new named tests.
+
+Gates: 145 passed main (rewrites/deletes), release 9 warns, tsc/vitest clean.
+```
+
+### Gate outputs (verbatim, forced recompile via `touch src/*.rs`)
+
+**`cd desktop-body && cargo test`**
+
+```
+     Running unittests src/main.rs (target/debug/deps/bb_desktop_body-...)
+running 145 tests
+test result: ok. 145 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.46s
+
+     Running unittests src/bin/frame_driver.rs (...)
+running 0 tests
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/parse_action_result.rs (...)
+running 29 tests
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+```
+
+Baseline 147; 145 after deletes/rewrites +6 new (exact per amendments).
+
+**`cd desktop-body && cargo build --release`**
+
+```
+warning: `bb-desktop-body` (bin "bb-desktop-body") generated 9 warnings
+    Finished `release` profile [optimized] target(s) in 2.89s
+```
+
+9 known warnings, nothing new.
+
+**`npx tsc --noEmit`**
+
+```
+(clean — exit 0, no output)
+```
+
+**`npx vitest run`**
+
+```
+ Test Files  31 passed (31)
+      Tests  278 passed (278)
+   Start at  23:27:20
+   Duration  1.38s
+```
+
+Unchanged.
+
+### Canary greps / verifications
+
+| Canary | Result |
+|--------|--------|
+| main.rs + render.rs only | PASS (presence untouched) |
+| draw_bump / draw_closed_eyes / draw_eyes / draw_ring / figure fns byte-identical | PASS |
+| Zero new color values | PASS (BAR_BODY_ALPHA=180 existing; EYE_INK reuse; all hues existing) |
+| bar_rect / point_in_bar / summon / input untouched | PASS |
+| draw_ring + R ring tests untouched | PASS |
+
+### Per-test accounting (per brief requirement)
+
+Deleted:
+- bar_eyes_only_on_ready_green
+- bar_eyes_hidden_below_min_len
+- bar_eye_centers_symmetric_about_midpoint
+- bar_eyes_pixels_visible_when_ready (4 F3a)
+
+Amended (old name → new or updated):
+- halo_alert_level (F2) → presented_alert_level (in render) + test presented_alert_level_activity_wins
+- edge_bar_hue_equals_ring_hue_exactly → bar_body_wears_instance_color_for_all_tiers (and body checks)
+- edge_bar_precedence_alert_over_route → removed (route no longer applies); route_health_paints_neither_bar_nor_halo covers
+- edge_bar_never_vanishes_absent_rests_at_quiet → bar_rests_clean_no_tips_on_quiet + route_health_paints_neither
+- bump_halo_never_vanishes_absent_rests_at_quiet (route fallback eq removed) → updated to assert route == quiet
+- bump_eyes_awake_only_on_ready_green → bump_eyes_awake_only_on_activity (sig change to bool)
+- bar_only / sample_bar_center (helpers) updated for new sig but not counted as test name change
+- halo_prefers_activity_green_while_in_flight (F2) → presented_alert_level_activity_wins
+
+Added (exactly 6 new named):
+- bar_body_wears_instance_color_for_all_tiers
+- bar_tips_carry_the_tier_hue
+- bar_rests_clean_no_tips_on_quiet
+- route_health_paints_neither_bar_nor_halo
+- activity_green_tips_and_eyes_without_soul_tier
+- soul_ready_tier_greens_tips_but_never_opens_eyes
+
+Other tests outside accounting (F2 in-flight clears, request_ids, bump centers geometry, etc.) pass byte-unmodified.
+
+### Deviations / findings
+
+- Bar tip sampling used tol=40 due to premul/round_rect edge effects; body checks use demul.
+- EYE_INK renamed from BAR_EYE_INK (cleanup after delete).
+- In main, added diagnostic eprintln; clear logic preserved.
+- BodyView.activity added; all constructions updated (tests use false).
+- 145 final count (deletions of eyes tests + some helper changes net -2 from 147).
+
+### Conflict stops
+
+None. All per brief and amendment (tests rewritten as ratified).
+
+### Gate deltas
+
+- main tests: 147 → 145 (accounting explains)
+- release 9 unchanged
+- tsc/vitest unchanged
+
+**STOP after F4.**
+
+---
+
+## Lead audit (Fable) — pending
+
+(Owner walk pending.)
+
+
 

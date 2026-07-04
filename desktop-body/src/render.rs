@@ -78,6 +78,16 @@ const BAR_THICKNESS: f32 = 10.0;
 /// Fraction of the along-edge extent used as bar length (half-edge, centered on the tuck anchor).
 pub const BAR_LENGTH_FRAC: f32 = 0.5;
 
+/// Minimum bar along-length to show the activity eyes (smaller bars stay clean chrome).
+const BAR_EYES_MIN_LEN: f32 = 28.0;
+/// Radius of each eye dot on the bar.
+const BAR_EYE_R: f32 = 2.0;
+/// Half the gap between the pair (full gap = 10px). Must satisfy BAR_EYE_HALF_GAP - BAR_EYE_R >= 2.0
+/// so the exact midpoint pixel sampled by edge_bar_hue_equals_ring_hue_exactly remains pure bar hue.
+const BAR_EYE_HALF_GAP: f32 = 5.0;
+/// Dark pupil ink reused verbatim from draw_eyes (no new color literals).
+const BAR_EYE_INK: [u8; 4] = [28, 22, 18, 255]; // draw_eyes dark pupil
+
 // --- UI geometry -----------------------------------------------------------------
 
 const BUBBLE_W: f32 = 172.0;
@@ -841,6 +851,28 @@ pub fn tucked_summon_rects(skin: Skin, dock: DockShow, edge: BumpEdge, w: u32, h
         rects.push(bar_rect(edge, w, h, along));
     }
     rects
+}
+
+/// Visibility for the bar activity eyes: ONLY when alert_level is exactly Ready (activity green)
+/// **and** the bar's along-edge length is >= BAR_EYES_MIN_LEN. Deliberately takes alert_level,
+/// not the resolved hue — route-health "ready" (which produces the same green) must not paint eyes.
+/// Pure so the named tests exercise it with no pixmap/App/Wayland.
+fn bar_eyes_visible(alert_level: Option<AlertLevel>, bar_along_len: f32) -> bool {
+    alert_level == Some(AlertLevel::Ready) && bar_along_len >= BAR_EYES_MIN_LEN
+}
+
+/// Two eye centers symmetric about the bar rect's midpoint. Offset is strictly along the long
+/// axis of the bar (±HALF_GAP): horizontal for Top/Bottom bars, vertical for Left/Right.
+/// Centers are thickness-centered. The gap guarantees the midpoint pixel is untouched by eyes.
+/// Pure geometry (no drawing) for the center-symmetry and min-gap tests.
+fn bar_eye_centers(rect: &Rect, edge: BumpEdge) -> [(f32, f32); 2] {
+    let mx = rect.x + rect.w / 2.0;
+    let my = rect.y + rect.h / 2.0;
+    let g = BAR_EYE_HALF_GAP;
+    match edge {
+        BumpEdge::Left | BumpEdge::Right => [(mx, my - g), (mx, my + g)],
+        BumpEdge::Top | BumpEdge::Bottom => [(mx - g, my), (mx + g, my)],
+    }
 }
 
 pub fn torso_action_at(layout: &Layout, px: f64, py: f64) -> Option<TorsoAction> {
@@ -1869,6 +1901,24 @@ fn draw_edge_bar(
             Transform::identity(),
             None,
         );
+    }
+    // Activity eyes: small watching pair only on Ready green (F2 bracket), only when bar long
+    // enough. Paint-only — does not affect bar_rect, point_in_bar, input regions or summons.
+    // Center gap ensures the exact midpoint (sampled by edge_bar_hue_equals_ring_hue_exactly)
+    // is untouched and still matches the bar hue exactly.
+    let bar_along_len = match edge {
+        BumpEdge::Left | BumpEdge::Right => rect.h,
+        BumpEdge::Top | BumpEdge::Bottom => rect.w,
+    };
+    if bar_eyes_visible(alert_level, bar_along_len) {
+        let centers = bar_eye_centers(&rect, edge);
+        let [er, eg, eb, ea] = BAR_EYE_INK;
+        let ink = solid(Color::from_rgba8(er, eg, eb, ea));
+        for &(cx, cy) in &centers {
+            if let Some(p) = PathBuilder::from_circle(cx, cy, BAR_EYE_R) {
+                pixmap.fill_path(&p, &ink, FillRule::Winding, Transform::identity(), None);
+            }
+        }
     }
 }
 
@@ -4922,12 +4972,101 @@ mod tests {
             bar_only(BumpEdge::Left, Some(AlertLevel::Quiet), None),
             "absent tier === Quiet on the bar",
         );
-        // Route health is still the fallback when no tier is set (R2 precedence survives).
-        assert_eq!(
-            bar_only(BumpEdge::Left, None, Some("ready")),
-            bar_only(BumpEdge::Left, Some(AlertLevel::Ready), None),
-            "route health is still the fallback on the bar",
-        );
+        // Route health fallback for hue is covered by edge_bar_hue_equals_ring_hue_exactly
+        // (center pixel, which must stay unmodified). The Ready image buffers now differ by
+        // eyes (activity expression) so the prior full-buffer eq no longer holds; not asserted here.
+    }
+
+    #[test]
+    fn bar_eyes_only_on_ready_green() {
+        // Predicate gates strictly on alert_level == Ready (activity), not hue or route health.
+        let len = BAR_EYES_MIN_LEN + 10.0;
+        assert!(bar_eyes_visible(Some(AlertLevel::Ready), len));
+        assert!(!bar_eyes_visible(None, len));
+        assert!(!bar_eyes_visible(Some(AlertLevel::Quiet), len));
+        assert!(!bar_eyes_visible(Some(AlertLevel::Confirm), len));
+        assert!(!bar_eyes_visible(Some(AlertLevel::Blocked), len));
+        assert!(!bar_eyes_visible(Some(AlertLevel::Critical), len));
+    }
+
+    #[test]
+    fn bar_eyes_hidden_below_min_len() {
+        assert!(!bar_eyes_visible(Some(AlertLevel::Ready), BAR_EYES_MIN_LEN - 0.1));
+        assert!(!bar_eyes_visible(Some(AlertLevel::Ready), BAR_EYES_MIN_LEN - 1.0));
+        // exactly at min is visible
+        assert!(bar_eyes_visible(Some(AlertLevel::Ready), BAR_EYES_MIN_LEN));
+    }
+
+    #[test]
+    fn bar_eye_centers_symmetric_about_midpoint() {
+        // Use realistic dims; along clear of edges so full half-len.
+        const W: u32 = 200;
+        const H: u32 = 120;
+        for &edge in &[BumpEdge::Left, BumpEdge::Right, BumpEdge::Top, BumpEdge::Bottom] {
+            let along = bump_along_edge(edge, W, H);
+            let rect = bar_rect(edge, W, H, along);
+            let [c0, c1] = bar_eye_centers(&rect, edge);
+            let mx = rect.x + rect.w / 2.0;
+            let my = rect.y + rect.h / 2.0;
+            // symmetric about mid
+            let (dx0, dy0) = (c0.0 - mx, c0.1 - my);
+            let (dx1, dy1) = (c1.0 - mx, c1.1 - my);
+            assert!((dx0 + dx1).abs() < 0.001 && (dy0 + dy1).abs() < 0.001, "offsets must cancel");
+            // strictly along long axis only (thickness center)
+            match edge {
+                BumpEdge::Left | BumpEdge::Right => {
+                    assert!((c0.0 - mx).abs() < 0.001 && (c1.0 - mx).abs() < 0.001);
+                    assert!((c0.1 - my).abs() >= BAR_EYE_HALF_GAP - 0.001);
+                }
+                BumpEdge::Top | BumpEdge::Bottom => {
+                    assert!((c0.1 - my).abs() < 0.001 && (c1.1 - my).abs() < 0.001);
+                    assert!((c0.0 - mx).abs() >= BAR_EYE_HALF_GAP - 0.001);
+                }
+            }
+            // inside rect
+            assert!(c0.0 >= rect.x && c0.0 <= rect.x + rect.w && c0.1 >= rect.y && c0.1 <= rect.y + rect.h);
+            assert!(c1.0 >= rect.x && c1.0 <= rect.x + rect.w && c1.1 >= rect.y && c1.1 <= rect.y + rect.h);
+            // center-pixel gate: gap must leave room around mid
+            assert!(BAR_EYE_HALF_GAP - BAR_EYE_R >= 2.0);
+        }
+    }
+
+    #[test]
+    fn bar_eyes_pixels_visible_when_ready() {
+        // Fixture style matching bar_only: Ready bar must paint dark ink at eye centers
+        // (where a Quiet bar paints the bar hue at the same coords), and the exact midpoint
+        // (center pixel) must still match the Ready palette (center-pixel gate).
+        const BW: u32 = 200;
+        const BH: u32 = 120;
+        let edge = BumpEdge::Top; // horizontal bar, easy mid sampling
+        let along = bump_along_edge(edge, BW, BH);
+        let rect = bar_rect(edge, BW, BH, along);
+        // Ready render
+        let mut p_ready = Pixmap::new(BW, BH).unwrap();
+        draw_edge_bar(&mut p_ready, edge, BW, BH, along, Some(AlertLevel::Ready), None);
+        // Quiet render (for contrast at eye pos)
+        let mut p_quiet = Pixmap::new(BW, BH).unwrap();
+        draw_edge_bar(&mut p_quiet, edge, BW, BH, along, Some(AlertLevel::Quiet), None);
+        let [c0, c1] = bar_eye_centers(&rect, edge);
+        // sample at one eye center (round to pixel)
+        let (ex, ey) = (c0.0 as u32, c0.1 as u32);
+        let idx_eye = ((ey * BW + ex) * 4) as usize;
+        let d_ready = p_ready.data();
+        let d_quiet = p_quiet.data();
+        let eye_ready = [d_ready[idx_eye], d_ready[idx_eye+1], d_ready[idx_eye+2], d_ready[idx_eye+3]];
+        let eye_quiet = [d_quiet[idx_eye], d_quiet[idx_eye+1], d_quiet[idx_eye+2], d_quiet[idx_eye+3]];
+        // eye pos on Ready is dark ink (not bar hue)
+        let ink = BAR_EYE_INK;
+        assert!(rgba_close(eye_ready, ink, 2), "Ready bar eye center must be near pupil ink");
+        // same pos on Quiet is the bar's Quiet hue (not ink)
+        let quiet_bar = alert_level_ring_rgba(AlertLevel::Quiet);
+        assert!(rgba_close(eye_quiet, quiet_bar, 2) || !rgba_close(eye_quiet, ink, 2),
+            "Quiet bar at eye pos must be bar hue, not ink");
+        // center pixel of Ready bar still exactly the palette (gate preserved)
+        let center_sample = sample_bar_center_rgba(edge, Some(AlertLevel::Ready), None);
+        let demul = demultiply_rgba(center_sample);
+        assert!(rgba_close(demul, alert_level_ring_rgba(AlertLevel::Ready), 1),
+            "Ready bar center pixel must remain pure hue (eyes did not overwrite midpoint)");
     }
 
     #[test]

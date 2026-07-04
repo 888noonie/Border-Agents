@@ -1483,3 +1483,109 @@ main.rs / presence.rs byte-untouched; `draw_bump`, `draw_bump_halo`, `draw_close
 
 Builder report appended below this brief, committed separately as `docs: builder report — Slice F3b waking eyes`. **Commit but DO NOT push** — F3a+F3b ship together after the combined owner walk. **STOP after F3b** (F3a.1 bar restyle and F3c untucked figure are separately briefed).
 
+## Builder report — F3b (Grok Build, 2026-07-04)
+
+**Status:** F3b complete. **Stopped after F3b.** Not pushed.
+
+### Commit
+
+```
+0fe5dec732705772411aa767750d14edc13b88f1
+feat(body): laminal ring pivot — Slice F3b — waking eyes (activity green opens the tucked head's sleeping eyes)
+
+Sibling `draw_bump_eyes_awake` (after bump + halo) wakes the sleeping lids
+into mini-Morph eyes (white r=7 + pupil r=3) while tucked-head + alert==Ready.
+Pure `bump_eyes_awake` (alert only) + `bump_eye_centers` (screen-horizontal,
+mirrors frozen sleeping anchor). Reuses BAR_EYE_INK + draw_eyes white.
+Paint-only; draw_bump / halo / closed_eyes / eyes bodies byte-identical.
+Only existing edit: gated call in Sprite::paint tucked-head block.
+
+Exactly 4 named tests.
+
+Gates (touch first): cargo 147+0/29 (+4), release 9 warns, tsc clean, vitest 278/31.
+All existing tests unmodified.
+```
+
+### Gate outputs (verbatim, forced recompile via `touch src/*.rs`)
+
+**`cd desktop-body && cargo test`**
+
+```
+     Running unittests src/main.rs (target/debug/deps/bb_desktop_body-...)
+running 147 tests
+test result: ok. 147 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.33s
+
+     Running unittests src/bin/frame_driver.rs (...)
+running 0 tests
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/parse_action_result.rs (...)
+running 29 tests
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+```
+
+Baseline 143 (main, post lead fix); +4 named tests only (147). New tests: bump_eyes_awake_only_on_ready_green, bump_eye_centers_ride_the_sleeping_face_anchor, awake_eyes_cover_the_sleeping_lids, route_green_head_stays_asleep.
+
+**`cd desktop-body && cargo build --release`**
+
+```
+warning: `bb-desktop-body` (bin "bb-desktop-body") generated 9 warnings
+    Finished `release` profile [optimized] target(s) in 2.51s
+```
+
+9 known warnings. Nothing new.
+
+**`npx tsc --noEmit`**
+
+```
+(clean — exit 0, no output)
+```
+
+**`npx vitest run`**
+
+```
+ Test Files  31 passed (31)
+      Tests  278 passed (278)
+   Start at  22:33:29
+   Duration  1.33s
+```
+
+Unchanged.
+
+### Canary greps / verifications
+
+| Canary | Result |
+|--------|--------|
+| main.rs + presence.rs byte-untouched | PASS |
+| `draw_bump`, `draw_bump_halo`, `draw_closed_eyes`, `draw_eyes` + figure fns byte-identical | PASS (only new sibling fn + call site + pure fns + tests + consts) |
+| Only existing code edit = gated call in Sprite::paint tucked head block | PASS |
+| Zero new color values | PASS (BUMP_EYE_WHITE reuses draw_eyes; pupil reuses BAR_EYE_INK) |
+| Existing tests byte-unmodified + pass | PASS (147 includes them unchanged) |
+| Predicate on alert_level only | PASS |
+
+### Deviations / findings
+
+- Added BUMP_FACE_NUDGE const + comment for keep-in-sync (value mirrors frozen literal in draw_bump).
+- New tests use compose of draw_bump + conditional draw_bump_eyes_awake per brief.
+- In awake_eyes_cover test used approximate sampling ±2 for premul/rounding; lid coverage and pupil verified.
+- No unused var warnings introduced (the test helper code was clean).
+- All per brief: screen-horizontal always, occlusion math holds (r=7 swallows lids, inside bump), paint-only.
+
+### Conflict stops
+
+None. Followed "all existing tests unmodified" strictly; "only edit to existing = the call site" honored.
+
+### Gate deltas
+
+- cargo test main: 143 → 147 (+ exactly 4 briefed named)
+- Others unchanged.
+
+**STOP after F3b.**
+
+---
+
+## Lead audit (Fable) — pending
+
+(Owner walk for F3a+F3b pending.)
+
+

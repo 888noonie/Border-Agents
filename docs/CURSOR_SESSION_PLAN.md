@@ -1183,7 +1183,35 @@ None. All per brief.
 
 ---
 
-## Lead audit (Fable) — pending
+## Lead audit — F2 (Fable, 2026-07-04)
 
-(Owner walk pending after this report.)
+Audited `a28c278` (code) + `cd39ee0` (builder report). First slice built by **Grok Build**; full diff read line-by-line rather than spot-checked.
+
+### Diff read vs pinned design
+
+- `InFlightAction { request_id, effector }` + single-slot `action_in_flight` + `next_request_seq: u64` on `App`, law-7 doc comments present — exact per brief.
+- `format_request_id` pure fn, `"body-req-{n}"`; both `request_review` and `request_repo_edit` mint, set the slot, and pass `Some(&request_id)` through the existing presence.rs param (was `None`). New request overwrites slot (last-writer, commented).
+- `Cue::ActionResult` destructure now captures `request_id` (the `..` discard is gone); clear logic lives in pure `should_clear_in_flight` with all three pinned rules: id match → clear; no-id + effector match → clear; any decision clears when addressed; unrelated (different id AND different effector) survives.
+- `halo_alert_level(in_flight, tier)` pure precedence fn, called at the BodyView construction site — green substitutes while flying, tier passes through at rest. No decay timer anywhere.
+- 5 named tests present and passing, all against pure fns (no App/Wayland).
+
+### Canaries (independently verified)
+
+- `git diff 1b09e16..cd39ee0 --name-only` → only `main.rs` + this doc. render.rs and presence.rs **byte-untouched**.
+- Zero new color literals in added lines (regex sweep of the diff: no rgba/hex/float-triple hits).
+- Soul-stream-close finding **independently confirmed**: main.rs:778 is `if let ChannelEvent::Msg(text)` — `Closed` silently unmatched; no WS close/error arm. GB correctly reported rather than invented handling. v0.1 stranded-green limit stands as documented.
+
+### Gates (lead re-run, forced recompile via `touch src/*.rs`)
+
+- `cargo test` → **139 + 0 (main) / 29 (parse bin)** — growth is exactly the 5 named tests, all observed in output.
+- `cargo build --release` → **9 warnings** (known set, unchanged).
+- `npx tsc --noEmit` → clean. `npx vitest run` → **278 / 31**.
+
+### Audit notes (no action required)
+
+1. **Stale-id + same-effector keeps green lit** — e.g. double-press supersede: slot holds req-2, a late result echoing req-1 (same effector) does NOT clear. This is the correct exact-correlation reading: id on the wire wins over effector fallback, and the live bracket (req-2) is still genuinely open. Consistent with the brief's rules 1/2 priority order.
+2. **`request_launch` (reach effectors) outside the bracket** — per pinned scope, launchers still pass `None` and never paint green. Safe: a launcher result can never falsely clear a review/edit slot (no body-minted id to match; different effector). Candidate F-series follow-up if launcher activity should read green later.
+3. Report format matched H-series convention; conflict stops: none.
+
+**Verdict: PASS. Push held for owner walk** (brief's walk script: Edit → green while flying → amber Confirm on needs_confirmation → re-press → green relights → allow lands with tier + receipt; Review on ungranted buddy → brief green then blocked red; tuck mid-flow → bump halo speaks the same language. Note: dev gateway brackets are fast — green may be a flash; that is honest).
 

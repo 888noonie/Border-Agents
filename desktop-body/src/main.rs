@@ -693,6 +693,8 @@ fn main() {
         active_locality: None,
         active_route_health: None,
         active_alert_level: None,
+        action_in_flight: None,
+        next_request_seq: 1,
         route_flash_until: None,
         facing: Facing::Right,
         body_len: startup_settings.body_len,
@@ -1127,6 +1129,15 @@ struct FrameBounds {
     w: f64,
 }
 
+/// Body-local tracking of a single in-flight action request (law 7: presentation memory only;
+/// the soul decides and replies with the matching result). Single-slot v0.1: a new request
+/// replaces any prior. Cleared on matching result (by id or effector-fallback) or any decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InFlightAction {
+    request_id: String,
+    effector: String,
+}
+
 struct App {
     /// This body's identity — filters inbound cues and stamps outbound events.
     buddy: String,
@@ -1253,6 +1264,12 @@ struct App {
     /// body paints it, never infers it). `None` until an action_result carries one. R1 threads it
     /// to the view model; the state ring that reads it lands in a later slice.
     active_alert_level: Option<presence::AlertLevel>,
+    /// Body-local "I sent an action_request and have not yet seen the matching action_result".
+    /// Drives the green activity halo (AlertLevel::Ready) while the bracket is open.
+    /// Single in-flight slot; new request replaces. Pure presentation state (law 7).
+    action_in_flight: Option<InFlightAction>,
+    /// Monotonic counter used to mint unique request ids for action brackets.
+    next_request_seq: u64,
     /// Body-observed local→cloud transition flash deadline. This is presentation memory only,
     /// separate from soul-derived health.
     route_flash_until: Option<Instant>,
@@ -1278,6 +1295,34 @@ fn edge_to_bump(edge: presence::Edge) -> BumpEdge {
         presence::Edge::Right => BumpEdge::Right,
         presence::Edge::Bottom => BumpEdge::Bottom,
         presence::Edge::Left => BumpEdge::Left,
+    }
+}
+
+/// Formats a request id from the monotonic counter. Pure so tests exercise it with no App.
+fn format_request_id(n: u64) -> String {
+    format!("body-req-{}", n)
+}
+
+/// Precedence for the halo: in-flight activity paints Ready (green) regardless of prior tier.
+/// When not in flight, the soul-derived tier (if any) passes through. One pure fn, no side effects.
+fn halo_alert_level(in_flight: bool, tier: Option<presence::AlertLevel>) -> Option<presence::AlertLevel> {
+    if in_flight {
+        Some(presence::AlertLevel::Ready)
+    } else {
+        tier
+    }
+}
+
+/// Returns true if an incoming action_result addresses the in-flight slot per the pinned rules:
+/// 1) result carries a request_id that matches the slot, or
+/// 2) result carries no request_id and its effector matches the slot's effector.
+/// "Any decision" (allow/needs_confirmation/blocked) clears when addressed; unrelated results
+/// (different id AND different effector) leave the slot alone.
+fn should_clear_in_flight(in_flight: &InFlightAction, result_request_id: Option<&str>, result_effector: &str) -> bool {
+    if let Some(rid) = result_request_id {
+        rid == in_flight.request_id
+    } else {
+        result_effector == in_flight.effector
     }
 }
 
@@ -1615,7 +1660,7 @@ impl App {
             surface_bloom: &bloom_items,
             route_health: route_health.as_deref(),
             route_flash,
-            alert_level: self.active_alert_level,
+            alert_level: halo_alert_level(self.action_in_flight.is_some(), self.active_alert_level),
             receipt_rail: &receipt_rail_items,
             interior_rows: if onboarding_view.is_some() { &[] } else { &interior_rows },
             settings: if onboarding_view.is_some() { &[] } else { &settings_rows },
@@ -2012,7 +2057,7 @@ impl App {
             presence::Cue::Output { surface, text, caption, media_type, data_base64 } => {
                 self.apply_output(&surface, text, caption, media_type, data_base64);
             }
-            presence::Cue::ActionResult { effector, decision, receipt_id, summary, outcome, grade, alert_level, .. } => {
+            presence::Cue::ActionResult { effector, decision, receipt_id, request_id, summary, outcome, grade, alert_level } => {
                 // Present the soul's authorization outcome — the body renders it, it never decides
                 // it (law 7). The face is the fastest read: each decision wears a DISTINCT, honest
                 // expression (allow→happy, needs_confirmation→curious, blocked→alert) so a glance
@@ -2021,6 +2066,18 @@ impl App {
                 // Thread the soul-derived alert tier onto body state (law 7: painted, never
                 // inferred). R1 stores it; the state ring that reads it lands in a later slice.
                 self.active_alert_level = alert_level;
+                // Activity green bracket ends on a matching result. Three pinned rules:
+                // 1. result.request_id matches the slot's → clear (exact correlation).
+                // 2. result has no request_id → clear on effector match (soul didn't echo id).
+                // 3. Any decision (allow/needs_confirmation/blocked) ends the bracket for the
+                //    addressed request; the landed tier (e.g. Confirm amber) then paints.
+                // Unrelated results (different id AND different effector) leave the slot.
+                if let Some(ref inflight) = self.action_in_flight {
+                    let rid = request_id.as_deref();
+                    if should_clear_in_flight(inflight, rid, &effector) {
+                        self.action_in_flight = None;
+                    }
+                }
                 let executed = outcome.as_ref().map(|o| o.executed);
                 let route_label = outcome
                     .as_ref()
@@ -2896,11 +2953,17 @@ impl App {
     /// authorizes and sends back the ActionReceipt it renders (AGENTS.md law 7).
     fn request_review(&mut self) {
         let confirmed = self.pending_effector.as_deref() == Some("receipt_review");
+        let request_id = format_request_id(self.next_request_seq);
+        self.next_request_seq += 1;
+        self.action_in_flight = Some(InFlightAction {
+            request_id: request_id.clone(),
+            effector: "receipt_review".to_string(),
+        });
         self.send_to_soul(presence::action_request_json(
             &self.buddy,
             "receipt_review",
             confirmed,
-            None,
+            Some(&request_id),
         ));
         self.speech = Some(if confirmed {
             "Confirming review…".to_string()
@@ -2935,6 +2998,12 @@ impl App {
     fn request_repo_edit(&mut self) {
         const PROOF_TARGET: &str = ".border-agents/proofs/from-body.md";
         let confirmed = self.pending_effector.as_deref() == Some("repo_edit");
+        let request_id = format_request_id(self.next_request_seq);
+        self.next_request_seq += 1;
+        self.action_in_flight = Some(InFlightAction {
+            request_id: request_id.clone(),
+            effector: "repo_edit".to_string(),
+        });
         let intent = presence::ActionIntent {
             operation: "write_patch",
             target_kind: "repo_path",
@@ -2947,7 +3016,7 @@ impl App {
             "repo_edit",
             &intent,
             confirmed,
-            None,
+            Some(&request_id),
         ));
         self.speech = Some(if confirmed {
             "Confirming repo edit…".to_string()
@@ -4243,6 +4312,69 @@ mod tests {
         assert_eq!(open[0].1, "P");
         assert_eq!(open[1].1, "R");
         assert_eq!(open[2].1, "E");
+    }
+
+    #[test]
+    fn in_flight_clears_on_matching_request_id() {
+        let mut slot: Option<InFlightAction> =
+            Some(InFlightAction { request_id: "body-req-42".to_string(), effector: "repo_edit".to_string() });
+        if let Some(ref inflight) = slot {
+            if should_clear_in_flight(inflight, Some("body-req-42"), "repo_edit") {
+                slot = None;
+            }
+        }
+        assert!(slot.is_none(), "matching request_id must clear");
+    }
+
+    #[test]
+    fn in_flight_clears_on_effector_when_result_has_no_id() {
+        let mut slot: Option<InFlightAction> =
+            Some(InFlightAction { request_id: "body-req-7".to_string(), effector: "receipt_review".to_string() });
+        if let Some(ref inflight) = slot {
+            if should_clear_in_flight(inflight, None, "receipt_review") {
+                slot = None;
+            }
+        }
+        assert!(slot.is_none(), "no-id + effector match must clear");
+    }
+
+    #[test]
+    fn in_flight_survives_unrelated_result() {
+        let mut slot: Option<InFlightAction> =
+            Some(InFlightAction { request_id: "body-req-1".to_string(), effector: "receipt_review".to_string() });
+        // different id AND different effector → unrelated, must survive
+        if let Some(ref inflight) = slot {
+            if should_clear_in_flight(inflight, Some("body-req-999"), "repo_edit") {
+                slot = None;
+            }
+        }
+        assert!(slot.is_some(), "unrelated result must not clear");
+    }
+
+    #[test]
+    fn halo_prefers_activity_green_while_in_flight() {
+        use presence::AlertLevel;
+        // In flight always Ready (green), overriding whatever tier is present
+        assert_eq!(halo_alert_level(true, Some(AlertLevel::Quiet)), Some(AlertLevel::Ready));
+        assert_eq!(halo_alert_level(true, Some(AlertLevel::Confirm)), Some(AlertLevel::Ready));
+        assert_eq!(halo_alert_level(true, Some(AlertLevel::Blocked)), Some(AlertLevel::Ready));
+        assert_eq!(halo_alert_level(true, None), Some(AlertLevel::Ready));
+        // Not in flight passes the tier through (or None)
+        assert_eq!(halo_alert_level(false, Some(AlertLevel::Blocked)), Some(AlertLevel::Blocked));
+        assert_eq!(halo_alert_level(false, Some(AlertLevel::Confirm)), Some(AlertLevel::Confirm));
+        assert_eq!(halo_alert_level(false, None), None);
+    }
+
+    #[test]
+    fn request_ids_are_unique_and_nonempty() {
+        let a = format_request_id(1);
+        let b = format_request_id(2);
+        let c = format_request_id(1);
+        assert_ne!(a, b);
+        assert_eq!(a, c);
+        assert!(!a.is_empty());
+        assert!(a.starts_with("body-req-"));
+        assert!(b.starts_with("body-req-"));
     }
 }
 

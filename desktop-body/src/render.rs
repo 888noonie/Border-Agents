@@ -4972,9 +4972,39 @@ mod tests {
             bar_only(BumpEdge::Left, Some(AlertLevel::Quiet), None),
             "absent tier === Quiet on the bar",
         );
-        // Route health fallback for hue is covered by edge_bar_hue_equals_ring_hue_exactly
-        // (center pixel, which must stay unmodified). The Ready image buffers now differ by
-        // eyes (activity expression) so the prior full-buffer eq no longer holds; not asserted here.
+        // Route health "ready" still falls back to the Ready green — but the old full-buffer
+        // eq vs Some(Ready) can no longer hold: an alert-Ready bar wears activity eyes and a
+        // route-ready bar must not (F3a: eyes gate on alert_level, never route health).
+        // Assert both halves directly instead. (a) hue fallback survives at the center pixel:
+        let center = demultiply_rgba(sample_bar_center_rgba(BumpEdge::Left, None, Some("ready")));
+        assert!(
+            rgba_close(center, alert_level_ring_rgba(AlertLevel::Ready), 1),
+            "route 'ready' with no tier must still fall back to the Ready green hue",
+        );
+        // (b) route green summons NO eyes — the eye position on a route-ready bar stays pure
+        // bar hue, and the two greens now read as different bars (only activity wears eyes):
+        const BW: u32 = 200;
+        const BH: u32 = 120;
+        let along = bump_along_edge(BumpEdge::Left, BW, BH);
+        let rect = bar_rect(BumpEdge::Left, BW, BH, along);
+        let [c0, _] = bar_eye_centers(&rect, BumpEdge::Left);
+        let route_ready = bar_only(BumpEdge::Left, None, Some("ready"));
+        let idx = ((c0.1 as u32 * BW + c0.0 as u32) * 4) as usize;
+        let eye_px = demultiply_rgba([
+            route_ready[idx],
+            route_ready[idx + 1],
+            route_ready[idx + 2],
+            route_ready[idx + 3],
+        ]);
+        assert!(
+            rgba_close(eye_px, alert_level_ring_rgba(AlertLevel::Ready), 1),
+            "route-health green must not summon eyes — eye position stays pure bar hue",
+        );
+        assert_ne!(
+            route_ready,
+            bar_only(BumpEdge::Left, Some(AlertLevel::Ready), None),
+            "route green and activity green must read differently — only activity wears eyes",
+        );
     }
 
     #[test]
@@ -5047,7 +5077,7 @@ mod tests {
         // Quiet render (for contrast at eye pos)
         let mut p_quiet = Pixmap::new(BW, BH).unwrap();
         draw_edge_bar(&mut p_quiet, edge, BW, BH, along, Some(AlertLevel::Quiet), None);
-        let [c0, c1] = bar_eye_centers(&rect, edge);
+        let [c0, _c1] = bar_eye_centers(&rect, edge);
         // sample at one eye center (round to pixel)
         let (ex, ey) = (c0.0 as u32, c0.1 as u32);
         let idx_eye = ((ey * BW + ex) * 4) as usize;

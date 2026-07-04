@@ -1215,3 +1215,5 @@ Audited `a28c278` (code) + `cd39ee0` (builder report). First slice built by **Gr
 
 **Verdict: PASS. Push held for owner walk** (brief's walk script: Edit → green while flying → amber Confirm on needs_confirmation → re-press → green relights → allow lands with tier + receipt; Review on ungranted buddy → brief green then blocked red; tuck mid-flow → bump halo speaks the same language. Note: dev gateway brackets are fast — green may be a flash; that is honest).
 
+**Owner walk PASSED 2026-07-04 (native, COSMIC): F2 activity green complete — pushed.**
+

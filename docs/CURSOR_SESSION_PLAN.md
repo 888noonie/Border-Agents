@@ -1625,6 +1625,57 @@ None. Followed "all existing tests unmodified" strictly; "only edit to existing 
 
 On PASS: push all 7 local commits, then brief F3a.1 (bar restyle in the head's eye language).
 
-(Combined owner walk pending.)
+### Combined owner walk — 2026-07-04: FAILED, direction amendment ratified
+
+Observed: green did NOT clear (head halo green + eyes open + bar green persisted). Owner also identified the underlying color-logic break: the bar paints the alert/route hue wholesale, erasing the buddy's chosen instance color — and route-health "ready" green at rest is indistinguishable from stuck activity green. Diagnosis: eyes-open means the body still held `alert_level == Some(Ready)` (in-flight slot not cleared, or soul-emitted Ready tier — F2's substitution makes them indistinguishable at render time); route fallback green compounds the confusion after clears.
+
+**OWNER DIRECTION AMENDMENT (2026-07-04, supersedes R4-for-the-clay-bar):** the bar always wears the instance color; traffic-light hue moves to the bar TIPS (one fifth each end) upon activation; eyes never on the bar; head+bar dock shows eyes on the head only. F3a's bar eyes are deleted pre-push (nothing in the F-series has shipped); F3a.1 is cancelled by supersession.
+
+---
+
+## Slice F4 — identity bar + traffic-light tips (activity gets its own wire; route health leaves the clay)
+
+**Context.** All F-series commits are LOCAL ONLY (`6186eef..aac0cbe`) — so F3a/F3b/F2 code and tests are freely amendable before anything ships. Scope: **main.rs + render.rs**. presence.rs byte-untouched.
+
+### Design pins
+
+1. **`BodyView.activity: bool`** — new field, `= self.action_in_flight.is_some()` at the BodyView build site. `alert_level` goes back to the RAW soul tier (`self.active_alert_level`); F2's `halo_alert_level` substitution fn is RETIRED (delete it and its tests — accounting below).
+2. **Pure fn `presented_alert_level(activity: bool, tier: Option<AlertLevel>) -> Option<AlertLevel>`** in render.rs = `if activity { Some(AlertLevel::Ready) } else { tier }`. The ONE place activity converts to green. Used by: bar tips, bump halo, and the untucked figure chrome (`draw_route_boundary_chrome` call site) — precedence unchanged from F2 (activity green wins while flying).
+3. **Bar body = instance color, always.** `draw_edge_bar` paints `view.color` at `BAR_BODY_ALPHA: u8 = 180` (named constant; 180 is the alpha the old bar hues already used — zero new color values). Never tier hue, never route hue.
+4. **Traffic-light tips**: pure fn `bar_tip_rects(rect: &Rect, edge: BumpEdge) -> [Rect; 2]` — two end segments of the bar rect along its long axis, each `BAR_TIP_FRAC: f32 = 0.2` of the along-length. When `presented_alert_level(...)` is `Some(level)` and `level != Quiet`: fill both tips with `alert_level_ring_rgba(level)`. Quiet or None: NO tips — the resting bar is pure identity. No minimum length; tips scale with H3.1-shrunk bars.
+5. **Route health no longer paints clay chrome**: `draw_edge_bar` and `draw_bump_halo` drop their `route_health` parameters/fallback (halo resolves `presented_alert_level` → `alert_level_ring_rgba`, Quiet hue when None). The standalone ring skin (`draw_ring`, dev track) is UNTOUCHED — R-series ring tests stay byte-identical. Route state remains visible in the interior list.
+6. **Bar eyes DELETED** (the colon is retired): remove F3a's `BAR_EYES_MIN_LEN`, `BAR_EYE_R`, `BAR_EYE_HALF_GAP`, `bar_eyes_visible`, `bar_eye_centers`, the eye block in `draw_edge_bar`, and F3a's 4 named tests. Keep `BAR_EYE_INK` ONLY if the bump pupil still references it — otherwise rename the shared ink constant to `EYE_INK` (same value `[28,22,18,255]`, still the draw_eyes reuse).
+7. **Eyes gate on activity, faces only**: `bump_eyes_awake` signature becomes `(activity: bool) -> bool` (trivially `activity`), call site `if bump_eyes_awake(view.activity)`. A soul-emitted Ready tier greens the tips/halo but NEVER opens eyes. F3b's geometry/occlusion fns and `draw_bump_eyes_awake` unchanged. Both dock → eyes on the head only (automatic: bar has none); tips still paint in Both mode.
+8. **Stranded-green diagnostic** (main.rs): when a `Cue::ActionResult` arrives and does NOT clear the held slot, `eprintln!` the held request_id+effector vs the arriving request_id+effector. No behavior change — visibility only.
+
+### Ratified-test rewrite (enforcement of the amendment — logged, not sneaked)
+
+The R4-era `edge_bar_*` tests are rewritten to the new law; the F2/F3a/F3b tests are ours (unpushed) to amend. **The builder report MUST include a per-test accounting table: deleted / amended (old→new name) / added.** Expected shape: F3a's 4 deleted; F2's `halo_alert_level` tests replaced by `presented_alert_level` tests; `edge_bar_hue_equals_ring_hue_exactly` → bar-body-identity law; `edge_bar_precedence_alert_over_route` → tips-precedence; `edge_bar_never_vanishes_absent_rests_at_quiet` → resting bar shows identity color, no tips, still never blank; `bump_halo_*` route-fallback asserts amended (route no longer falls back); F3b's predicate test amended to the activity signature.
+
+### New named tests (exactly these 6)
+
+- `bar_body_wears_instance_color_for_all_tiers` — center pixel == view.color at BAR_BODY_ALPHA for every tier incl. Ready, all 4 edges.
+- `bar_tips_carry_the_tier_hue` — Confirm/Blocked/Critical: tip-center pixels == palette hue, bar center == instance color.
+- `bar_rests_clean_no_tips_on_quiet` — Quiet and None: whole bar == instance color, tip zones included.
+- `route_health_paints_neither_bar_nor_halo` — route "ready" with no tier + no activity: bar == resting identity bar, halo == Quiet halo.
+- `activity_green_tips_and_eyes_without_soul_tier` — activity=true, tier=None: green tips, awake eyes; result-side: activity=false → both gone.
+- `soul_ready_tier_greens_tips_but_never_opens_eyes` — activity=false, tier=Some(Ready): green tips, eyes CLOSED.
+
+### Gates (forced recompile first: `touch desktop-body/src/*.rs`)
+
+- `cargo test` → current baseline **147+0 / 29**; expected ≈149 after (−4 F3a, +6 new, rewrites in place) — exact count with the accounting table.
+- `cargo build --release` → 9 known warnings, nothing new. `npx tsc --noEmit` clean. `npx vitest run` 278/31.
+
+### Canaries
+
+presence.rs byte-untouched; `draw_bump`, `draw_closed_eyes`, `draw_eyes`, `draw_ring`, all figure fns byte-identical; zero new color values (BAR_BODY_ALPHA=180 and all hues are existing values); `bar_rect`/`point_in_bar`/summon/hit/input geometry untouched.
+
+### Commit
+
+`feat(body): laminal ring pivot — Slice F4 — identity bar + traffic-light tips (activity gets its own wire; route health leaves the clay)`
+
+Builder report below this brief, committed separately as `docs: builder report — Slice F4 identity bar + tips`. **Commit but DO NOT push. STOP after F4.**
+
+(F4 builder report pending.)
 
 

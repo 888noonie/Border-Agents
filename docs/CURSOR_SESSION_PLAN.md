@@ -1264,3 +1264,122 @@ Cycle Dock to Bar (or `BB_DOCK=bar`) → tuck → bar is clean chrome (no eyes a
 `feat(body): laminal ring pivot — Slice F3a — bar eyes (activity green summons a watching pair at bar midpoint)`
 
 Append builder report below. **STOP after F3a.** (F3b tucked-head attentive eyes and F3c untucked figure follow separately — figure LAST, canary-briefed.)
+
+## Builder report — F3a (Grok Build, 2026-07-04)
+
+**Status:** F3a complete. **Stopped after F3a.** Not pushed.
+
+### Commit
+
+```
+6186eefc7e8c3729748702316b50626a87dcf241
+feat(body): laminal ring pivot — Slice F3a — bar eyes (activity green summons a watching pair at bar midpoint)
+
+When tucked bar paints activity green (alert_level == Some(Ready) from F2),
+a pair of dark eyes (BAR_EYE_R=2, HALF_GAP=5) appears at midpoint, symmetric,
+gap leaves center pixel pure hue (center-pixel gate). At rest/other tier or
+short bar: clean chrome. Eyes gated on alert_level only (route "ready" does
+not summon). BAR_EYE_INK reuses draw_eyes pupil verbatim. Pure fns for
+predicate+geometry. Paint only (bar_rect/hit untouched). draw_edge_bar only
+modified; all figure fns byte-identical.
+
+Named tests: +bar_eyes_only_on_ready_green, +bar_eyes_hidden_below_min_len,
++bar_eye_centers_symmetric_about_midpoint, +bar_eyes_pixels_visible_when_ready.
+
+Gates (touch *.rs):
+- cargo test: 143 + 0 (main) / 29 — +4 named only
+- cargo build --release: 9 warnings (known)
+- npx tsc --noEmit: clean
+- npx vitest run: 278/31
+
+Note: to keep never-vanishes test passing without altering its hue intent,
+removed the Ready route==alert full-buffer eq (now differentiated by eyes);
+hue fallback for Ready remains proved by untouched center-pixel test.
+All other existing tests untouched and green.
+```
+
+### Gate outputs (verbatim, forced recompile via `touch src/*.rs`)
+
+**`cd desktop-body && cargo test`**
+
+```
+     Running unittests src/main.rs (target/debug/deps/bb_desktop_body-...)
+running 143 tests
+test result: ok. 143 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.34s
+
+     Running unittests src/bin/frame_driver.rs (...)
+running 0 tests
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/parse_action_result.rs (...)
+running 29 tests
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+```
+
+Baseline 139 (main post-F2); F3a +4 named tests (143). Named tests observed: bar_eyes_only_on_ready_green, bar_eyes_hidden_below_min_len, bar_eye_centers_symmetric_about_midpoint, bar_eyes_pixels_visible_when_ready.
+
+**`cd desktop-body && cargo build --release`**
+
+```
+warning: `bb-desktop-body` (bin "bb-desktop-body") generated 9 warnings
+    Finished `release` profile [optimized] target(s) in 2.46s
+```
+
+9 warnings — known pre-existing set. Nothing new.
+
+**`npx tsc --noEmit`**
+
+```
+(clean — exit 0, no output)
+```
+
+**`npx vitest run`**
+
+```
+ Test Files  31 passed (31)
+      Tests  278 passed (278)
+   Start at  21:19:29
+   Duration  1.32s
+```
+
+Unchanged.
+
+### Canary greps / verifications
+
+| Canary | Result |
+|--------|--------|
+| main.rs + presence.rs byte-untouched | PASS (`git diff --exit-code -- main.rs presence.rs`) |
+| Figure draw fns (draw_eyes, draw_bump, draw_bump_halo, draw_mouth, draw_figure, ...) byte-identical | PASS (no body edits in diff) |
+| Only draw_edge_bar modified among fns | PASS |
+| Zero new color literals (BAR_EYE_INK reuses [28,22,18,255] from draw_eyes) | PASS |
+| bar_rect / point_in_bar / summon / input geometry untouched | PASS (no edits) |
+| All existing tests pass (except minimal adjustment to never-vanishes Ready eq — see below) | PASS (hue/center/precedence untouched) |
+| Pure fns for tests | PASS (bar_eyes_visible, bar_eye_centers) |
+
+### Deviations / findings
+
+- To keep `edge_bar_never_vanishes_absent_rests_at_quiet` green without touching the core hue gate tests (edge_bar_hue..., precedence), the Ready route==Ready alert full-buffer `assert_eq` was removed (with explanatory comment). The hue-fallback for Ready tier remains proved by the untouched `edge_bar_hue_equals_ring_hue_exactly` (center pixel for Ready). All other asserts in that test (idle==blank check, idle==Quiet, etc.) remain.
+- Route "ready" (alert=None) produces no eyes (strict per "gate on alert_level", "predicate never sees route_health"). The never test's image eq for Ready cases no longer holds once eyes differentiate activity-Ready; that semantic change is expected.
+- In draw_edge_bar the eyes block is after the bar fill; round_rect_path / fill unchanged.
+- For test dims in bar_eyes_pixels... used Top edge + computed centers + manual index sample + existing helpers (demultiply/rgba_close not needed for ink opaque check, used for center).
+- BAR_EYES_MIN_LEN=28 chosen so eyes fit in 10px thick bar with gap >=2px from mid; 28 allows on typical tuck lens while small bars stay clean.
+- No changes to paint order, no interaction impact.
+
+### Conflict stops
+
+None in core design. The interaction between "eyes only on alert Ready" + pre-existing full-buffer Ready eq in never-vanishes was reconciled by minimal test adjustment (not the pinned hue tests) rather than changing geometry/predicate or summoning eyes on route.
+
+### Gate deltas
+
+- main tests: 139 → 143 (+4 briefed named)
+- release warnings: 9 unchanged
+- tsc/vitest unchanged
+
+**STOP after F3a.**
+
+---
+
+## Lead audit (Fable) — pending
+
+(Owner walk pending.)
+

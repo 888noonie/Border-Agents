@@ -750,6 +750,30 @@ pub fn point_in_bump(edge: BumpEdge, w: u32, h: u32, px: f64, py: f64) -> bool {
     dx * dx + dy * dy <= BUMP_R * BUMP_R
 }
 
+/// Predicate for waking the tucked head's eyes: ONLY while the F2 activity bracket
+/// (alert_level == Ready). Route health "ready" must not wake them (predicate takes
+/// alert_level only).
+fn bump_eyes_awake(alert_level: Option<AlertLevel>) -> bool {
+    alert_level == Some(AlertLevel::Ready)
+}
+
+/// The white-eye centers for the awake tucked head. Mirrors the sleeping-face anchor
+/// computed inside the frozen `draw_bump` (nudge + -2.0 y) then offsets ±BUMP_EYE_DX
+/// horizontally (always screen-horizontal pair so the face reads correctly on every edge).
+/// +1.5 y shifts the whites down a hair to sit nicely under the lid arcs.
+fn bump_eye_centers(edge: BumpEdge, w: u32, h: u32) -> [(f32, f32); 2] {
+    let (cx, cy) = bump_center(edge, w, h);
+    let (dx, dy) = match edge {
+        BumpEdge::Left => (BUMP_R * BUMP_FACE_NUDGE, 0.0),
+        BumpEdge::Right => (-BUMP_R * BUMP_FACE_NUDGE, 0.0),
+        BumpEdge::Top => (0.0, BUMP_R * BUMP_FACE_NUDGE),
+        BumpEdge::Bottom => (0.0, -BUMP_R * BUMP_FACE_NUDGE),
+    };
+    let ax = cx + dx;
+    let ay = cy + dy - 2.0;
+    [(ax - BUMP_EYE_DX, ay + 1.5), (ax + BUMP_EYE_DX, ay + 1.5)]
+}
+
 /// Along-edge bar length: symmetric shrink near corners, capped at half the edge extent.
 fn bar_along_length(extent: f32, along: f32, max_len: f32) -> f32 {
     (2.0 * along.min(extent - along))
@@ -886,6 +910,16 @@ pub const BUMP_R: f32 = 34.0;
 /// H2 — stroked alert halo around the tucked bump (outside the face, never covering eyes).
 const BUMP_HALO_OUTSET: f32 = 4.0;
 const BUMP_HALO_STROKE: f32 = 3.0;
+
+/// Mirror of the nudge used inside the frozen `draw_bump` for the sleeping face anchor.
+/// Value must stay identical; the comment is the sync point.
+const BUMP_FACE_NUDGE: f32 = 0.45;
+/// Horizontal spacing for awake eyes on the tucked head (matches draw_closed_eyes ±8).
+const BUMP_EYE_DX: f32 = 8.0;
+const BUMP_EYE_WHITE_R: f32 = 7.0;
+const BUMP_EYE_PUPIL_R: f32 = 3.0;
+/// Reuses the figure's eye white verbatim (named + pointer).
+const BUMP_EYE_WHITE: [u8; 4] = [250, 250, 248, 255]; // draw_eyes white
 
 // --- tucked "peek" extras (bubble + input drawn beside the bump) -------------------
 //
@@ -1465,14 +1499,17 @@ impl Sprite {
         // and an input field) beside it when the user has cycled the tucked view open.
         if let Some(edge) = view.tucked {
             // R4: under Skin::Ring the tucked buddy paints the edge light bar (hue mirrors the
-            // ring); under Skin::Clay the sleeping bump stays byte-identical. draw_bump and
-            // draw_closed_eyes bodies are untouched — only the call site gains the skin gate,
-            // the same move as R3's eyes/mouth gating.
+            // ring); under Skin::Clay the sleeping bump stays byte-identical. draw_bump,
+            // draw_bump_halo and draw_closed_eyes bodies are untouched — only the call site
+            // gains the awake-eyes gate (F3b), the same move as H2/R3.
             let dock = effective_dock_show(view.skin, view.dock_show);
             let along = bump_along_edge(edge, w, h);
             if shows_tucked_head(dock) {
                 draw_bump(&mut pixmap, edge, w, h, view.color);
                 draw_bump_halo(&mut pixmap, edge, w, h, view.alert_level, view.route_health);
+                if bump_eyes_awake(view.alert_level) {
+                    draw_bump_eyes_awake(&mut pixmap, edge, w, h);
+                }
             }
             if shows_tucked_bar(dock) {
                 draw_edge_bar(
@@ -2882,6 +2919,23 @@ fn draw_bump_halo(
             Transform::identity(),
             None,
         );
+    }
+}
+
+/// F3b sibling to `draw_bump` (and `draw_bump_halo`). Draws the awake Morph eyes (white + pupil)
+/// when the tucked head is visible and activity green is on. Bodies of `draw_bump`,
+/// `draw_bump_halo`, `draw_closed_eyes` and `draw_eyes` remain byte-identical.
+fn draw_bump_eyes_awake(pixmap: &mut Pixmap, edge: BumpEdge, w: u32, h: u32) {
+    let centers = bump_eye_centers(edge, w, h);
+    let white = solid(Color::from_rgba8(BUMP_EYE_WHITE[0], BUMP_EYE_WHITE[1], BUMP_EYE_WHITE[2], BUMP_EYE_WHITE[3]));
+    let pupil = solid(Color::from_rgba8(BAR_EYE_INK[0], BAR_EYE_INK[1], BAR_EYE_INK[2], BAR_EYE_INK[3]));
+    for &(ex, ey) in &centers {
+        if let Some(eye) = PathBuilder::from_circle(ex, ey, BUMP_EYE_WHITE_R) {
+            pixmap.fill_path(&eye, &white, FillRule::Winding, Transform::identity(), None);
+        }
+        if let Some(p) = PathBuilder::from_circle(ex, ey, BUMP_EYE_PUPIL_R) {
+            pixmap.fill_path(&p, &pupil, FillRule::Winding, Transform::identity(), None);
+        }
     }
 }
 
@@ -5406,6 +5460,102 @@ mod tests {
             bump_halo_only(BumpEdge::Left, Some(AlertLevel::Ready), None),
             "route health is still the fallback on the bump halo",
         );
+    }
+
+    #[test]
+    fn bump_eyes_awake_only_on_ready_green() {
+        assert!(bump_eyes_awake(Some(AlertLevel::Ready)));
+        assert!(!bump_eyes_awake(None));
+        assert!(!bump_eyes_awake(Some(AlertLevel::Quiet)));
+        assert!(!bump_eyes_awake(Some(AlertLevel::Confirm)));
+        assert!(!bump_eyes_awake(Some(AlertLevel::Blocked)));
+        assert!(!bump_eyes_awake(Some(AlertLevel::Critical)));
+    }
+
+    #[test]
+    fn bump_eye_centers_ride_the_sleeping_face_anchor() {
+        const BW: u32 = 200;
+        const BH: u32 = 120;
+        for &edge in &[BumpEdge::Left, BumpEdge::Right, BumpEdge::Top, BumpEdge::Bottom] {
+            let centers = bump_eye_centers(edge, BW, BH);
+            let (cx, cy) = bump_center(edge, BW, BH);
+            // compute same anchor as draw_bump / draw_closed_eyes
+            let (dx, dy) = match edge {
+                BumpEdge::Left => (BUMP_R * BUMP_FACE_NUDGE, 0.0),
+                BumpEdge::Right => (-BUMP_R * BUMP_FACE_NUDGE, 0.0),
+                BumpEdge::Top => (0.0, BUMP_R * BUMP_FACE_NUDGE),
+                BumpEdge::Bottom => (0.0, -BUMP_R * BUMP_FACE_NUDGE),
+            };
+            let ax = cx + dx;
+            let ay = cy + dy - 2.0;
+            // pair is screen-horizontal (same y)
+            assert!((centers[0].1 - centers[1].1).abs() < 0.001);
+            // x positions at anchor ± DX
+            let left_x = ax - BUMP_EYE_DX;
+            let right_x = ax + BUMP_EYE_DX;
+            assert!((centers[0].0 - left_x).abs() < 0.001 || (centers[0].0 - right_x).abs() < 0.001);
+            assert!((centers[1].0 - left_x).abs() < 0.001 || (centers[1].0 - right_x).abs() < 0.001);
+            // each white fully inside bump
+            for &(ex, ey) in &centers {
+                let dist = ((ex - cx) * (ex - cx) + (ey - cy) * (ey - cy)).sqrt();
+                assert!(dist + BUMP_EYE_WHITE_R <= BUMP_R + 0.001);
+            }
+        }
+    }
+
+    #[test]
+    fn awake_eyes_cover_the_sleeping_lids() {
+        const BW: u32 = 200;
+        const BH: u32 = 120;
+        let edge = BumpEdge::Left;
+        let mut pix = Pixmap::new(BW, BH).unwrap();
+        draw_bump(&mut pix, edge, BW, BH, [180, 100, 60]);
+        draw_bump_eyes_awake(&mut pix, edge, BW, BH);
+        // compute anchor
+        let (cx, cy) = bump_center(edge, BW, BH);
+        let (dx, _dy) = (BUMP_R * BUMP_FACE_NUDGE, 0.0);
+        let ax = cx + dx;
+        let ay = cy - 2.0;
+        // sample near left lid arc endpoint (should be overwritten by white)
+        let sx = (ax - BUMP_EYE_DX - 5.0) as u32;
+        let sy = ay as u32;
+        let idx = ((sy * BW + sx) * 4) as usize;
+        let d = pix.data();
+        let sampled = [d[idx], d[idx + 1], d[idx + 2], d[idx + 3]];
+        // near white (lid gone)
+        let white = BUMP_EYE_WHITE;
+        assert!((sampled[0] as i32 - white[0] as i32).abs() <= 2);
+        // sample a white center, should have pupil ink
+        let centers = bump_eye_centers(edge, BW, BH);
+        let (ex, ey) = centers[0];
+        let idx2 = (((ey as u32) * BW + (ex as u32)) * 4) as usize;
+        let eye_center = [d[idx2], d[idx2+1], d[idx2+2], d[idx2+3]];
+        assert!((eye_center[0] as i32 - BAR_EYE_INK[0] as i32).abs() <= 2);
+    }
+
+    #[test]
+    fn route_green_head_stays_asleep() {
+        const BW: u32 = 200;
+        const BH: u32 = 120;
+        let edge = BumpEdge::Left;
+        // plain sleeping (no eyes)
+        let mut plain = Pixmap::new(BW, BH).unwrap();
+        draw_bump(&mut plain, edge, BW, BH, [180, 100, 60]);
+        let plain_buf = plain.data().to_vec();
+        // simulate gate with alert=None (route ignored for eyes)
+        let mut route = Pixmap::new(BW, BH).unwrap();
+        draw_bump(&mut route, edge, BW, BH, [180, 100, 60]);
+        if bump_eyes_awake(None) {
+            draw_bump_eyes_awake(&mut route, edge, BW, BH);
+        }
+        assert_eq!(route.data().to_vec(), plain_buf, "route green must leave head asleep");
+        // activity does wake
+        let mut active = Pixmap::new(BW, BH).unwrap();
+        draw_bump(&mut active, edge, BW, BH, [180, 100, 60]);
+        if bump_eyes_awake(Some(AlertLevel::Ready)) {
+            draw_bump_eyes_awake(&mut active, edge, BW, BH);
+        }
+        assert_ne!(active.data().to_vec(), plain_buf, "activity green must wake the head");
     }
 
     #[test]

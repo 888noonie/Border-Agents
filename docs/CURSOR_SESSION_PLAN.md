@@ -1801,7 +1801,44 @@ None. All per brief and amendment (tests rewritten as ratified).
 
 ---
 
-## Lead audit (Fable) — pending
+## Lead audit (Fable, 2026-07-04) — Slice F4
+
+**Verdict: PASS after two lead fixes** (`7e0cd98`). The core slice is faithful — bar identity, tips geometry, activity wire, bar-eye deletion, halo route-drop, and the diagnostic are all per brief — but the audit found one unimplemented design pin and one masked render defect. Both fixed by the lead, all gates re-run green.
+
+### Finding 1 — brief pin 2 unimplemented: the untucked clay call site (FIXED)
+
+`draw_body_content`'s `Skin::Clay` arm still fed **raw** `view.alert_level` + `view.route_health` into `draw_figure`. Consequences: (a) an **untucked** figure showed no activity green at all — F2's original owner-walked behavior silently regressed, because main.rs no longer substitutes and the call site wasn't given `presented_alert_level`; (b) route-health "ready" still painted a green boundary ring on the untucked clay figure at rest — the exact stuck-green class the amendment kills ("route health leaves the clay"; the boundary chrome is clay chrome). Lead fix: call site now passes `presented_alert_level(view.activity, view.alert_level)` and `None` for route. `draw_figure` and `draw_route_boundary_chrome` themselves stay **byte-identical** (canary-safe — the fix is at the call site, exactly the sibling-call discipline).
+
+### Finding 2 — two named tests never asserted their tips half; the asserts exposed a real defect (FIXED)
+
+`activity_green_tips_and_eyes_without_soul_tier` and `soul_ready_tier_greens_tips_but_never_opens_eyes` computed their bar renders into `buf_act`/`buf` and never asserted on them (visible as unused-variable warnings in the test build). When the lead restored the missing green-tip assertions, they **failed**: tips were SourceOver-composited over the bar body, so a tip pixel was a palette-over-clay blend, not the palette hue — Ready's blended alpha drifted 53 points from palette; Composer's own `bar_tips_carry_the_tier_hue` passed only because its tol=40 absorbed the blend on the higher-alpha tiers. The ratified law is "tip pixel == palette hue" and the whole point of the traffic light is that the hue reads identically on every instance color. Lead fix: tips fill with `BlendMode::Source` (a blend mode, not a color — zero-new-colors canary holds), tolerances tightened 40→2, and both tests now assert tips + eyes + the result-side clear.
+
+### Lead tidy (same commit)
+
+- `route_health_paints_neither_bar_nor_halo` was tautological on its halo half (the test helper discarded route before it reached `draw_bump_halo`). It now guards the **full `Sprite::paint` clay path**: route "ready" vs `None` (no tier, no activity) ⇒ byte-identical canvases — a live regression guard on the exact walk failure.
+- Halo test helpers drop their dead `route` params (`bump_halo_only(edge, activity, alert)`); the now-vacuous `bump_halo_precedence_alert_over_route` becomes `bump_halo_precedence_activity_over_tier` (in-flight+Confirm ⇒ exactly the Ready halo); duplicate `idle` binding deduped; stale `bump_eyes_awake` doc comment updated to the activity wire.
+
+### Accounting adjudication
+
+Composer's per-test table verified against the diff, one correction: `edge_bar_reads_all_five_states_distinctly` (not `edge_bar_hue_equals_ring_hue_exactly`) became `bar_body_wears_instance_color_for_all_tiers`; `edge_bar_hue_equals_ring_hue_exactly` became `bar_tips_carry_the_tier_hue`. Count math confirmed: 147 − 4 (F3a eyes) − 1 (`edge_bar_precedence_alert_over_route`, folded into the route test) − 1 (`edge_bar_never_vanishes…`, folded into `bar_rests_clean…` + the route test) + 3 net-new = **145**. The brief's "≈149" estimate was the lead's own arithmetic error (it double-counted rewrites-in-place as adds) — 145 is exact and correct.
+
+### Gates (independently re-run at `7e0cd98`, forced recompile)
+
+- `cargo test`: **145 + 0 / 29** — all green.
+- `cargo build --release`: **9 known warnings**, nothing new (test-build warnings back to the pre-existing cx/cy/ay trio; Composer's 4 new ones removed by the fixes).
+- `npx tsc --noEmit`: clean. `npx vitest run`: **278 / 31**.
+
+### Canaries (vs origin `ccf80ac`)
+
+presence.rs untouched. `draw_bump`, `draw_closed_eyes`, `draw_eyes`, `draw_ring`, `draw_figure`, `draw_route_boundary_chrome`, `stroke_figure_boundary`, `draw_clay_texture`, `bar_rect`, `point_in_bar` all **byte-identical** (md5 vs ccf80ac). Zero new color values. Summon/hit/input geometry untouched.
+
+### Owner walk script (combined F-series — this is the gate before ANY push)
+
+1. **Rest**: untucked figure = clay only, **no ring** (even with a healthy route). Tucked = bar in the buddy's own color, **no tips**; head asleep, Quiet halo.
+2. **Confirm**: trigger a gated action → **amber tips** on the identity bar (bar body stays your color), amber halo on the tucked head, eyes stay CLOSED.
+3. **In flight**: approve → **green tips + open eyes** (tucked) / green boundary ring (untucked). Bar body never changes color.
+4. **Result lands**: tips vanish, eyes close, ring gone — back to rest. If green ever sticks, check the terminal: the new `[bb-desktop-body]` eprintln will name the held vs arriving request_id/effector.
+5. **Both dock**: eyes on the head only; bar shows tips only.
 
 (Owner walk pending.)
 

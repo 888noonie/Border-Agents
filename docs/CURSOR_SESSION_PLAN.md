@@ -1068,3 +1068,122 @@ Launch soul + body → tap **Edit** (repo_edit proof flow) → halo goes GREEN w
 `feat(body): laminal ring pivot — Slice F2 — activity green (in-flight action_request paints Ready-green halo, request-id bracket)`
 
 Append builder report below. **STOP after F2.** (F3 expression pass — bar eyes first, only-while-green, `BAR_EYES_MIN_LEN` named constant + pure-geometry test; then tucked-head attentive eyes; untucked figure LAST, canary-briefed — brief follows F2's walk.)
+
+## Builder report — F2 (Grok Build, 2026-07-04)
+
+**Status:** F2 complete. **Stopped after F2.** Not pushed.
+
+### Commit
+
+```
+a28c2789f002182b48c2b72a07e0ef33107b9caf
+feat(body): laminal ring pivot — Slice F2 — activity green (in-flight action_request paints Ready-green halo, request-id bracket)
+
+Green halo = activity-in-progress. Body mints request id on action_request for
+receipt_review and repo_edit, tracks single InFlightAction slot (request_id +
+effector). halo_alert_level pure precedence fn yields Ready while in flight.
+Three pinned clear rules on action_result: match request_id, or (no id and
+effector match), or any decision ends the bracket. No decay timer.
+
+Scope: main.rs only. render.rs + presence.rs byte-untouched. Zero new color
+literals (reuses AlertLevel::Ready via existing table). 5 named pure-fn tests.
+
+Gates (after touch src/*.rs):
+- cargo test: 139 + 0 (main) / 29 (parse) — +5 named
+- cargo build --release: 9 warnings (known set)
+- npx tsc --noEmit: clean
+- npx vitest run: 278 / 31 unchanged
+
+No soul-stream-close path existed in main.rs for the presence channel (only
+Msg handled; Closed ignored; Layer closed is Wayland surface). Per brief,
+no handling invented.
+```
+
+### Gate outputs (verbatim, forced recompile via `touch src/*.rs`)
+
+**`cd desktop-body && cargo test`**
+
+```
+     Running unittests src/main.rs (target/debug/deps/bb_desktop_body-...)
+running 139 tests
+test result: ok. 139 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.37s
+
+     Running unittests src/bin/frame_driver.rs (...)
+running 0 tests
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/parse_action_result.rs (...)
+running 29 tests
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+```
+
+Baseline was 134 passed (main post-H5); F2 landed +5 named tests (139). Named tests present: `in_flight_clears_on_matching_request_id`, `in_flight_clears_on_effector_when_result_has_no_id`, `in_flight_survives_unrelated_result`, `halo_prefers_activity_green_while_in_flight`, `request_ids_are_unique_and_nonempty`.
+
+**`cd desktop-body && cargo build --release`**
+
+```
+warning: `bb-desktop-body` (bin "bb-desktop-body") generated 9 warnings
+    Finished `release` profile [optimized] target(s) in 2.69s
+```
+
+9 warnings — known set (frame dead code + pads + unused in render/presence). Nothing new.
+
+**`npx tsc --noEmit`**
+
+```
+(clean — exit 0, no output)
+```
+
+**`npx vitest run`**
+
+```
+ Test Files  31 passed (31)
+      Tests  278 passed (278)
+   Start at  20:45:58
+   Duration  1.47s
+```
+
+Unchanged from baseline (278 / 31 files).
+
+### Canary greps
+
+| Canary | Result |
+|--------|--------|
+| render.rs untouched | PASS — `git diff --exit-code -- desktop-body/src/render.rs` clean |
+| presence.rs untouched | PASS — `git diff --exit-code -- desktop-body/src/presence.rs` clean |
+| Zero new color literals | PASS — grep over diff found none |
+| No soul/wire/presence changes | PASS — law 7; only main.rs body-local in_flight + halo fn |
+| New logic in pure fns for tests | PASS — `format_request_id`, `halo_alert_level`, `should_clear_in_flight` exercised by the 5 named tests without App/Wayland |
+
+### Soul-stream-close path (per brief)
+
+Inspected main.rs:
+- Presence channel installed as `calloop::channel`; handler: `if let ChannelEvent::Msg(text) = event { app.on_presence_message(&text); }` — `Closed` is not matched or handled.
+- No `on_close`, no WS error/close arm that clears state.
+- `LayerShellHandler::closed` exists but is the Wayland layer surface exit (sets `exit=true`), not soul WS.
+- Per brief instruction: did **not** invent any disconnect handling. Slot would remain lit if soul never replies and never drops the channel (documented v0.1 limit already called out in the brief).
+
+### Discoveries / not done
+
+- `request_launch` and commandeer paths continue to pass `None` for request_id and do not set `action_in_flight` (per pinned scope: only review + repo_edit mint and track).
+- Single-slot replace semantics: a second request while one flies just overwrites (brief says "overlaps accepted as last-writer").
+- On `needs_confirmation` result: slot clears (any-decision), `pending_effector` set, amber tier active; re-press in the request fn mints a fresh id and re-lights green for the confirm leg.
+- No changes to wire shapes, no new messages, no presence.rs edits.
+- F3 and anything after: not started.
+
+### Conflict stops
+
+None. All per brief.
+
+### Gate deltas vs baseline (post-H5)
+
+- cargo test main: 134 → 139 (+ exactly the 5 named)
+- release warnings: 9 → 9 (unchanged)
+- tsc/vitest: clean / 278 unchanged
+
+---
+
+## Lead audit (Fable) — pending
+
+(Owner walk pending after this report.)
+

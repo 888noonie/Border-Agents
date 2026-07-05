@@ -2056,4 +2056,75 @@ render.rs + presence.rs byte-untouched; diff = the pure fn + tests + the one cal
 
 Builder report appended below this brief, committed separately as `docs: builder report — Slice F5 thinking gaze`. **Commit but DO NOT push** — F5 ships after the owner walk (type to the buddy → while it thinks: green tips + open tucked eyes + scanning untucked gaze; reply lands → everything rests; governance bracket unchanged). **STOP after F5.**
 
-(F5 builder report pending.)
+## Builder report — F5 (Grok Build, 2026-07-05)
+
+**Status:** F5 complete. **Stopped after F5.** Not pushed.
+
+### Commit
+
+```
+48486a7
+feat(body): laminal ring pivot — Slice F5 — thinking gaze (chat reply bracket joins the activity wire; said→reply greens the buddy)
+
+Pure `body_activity(action_in_flight, awaiting_reply)` = `action_in_flight || awaiting_reply`.
+One call-site edit at main.rs:1661 (BodyView.activity). `awaiting_reply` lifecycle
+sites byte-identical. render.rs + presence.rs byte-untouched.
+
+Exactly 3 named tests.
+```
+
+### Gate outputs (verbatim, forced recompile via `touch desktop-body/src/*.rs`)
+
+**`cd desktop-body && cargo test`**
+
+```
+     Running unittests src/main.rs (target/debug/deps/bb_desktop_body-...)
+running 153 tests
+test result: ok. 153 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.79s
+
+     Running unittests src/bin/frame_driver.rs (...)
+running 0 tests
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/parse_action_result.rs (...)
+running 29 tests
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+```
+
+Baseline 150 (main); +3 named tests only (153). New tests: chat_reply_bracket_drives_activity, action_bracket_still_drives_activity, activity_rests_when_both_brackets_closed.
+
+**`cd desktop-body && cargo build --release`**
+
+```
+warning: `bb-desktop-body` (bin "bb-desktop-body") generated 9 warnings
+    Finished `release` profile [optimized] target(s) in 3.94s
+```
+
+9 known warnings. Nothing new.
+
+**`npx tsc --noEmit`**
+
+```
+(clean — exit 0, no output)
+```
+
+**`npx vitest run`**
+
+```
+ Test Files  31 passed (31)
+      Tests  278 passed (278)
+   Duration  2.43s
+```
+
+Unchanged.
+
+### Canary greps / verifications
+
+| Canary | Result |
+|--------|--------|
+| render.rs + presence.rs byte-untouched | PASS |
+| diff = pure fn + tests + one call-site line | PASS |
+| `awaiting_reply` set/clear sites byte-identical | PASS |
+| zero new color values | PASS |
+| no timers, no new state fields | PASS |
+| Existing tests byte-unmodified + pass | PASS (153 includes them unchanged) |

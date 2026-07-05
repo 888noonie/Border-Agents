@@ -7123,15 +7123,56 @@ mod tests {
     #[test]
     fn reader_window_draws_the_scrolled_lines() {
         let font = load_font().expect("system font available for reader scroll test");
-        let text = (0..20).map(|i| format!("line{i}")).collect::<Vec<_>>().join("\n");
-        let all = wrap(&font, &text, TEXT_PX, SURFACE_W as f32 - 44.0, usize::MAX);
-        let h = 720_u32;
+        let text = (0..60).map(|i| format!("line{i}")).collect::<Vec<_>>().join("\n");
+        let all = reader_wrapped_md_lines(&font, &text, SURFACE_W);
+        let h = 480_u32;
         let budget = reader_body_budget(h, all.len());
         let scroll = 5;
         let end = (scroll + budget).min(all.len());
-        let visible = &all[scroll..end];
-        assert_eq!(visible.first().map(String::as_str), Some("line5"));
-        assert_eq!(visible.len(), all.len().saturating_sub(scroll));
+        assert_eq!(plain_wrapped_line(&all[scroll]), "line5");
+        assert!(end < all.len(), "scrolled window must still overflow at h=480");
+        let sprite = Sprite::new();
+        let paint = |scroll: usize| -> Vec<u8> {
+            let mut canvas = vec![0_u8; (SURFACE_W * h * 4) as usize];
+            let view = BodyView {
+                t: 0.0,
+                emotion: Emotion::Neutral,
+                speech: Some(&text),
+                torso_output: TorsoOutput::Text(TextCard { title: "", body: "" }),
+                chat_open: false,
+                tucked: None,
+                tucked_show_bubble: false,
+                tucked_show_input: false,
+                input_text: "",
+                input_placeholder: "",
+                input_focused: false,
+                review_pending: false,
+                edit_pending: false,
+                posture_badge: None,
+                surface_bloom: &[],
+                route_health: None,
+                route_flash: false,
+                alert_level: None,
+                activity: false,
+                receipt_rail: &[],
+                interior_rows: &[],
+                settings: &[],
+                onboarding: None,
+                layout: Layout::initial(),
+                pinned: None,
+                frame: None,
+                color: CLAY_DEFAULT,
+                dock_show: DockShow::Both,
+                skin: Skin::Clay,
+                reader: Some(&text),
+                reader_scroll: scroll,
+                reader_copied: false,
+                reader_selection: None,
+            };
+            sprite.paint(&mut canvas, SURFACE_W, h, &view);
+            canvas
+        };
+        assert_ne!(paint(0), paint(scroll), "scrolling must change reader pixels");
     }
 
     #[test]
@@ -7295,11 +7336,60 @@ mod tests {
 
     #[test]
     fn selection_clears_on_reader_close() {
-        let mut selection = Some((
+        // With the reader closed, a stale selection must have no pixel effect —
+        // the highlight lives only inside the reader takeover.
+        let w = SURFACE_W;
+        let h = 480_u32;
+        let sprite = Sprite::new();
+        let text = "Select this sentence in the reader.";
+        let stale = Some((
             ReaderPos { line: 0, ch: 0 },
-            ReaderPos { line: 0, ch: 3 },
+            ReaderPos { line: 0, ch: 6 },
         ));
-        selection = None;
-        assert!(selection.is_none());
+        let paint = |selection: Option<(ReaderPos, ReaderPos)>| -> Vec<u8> {
+            let mut canvas = vec![0_u8; (w * h * 4) as usize];
+            let view = BodyView {
+                t: 0.0,
+                emotion: Emotion::Neutral,
+                speech: Some(text),
+                torso_output: TorsoOutput::Text(TextCard { title: "", body: "" }),
+                chat_open: false,
+                tucked: None,
+                tucked_show_bubble: false,
+                tucked_show_input: false,
+                input_text: "",
+                input_placeholder: "",
+                input_focused: false,
+                review_pending: false,
+                edit_pending: false,
+                posture_badge: None,
+                surface_bloom: &[],
+                route_health: None,
+                route_flash: false,
+                alert_level: None,
+                activity: false,
+                receipt_rail: &[],
+                interior_rows: &[],
+                settings: &[],
+                onboarding: None,
+                layout: Layout::initial(),
+                pinned: None,
+                frame: None,
+                color: CLAY_DEFAULT,
+                dock_show: DockShow::Both,
+                skin: Skin::Clay,
+                reader: None,
+                reader_scroll: 0,
+                reader_copied: false,
+                reader_selection: selection,
+            };
+            sprite.paint(&mut canvas, w, h, &view);
+            canvas
+        };
+        assert_eq!(
+            paint(stale),
+            paint(None),
+            "closed reader must ignore any stale selection"
+        );
     }
 }

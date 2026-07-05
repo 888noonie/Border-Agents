@@ -600,6 +600,12 @@ fn body_activity(action_in_flight: bool, awaiting_reply: bool) -> bool {
     action_in_flight || awaiting_reply
 }
 
+/// The state every reader open starts from: top of the text, no copy feedback, no selection.
+/// `open_reader` applies this verbatim — the named test pins the reset through this one seam.
+fn reader_reset_state() -> (usize, bool, Option<(render::ReaderPos, render::ReaderPos)>) {
+    (0, false, None)
+}
+
 trait IfEmpty {
     fn if_empty(self, fallback: &str) -> String;
 }
@@ -3540,9 +3546,10 @@ impl App {
             self.update_input_region();
             return;
         }
-        self.reader_scroll = 0;
-        self.reader_copied = false;
-        self.reader_selection = None;
+        let (scroll, copied, selection) = reader_reset_state();
+        self.reader_scroll = scroll;
+        self.reader_copied = copied;
+        self.reader_selection = selection;
         self.reader_saved = Some(SavedGeometry {
             margin_top: self.margin_top,
             margin_left: self.margin_left,
@@ -4693,12 +4700,12 @@ mod tests {
 
     #[test]
     fn reader_scroll_resets_on_open() {
-        let mut scroll = 42_usize;
-        let mut copied = true;
-        scroll = 0;
-        copied = false;
+        // Pins the exact reset open_reader applies — change the production
+        // reset and this fails.
+        let (scroll, copied, selection) = reader_reset_state();
         assert_eq!(scroll, 0);
         assert!(!copied);
+        assert!(selection.is_none());
     }
 
     #[test]

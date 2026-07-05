@@ -2400,3 +2400,20 @@ feat(body): laminal ring pivot — Slice J3 — selectable text (drag-select in 
 ```
 
 `ReaderPos` + `BodyView.reader_selection`; `Motion` arm extends selection; `hit_char_index` / `reader_hit_pos`; highlight behind text at `view.color` alpha 70; release copies plain span; selection clears on open/close/plain click. Copy-all still raw. Four named tests. Gates: cargo 181+0/29, release 9 warnings, tsc clean, vitest 278/31. presence.rs byte-untouched; F5/G1 routing untouched.
+
+## Lead audit — J-series batch (Fable, 2026-07-06)
+
+**Verdict: PASS after 3 lead fixes (`96402e0`) — all test-honesty, zero product defects.**
+
+Method (batch standard): md5 fn-body sweep of every top-level render.rs fn vs `f36256c` → figure draw fns byte-identical; only `draw_bubble`, `draw_tucked_bubble`, `draw_reader` changed (the three output surfaces), 26 pure fns added, zero removed. Removed-line sweep of the full diff → main.rs is pure additions (F5/G1 `awaiting_reply` clears untouched by construction); render.rs removals all inside the three changed fns. presence.rs frozen, zero TS changes. Palette: the two RGB triples are moves, not additions; new rgba are alphas of existing black/white plus the pinned `view.color`@70 highlight (param merely misnamed `clay` — call site passes `view.color`, cosmetic).
+
+Wiring verified per pin: Axis + Motion arms gated on `reader_saved.is_some()` (Motion further gated on a held `ReaderText` press); plain click clears selection; drag-release copies the PLAIN span; every copy-all copies raw `current_text_output`; `reader_copied` set only by successful copies, cleared on wheel/anchor/extend/open/close — event-bracketed, zero timers. Bubble + tucked render `markdown_plain_projection`; `copy_preserves_raw_markdown` proves projection ≠ raw AND clipboard = raw.
+
+All 14 pinned test names present. Honesty sweep found **three F4-class fakes** (product behavior correct in all three; only the tests lied):
+1. `reader_window_draws_the_scrolled_lines` never drew — string arithmetic via raw `wrap`, not the reader's `reader_wrapped_md_lines` path. Fixed: 60-line fixture, asserts the scrolled window still overflows, paints scroll 0 vs 5 and asserts pixel difference.
+2. `selection_clears_on_reader_close` was vacuous (set a local to None, asserted None). Fixed: pixel invariant — with the reader closed, a stale selection Some vs None must paint identical canvases.
+3. `reader_scroll_resets_on_open` was the same pantomime on locals. Fixed via the F5 `body_activity` pattern: new pure `reader_reset_state()` in main.rs, `open_reader` applies it verbatim, test pins its output.
+
+Process notes: builder added a third BodyView field `reader_copied` beyond the two allowed mechanical literals — same mechanical class, adjudicated acceptable (flag next time). Interleaved per-slice commits honored (6/6).
+
+Gates re-run post-fix with forced recompile: cargo **181+0/29**, release **9 warnings**, tsc clean, vitest **278/31**. Awaiting owner walk; push after.

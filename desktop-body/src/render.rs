@@ -92,8 +92,12 @@ const BUBBLE_W: f32 = 172.0;
 pub const PINNED_BUBBLE_W_MIN: f32 = 188.0;
 pub const PINNED_BUBBLE_W_MAX: f32 = 292.0;
 const BUBBLE_Y: f32 = 8.0;
-const BUBBLE_MAX_LINES: usize = 6;
 const INPUT_Y: f32 = 196.0;
+
+/// Lines the speech bubble may grow to before the input region (single source for paint + hit).
+fn bubble_line_budget() -> usize {
+    ((INPUT_Y - BUBBLE_Y - 42.0) / LINE_H).floor() as usize
+}
 const TEXT_PX: f32 = 16.0;
 const LINE_H: f32 = TEXT_PX * 1.3;
 const PANEL_TEXT_PX: f32 = 12.0;
@@ -220,7 +224,7 @@ impl Layout {
     /// Speech bubble at its maximum extent (drawing shrinks to the text; the
     /// input region uses this full rect).
     pub fn bubble_rect(&self) -> Rect {
-        let h = 30.0 + BUBBLE_MAX_LINES as f32 * LINE_H + 12.0;
+        let h = 30.0 + bubble_line_budget() as f32 * LINE_H + 12.0;
         Rect { x: self.ui_x(BUBBLE_W), y: BUBBLE_Y, w: BUBBLE_W, h }
     }
 
@@ -3722,13 +3726,14 @@ fn draw_file_stub_icon(pixmap: &mut Pixmap, rect: Rect) {
     }
 }
 
-/// Speech bubble: auto-sizes its height to the wrapped text (≤6 lines) and faces
+/// Speech bubble: auto-sizes its height to the wrapped text (≤ bubble_line_budget lines) and faces
 /// inward, with the tail pointing at the head.
 fn draw_bubble(pixmap: &mut Pixmap, font: &Font, layout: &Layout, text: &str) {
     let max = layout.bubble_rect();
     let pad_x = 14.0;
     let pad_top = 28.0;
-    let lines = wrap(font, text, TEXT_PX, max.w - pad_x * 2.0, BUBBLE_MAX_LINES);
+    let budget = bubble_line_budget();
+    let (lines, hidden) = budgeted_lines(font, text, TEXT_PX, max.w - pad_x * 2.0, budget);
     let h = pad_top + lines.len().max(1) as f32 * LINE_H + 12.0;
     let rect = Rect { x: max.x, y: max.y, w: max.w, h };
 
@@ -3760,8 +3765,13 @@ fn draw_bubble(pixmap: &mut Pixmap, font: &Font, layout: &Layout, text: &str) {
     }
 
     let mut baseline = rect.y + pad_top;
-    for line in &lines {
-        draw_line(pixmap, font, line, rect.x + pad_x, baseline, TEXT_PX, [16, 24, 44]);
+    for (i, line) in lines.iter().enumerate() {
+        let color = if hidden > 0 && i + 1 == lines.len() {
+            [130, 122, 114]
+        } else {
+            [16, 24, 44]
+        };
+        draw_line(pixmap, font, line, rect.x + pad_x, baseline, TEXT_PX, color);
         baseline += LINE_H;
     }
 }
@@ -3988,6 +3998,20 @@ fn load_font() -> Option<Font> {
     }
     eprintln!("[bb-desktop-body] no system font found — bubble/input text disabled");
     None
+}
+
+/// Wrap `text` into at most `budget` lines; when more would fit, reserve the last line for a
+/// `+N more` marker and return how many lines were hidden.
+fn budgeted_lines(font: &Font, text: &str, px: f32, max_w: f32, budget: usize) -> (Vec<String>, usize) {
+    let all = wrap(font, text, px, max_w, usize::MAX);
+    if all.len() <= budget {
+        return (all, 0);
+    }
+    let content_slots = budget.saturating_sub(1);
+    let hidden = all.len() - content_slots;
+    let mut shown: Vec<String> = all[..content_slots].to_vec();
+    shown.push(format!("+{hidden} more"));
+    (shown, hidden)
 }
 
 fn wrap(font: &Font, text: &str, px: f32, max_w: f32, max_lines: usize) -> Vec<String> {
@@ -6168,5 +6192,32 @@ mod tests {
             EYE_INK_BGRA,
             "a soul-emitted Ready tier must not move the untucked gaze",
         );
+    }
+
+    #[test]
+    fn bubble_budget_never_crosses_input_top() {
+        assert_eq!(bubble_line_budget(), 7);
+        let layout = Layout::initial();
+        let bubble = layout.bubble_rect();
+        assert!(bubble.y + bubble.h <= INPUT_Y);
+    }
+
+    #[test]
+    fn bubble_overflow_draws_more_marker() {
+        let font = load_font().expect("system font available for bubble test");
+        let long = (0..80).map(|i| format!("word{i}")).collect::<Vec<_>>().join(" ");
+        let (lines, hidden) = budgeted_lines(&font, &long, TEXT_PX, BUBBLE_W - 28.0, bubble_line_budget());
+        assert!(hidden > 0);
+        assert_eq!(lines.len(), bubble_line_budget());
+        assert!(lines.last().unwrap().starts_with('+'));
+        assert!(lines.last().unwrap().ends_with(" more"));
+    }
+
+    #[test]
+    fn bubble_marker_absent_when_text_fits() {
+        let font = load_font().expect("system font available for bubble test");
+        let (lines, hidden) = budgeted_lines(&font, "Short reply.", TEXT_PX, BUBBLE_W - 28.0, bubble_line_budget());
+        assert_eq!(hidden, 0);
+        assert!(!lines.iter().any(|line| line.contains(" more")));
     }
 }

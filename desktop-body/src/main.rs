@@ -539,23 +539,46 @@ fn classify_torso_surface(text: &str) -> TorsoSurface {
     }
 }
 
-/// The bubble line for `text` that has been loaded into the torso: a short pointer for the
-/// surfaces that live there, or the text itself when it is small enough to read inline.
-fn loaded_bubble(text: &str) -> String {
-    match classify_torso_surface(text) {
+/// True when a classified reply should land in the speech bubble (text/session), not the torso.
+fn reply_goes_to_bubble(surface: &TorsoSurface) -> bool {
+    matches!(surface, TorsoSurface::Text { .. } | TorsoSurface::Session)
+}
+
+/// The bubble line for a torso-loaded surface: a short pointer for media, or inline text when small.
+fn loaded_bubble_for_surface(surface: &TorsoSurface) -> String {
+    match surface {
         TorsoSurface::Image { .. } => "Image ready in torso.".to_string(),
         TorsoSurface::ImageStub { .. } => {
             "Here is your picture. Click to open. Tell me what next?".to_string()
         }
         TorsoSurface::FileStub { .. } => "File stub ready in torso.".to_string(),
-        TorsoSurface::Text { .. } => {
-            if text.len() > 56 || text.contains('\n') {
+        TorsoSurface::Text { body, .. } => {
+            if body.len() > 56 || body.contains('\n') {
                 "Reply ready in torso.".to_string()
             } else {
-                text.to_string()
+                body.clone()
             }
         }
-        TorsoSurface::Session => text.to_string(),
+        TorsoSurface::Session => "Reply ready in torso.".to_string(),
+    }
+}
+
+/// The bubble line for `text` that has been loaded into the torso: a short pointer for the
+/// surfaces that live there, or the text itself when it is small enough to read inline.
+fn loaded_bubble(text: &str) -> String {
+    loaded_bubble_for_surface(&classify_torso_surface(text))
+}
+
+/// Copy source: prefer the last full text reply, else fall back to a torso text card body.
+fn copy_source<'a>(last_text: Option<&'a str>, torso: &'a TorsoSurface) -> Option<&'a str> {
+    if let Some(text) = last_text {
+        if !text.trim().is_empty() {
+            return Some(text);
+        }
+    }
+    match torso {
+        TorsoSurface::Text { body, .. } if !body.trim().is_empty() => Some(body.as_str()),
+        _ => None,
     }
 }
 
@@ -663,6 +686,7 @@ fn main() {
         presence_status: "Connecting".to_string(),
         session_note: "Speech bubble carries quick updates. Usage and richer provider output land in the torso.".to_string(),
         awaiting_reply: false,
+        last_text_output: None,
         chat_open: false,
         configured: false,
         press: None,
@@ -1293,6 +1317,8 @@ struct App {
     dock_show: render::DockShow,
     /// Config root for body-settings.json (`BB_CONFIG_DIR` / XDG / ~/.config).
     config_dir: std::path::PathBuf,
+    /// The last full text reply/output — copy and the reader prefer this over the torso card.
+    last_text_output: Option<String>,
 }
 
 /// Map a presence-protocol edge onto the renderer's bump edge.
@@ -1761,12 +1787,9 @@ impl App {
         self.pending_effector = None;
         match surface {
             "text" => {
-                let body = text.unwrap_or_default();
-                self.torso_surface = TorsoSurface::Text {
-                    title: "Text output".to_string(),
-                    body: body.trim().to_string(),
-                };
-                self.session_note = "Latest provider output loaded in the torso.".to_string();
+                let body = text.unwrap_or_default().trim().to_string();
+                self.last_text_output = Some(body.clone());
+                self.speech = Some(body);
             }
             "session" => {
                 self.torso_surface = TorsoSurface::Session;
@@ -1818,13 +1841,23 @@ impl App {
 
     fn say(&mut self, text: impl Into<String>) {
         let text = text.into();
+        let surface = classify_torso_surface(&text);
         if self.awaiting_reply {
-            // A reply the buddy promised: load it into the torso and let the bubble point at it.
-            self.show_reply_in_torso(&text);
+            if reply_goes_to_bubble(&surface) {
+                self.awaiting_reply = false;
+                self.pending_effector = None;
+                self.last_text_output = Some(text.clone());
+                self.speech = Some(text);
+            } else {
+                self.torso_surface = surface;
+                self.awaiting_reply = false;
+                self.pending_effector = None;
+                self.session_note = "Latest provider output loaded in the torso.".to_string();
+                self.speech = Some(loaded_bubble_for_surface(&self.torso_surface));
+            }
+        } else {
+            self.speech = Some(text);
         }
-        // The bubble may never point at an empty torso: only say "…in torso" when something was
-        // actually loaded there (a reply was awaited); otherwise carry the text itself.
-        self.speech = Some(reply_bubble(self.awaiting_reply, &text));
         self.update_input_region();
     }
 
@@ -3365,10 +3398,7 @@ impl App {
     }
 
     fn current_text_output(&self) -> Option<&str> {
-        match &self.torso_surface {
-            TorsoSurface::Text { body, .. } if !body.trim().is_empty() => Some(body.as_str()),
-            _ => None,
-        }
+        copy_source(self.last_text_output.as_deref(), &self.torso_surface)
     }
 
     // --- tuck / summon -------------------------------------------------------
@@ -4395,6 +4425,22 @@ mod tests {
     #[test]
     fn activity_rests_when_both_brackets_closed() {
         assert!(!body_activity(false, false));
+    }
+
+    #[test]
+    fn reply_text_routes_to_bubble_not_torso() {
+        let surface = classify_torso_surface("A long provider reply that should live in the bubble.");
+        assert!(reply_goes_to_bubble(&surface));
+        assert!(matches!(surface, TorsoSurface::Text { .. }));
+    }
+
+    #[test]
+    fn reply_media_still_routes_to_torso_with_pointer() {
+        let surface = classify_torso_surface("[image] sunset over the lake");
+        assert!(!reply_goes_to_bubble(&surface));
+        let pointer = loaded_bubble_for_surface(&surface);
+        assert_ne!(pointer, "sunset over the lake");
+        assert!(pointer.contains("picture") || pointer.contains("torso"));
     }
 }
 

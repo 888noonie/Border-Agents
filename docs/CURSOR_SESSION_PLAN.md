@@ -2230,3 +2230,29 @@ Typed to the buddy: green tips + tucked eyes open + untucked gaze scanning while
 - Gates per slice with forced recompile (`touch desktop-body/src/*.rs`): cargo test per counts above, `cargo build --release` 9 known warnings, `npx tsc --noEmit` clean, `npx vitest run` 278/31.
 - Existing tests pass unmodified except law 5's mechanical `reader: None,` additions. Any other conflict = STOP the whole batch and report which pin collided.
 - STOP after G3. Owner walk covers all three at once: long reply → bubble carries it honestly with `+N more` → ⤢ → full-height reader bottom-to-top → collapse restores exactly; repeat from head / bar / both docks; image output still lands in torso; Copy still yields full text; thinking gaze/tips unaffected throughout.
+
+## Builder report — G1 (Grok Build, 2026-07-05)
+
+**Status:** G1 complete. Not pushed.
+
+### Commit
+
+```
+d97e47d
+feat(body): laminal ring pivot — Slice G1 — honest growing bubble (text output routes to speech; +N-more marker; copy keeps full text)
+```
+
+Pure fns: `reply_goes_to_bubble`, `copy_source`, `loaded_bubble_for_surface`; `last_text_output` on App; `say()`/`apply_output("text")` route text to bubble; `bubble_line_budget()` + `budgeted_lines()` with `+N more` marker. Five named tests. Gates: cargo 158+0/29, release 9 warnings, tsc clean, vitest 278/31. presence.rs byte-untouched.
+
+## Builder report — G2 (Grok Build, 2026-07-05)
+
+**Status:** G2 complete. Not pushed.
+
+### Commit
+
+```
+ba5726b
+feat(body): laminal ring pivot — Slice G2 — reader (speech bubble expands to a full-height column; torso stub goes live)
+```
+
+`BodyView.reader`; `draw_reader` takeover; `bubble_expand_rect` + expand glyph; `SavedGeometry` + open/close reader; `TorsoAction::Expand` live. Mechanical `reader: None,` on eight BodyView test literals. Five named tests. Gates: cargo 163+0/29, release 9 warnings, tsc clean, vitest 278/31. presence.rs byte-untouched.

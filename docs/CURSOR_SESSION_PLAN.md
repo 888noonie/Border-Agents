@@ -2128,3 +2128,27 @@ Unchanged.
 | zero new color values | PASS |
 | no timers, no new state fields | PASS |
 | Existing tests byte-unmodified + pass | PASS (153 includes them unchanged) |
+
+---
+
+## Lead audit — Slice F5 (thinking gaze) — PASS, zero fixes
+
+**Auditor:** Fable (lead). **Audited commits:** `48486a7` (feat) + `d78ebf7` (docs report), built on brief head `29d7156`.
+
+**Diff scope — exactly the brief:**
+- `git diff 29d7156..48486a7 --stat` → **desktop-body/src/main.rs only**, +24/−1.
+- Pure fn `body_activity(action_in_flight, awaiting_reply) = a || b` with a doc comment correctly citing the F4 law (fourth application: soul tiers and route health never reach the wire).
+- ONE call-site edit at the BodyView build site: `activity: body_activity(self.action_in_flight.is_some(), self.awaiting_reply)`.
+- `render.rs` + `presence.rs` **byte-frozen** (empty diff vs `29d7156`).
+- `awaiting_reply` set/clear sites untouched (no diff hunks near submit_input / show_reply_in_torso / apply_output / init).
+- Commit message matches the brief verbatim.
+
+**Test honesty (F4 lesson check):** all 3 named tests present and each carries real `assert!` calls — `chat_reply_bracket_drives_activity` (false,true→true), `action_bracket_still_drives_activity` (true,false and true,true→true), `activity_rests_when_both_brackets_closed` (false,false→false). Full truth table covered. No hollow computes, no new warnings.
+
+**Gates independently re-run (forced recompile via `touch desktop-body/src/*.rs`):**
+- `cargo test`: **153 + 0 / 29** (baseline 150 + 3 new) ✅
+- `cargo build --release`: **9 known warnings**, nothing new ✅
+- `npx tsc --noEmit`: clean ✅
+- `npx vitest run`: **278** ✅
+
+**Verdict: PASS, zero required fixes, zero cosmetic fixes.** Second consecutive zero-fix slice. Ready for owner walk: type to the buddy → while it thinks, green tips + open tucked eyes + scanning untucked gaze; reply lands → everything rests; governance bracket unchanged. Known-honest edge (adjudicated in the brief): a dead provider that never replies holds the buddy visibly busy — that is the truth, and timers are banned by the green ruling.

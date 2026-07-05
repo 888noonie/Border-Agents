@@ -2269,3 +2269,26 @@ feat(body): laminal ring pivot — Slice G3 — reader from the dock (tucked pee
 ```
 
 Tucked peek: `budgeted_lines` + `+N more`; `tucked_bubble_expand_rect`; expand glyph + `BubbleExpand` hit from dock. Same reader takeover as G2. Four named tests. Gates: cargo 167+0/29, release 9 warnings, tsc clean, vitest 278/31. presence.rs byte-untouched; F5 `awaiting_reply` clears sacred; figure draw fns untouched.
+
+---
+
+## Lead audit — G-series batch (G1+G2+G3) — PASS, zero fixes
+
+**Auditor:** Fable (lead). **Audited commits:** `d97e47d` (G1) + `ba5726b` (G2) + `442e717` (G3) + reports `2242d3f`/`a9c6092`, built on brief head `8316788`. First combined 3-slice audit.
+
+**Diff scope:** main.rs + render.rs + docs only. **presence.rs byte-frozen; zero TS changes.** Full fn-body md5 comparison of every top-level render.rs fn vs `8316788`: changed = `draw_bubble`, `draw_tucked_bubble`, `draw_torso_action` ONLY; added = the 8 briefed fns (`bubble_line_budget`, `budgeted_lines`, `draw_reader`, `draw_expand_glyph`, `expand_glyph_rect`, `reader_collapse_rect`, `reader_line_budget`, `tucked_bubble_expand_rect`); removed = none. **Every figure draw fn byte-identical.**
+
+**Pin verification:**
+- `say()` rewrite fixes the :1819 ordering bug exactly as briefed: classification computed once; bubble path clears `awaiting_reply` + `pending_effector` directly (F5 bracket intact in BOTH branches); media path keeps torso + honest pointer via new `loaded_bubble_for_surface`. `reply_bubble` stays live for non-reply says (warnings stay 9).
+- Copy honest: `last_text_output` + pure `copy_source` prefer-last-text fallback-torso.
+- Reader: `BodyView.reader` takeover first in `Sprite::paint`; open saves `SavedGeometry` (incl. tucked edge), sizes to `SURFACE_W × screen_h` (honest fallback = current height when screen unknown, "No text output yet." when empty); close restores exactly + `clamp_tucked` re-run. Press handling early-returns to Collapse/Outside while open (drag dead); input region = full surface + collapse rect.
+- **Side-dock geometry checked and sound** (lead had flagged a risk): tuck snaps margins flush and on-screen (Left→0, Right→`sw−surface_w`), reader keeps `SURFACE_W`, so an expand from any dock opens fully on-screen; top/bottom re-anchor via `margin_top = 0`.
+- Existing-test edits: mechanical `reader: None,` literal additions ONLY (removed-line sweep of the full diff found zero test deletions). Commit messages match the brief (G2's drops the ⤢ glyph char — cosmetic).
+
+**Test honesty (F4 lesson):** all 14 named tests present, every one asserting for real — including pixel-level: takeover test proves head pixels replaced by bubble-bg (not clay), tucked/untucked reader identity is full-canvas, roundtrip restores exact margins/size/edge.
+
+**Gates independently re-run at batch head (forced recompile):** cargo **167 + 0 / 29** (153 + 14 exact), release **9 known warnings**, tsc clean, vitest **278/31**. Builder-reported per-slice counts (158/163) accepted; head verified.
+
+**Process notes (minor, for next batch):** docs reports landed after all three feats (G2+G3 folded into one commit) rather than interleaved per slice — bisectability of the feat commits is intact, so accepted.
+
+**Verdict: PASS, zero required fixes.** Ready for the combined owner walk (see brief's walk script).

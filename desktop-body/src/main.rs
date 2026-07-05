@@ -4606,6 +4606,13 @@ mod tests {
     }
 
     #[test]
+    fn copy_preserves_raw_markdown() {
+        let raw = "**bold** line\n- bullet";
+        assert_ne!(render::markdown_plain_projection(raw), raw);
+        assert_eq!(copy_source(Some(raw), &TorsoSurface::Session), Some(raw));
+    }
+
+    #[test]
     fn reader_scroll_resets_on_open() {
         let mut scroll = 42_usize;
         let mut copied = true;

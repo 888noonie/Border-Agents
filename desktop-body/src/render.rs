@@ -170,8 +170,7 @@ fn reader_body_budget(surface_h: u32, total_lines: usize) -> usize {
 }
 
 pub fn reader_total_lines(font: &Font, text: &str, surface_w: u32) -> usize {
-    let text_w = surface_w as f32 - 16.0 - 28.0;
-    wrap(font, text, TEXT_PX, text_w, usize::MAX).len()
+    reader_wrapped_md_lines(font, text, surface_w).len()
 }
 
 pub fn reader_scroll_apply(
@@ -3865,7 +3864,8 @@ fn draw_bubble(pixmap: &mut Pixmap, font: &Font, layout: &Layout, text: &str) {
     let pad_x = 14.0;
     let pad_top = 28.0;
     let budget = bubble_line_budget();
-    let (lines, hidden) = budgeted_lines(font, text, TEXT_PX, max.w - pad_x * 2.0, budget);
+    let plain = markdown_plain_projection(text);
+    let (lines, hidden) = budgeted_lines(font, &plain, TEXT_PX, max.w - pad_x * 2.0, budget);
     let h = pad_top + lines.len().max(1) as f32 * LINE_H + 12.0;
     let rect = Rect { x: max.x, y: max.y, w: max.w, h };
 
@@ -4016,20 +4016,29 @@ fn draw_reader(
     draw_copy_glyph(pixmap, reader_copy_rect(w, h));
     draw_expand_glyph(pixmap, reader_collapse_rect(w, h));
     let pad_x = 14.0;
-    let text_w = card.w - pad_x * 2.0;
     let mut baseline = card.y + 30.0;
     draw_line(pixmap, font, "Latest output", card.x + pad_x, baseline, PANEL_LABEL_PX, [102, 88, 76]);
     baseline += PANEL_LABEL_PX + 8.0;
-    let all_lines = wrap(font, text, TEXT_PX, text_w, usize::MAX);
-    let body_budget = reader_body_budget(h, all_lines.len());
-    let scroll = clamp_reader_scroll(scroll, all_lines.len(), body_budget);
-    let end = (scroll + body_budget).min(all_lines.len());
-    let visible = &all_lines[scroll..end];
+    let wrapped = reader_wrapped_md_lines(font, text, w);
+    let body_budget = reader_body_budget(h, wrapped.len());
+    let scroll = clamp_reader_scroll(scroll, wrapped.len(), body_budget);
+    let end = (scroll + body_budget).min(wrapped.len());
+    let visible = &wrapped[scroll..end];
     for line in visible {
-        draw_line(pixmap, font, line, card.x + pad_x, baseline, TEXT_PX, [16, 24, 44]);
+        let force_bold = line.kind == MdLineKind::Heading;
+        draw_spanned_line(
+            pixmap,
+            font,
+            &line.spans,
+            card.x + pad_x + line.indent,
+            baseline,
+            TEXT_PX,
+            [16, 24, 44],
+            force_bold,
+        );
         baseline += LINE_H;
     }
-    let footer = reader_footer_text(scroll, visible.len(), all_lines.len(), copied);
+    let footer = reader_footer_text(scroll, visible.len(), wrapped.len(), copied);
     if !footer.is_empty() {
         let footer_y = card.y + card.h - 10.0;
         draw_line(pixmap, font, &footer, card.x + pad_x, footer_y, PANEL_LABEL_PX, [130, 122, 114]);
@@ -4109,7 +4118,8 @@ fn draw_tucked_bubble(pixmap: &mut Pixmap, font: &Font, edge: BumpEdge, w: u32, 
     let (lines, hidden) = if text.is_empty() {
         (Vec::new(), 0)
     } else {
-        budgeted_lines(font, text, TEXT_PX, rect.w - pad_x * 2.0, max_lines)
+        let plain = markdown_plain_projection(text);
+        budgeted_lines(font, &plain, TEXT_PX, rect.w - pad_x * 2.0, max_lines)
     };
     let mut baseline = rect.y + pad_top;
     if lines.is_empty() {
@@ -4268,6 +4278,269 @@ fn load_font() -> Option<Font> {
     }
     eprintln!("[bb-desktop-body] no system font found — bubble/input text disabled");
     None
+}
+
+// --- markdown-lite (honest projection + reader formatting) ---------------------
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MdLineKind {
+    Body,
+    Heading,
+    Bullet,
+    Numbered(u32),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MdSpan {
+    pub text: String,
+    pub bold: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MdLine {
+    pub kind: MdLineKind,
+    pub spans: Vec<MdSpan>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct WrappedMdLine {
+    kind: MdLineKind,
+    spans: Vec<MdSpan>,
+    indent: f32,
+}
+
+impl MdLine {
+    fn plain_prefix(&self) -> String {
+        match self.kind {
+            MdLineKind::Body | MdLineKind::Heading => String::new(),
+            MdLineKind::Bullet => "• ".to_string(),
+            MdLineKind::Numbered(n) => format!("{n}. "),
+        }
+    }
+
+    pub fn plain_text(&self) -> String {
+        let body: String = self.spans.iter().map(|s| s.text.as_str()).collect();
+        format!("{}{}", self.plain_prefix(), body)
+    }
+}
+
+pub fn markdown_lite(text: &str) -> Vec<MdLine> {
+    if text.is_empty() {
+        return Vec::new();
+    }
+    text.lines().map(parse_md_source_line).collect()
+}
+
+pub fn markdown_plain_projection(text: &str) -> String {
+    markdown_lite(text)
+        .into_iter()
+        .map(|line| line.plain_text())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn parse_md_source_line(line: &str) -> MdLine {
+    let hash_count = line.chars().take_while(|&c| c == '#').count();
+    if hash_count > 0 {
+        let rest = line[hash_count..].trim_start();
+        return MdLine {
+            kind: MdLineKind::Heading,
+            spans: parse_inline_spans(rest),
+        };
+    }
+    if let Some(rest) = line.strip_prefix("- ") {
+        return MdLine {
+            kind: MdLineKind::Bullet,
+            spans: parse_inline_spans(rest),
+        };
+    }
+    if let Some(rest) = line.strip_prefix("* ") {
+        return MdLine {
+            kind: MdLineKind::Bullet,
+            spans: parse_inline_spans(rest),
+        };
+    }
+    if let Some(dot) = line.find(". ") {
+        let head = &line[..dot];
+        if !head.is_empty() && head.chars().all(|c| c.is_ascii_digit()) {
+            if let Ok(n) = head.parse::<u32>() {
+                return MdLine {
+                    kind: MdLineKind::Numbered(n),
+                    spans: parse_inline_spans(&line[dot + 2..]),
+                };
+            }
+        }
+    }
+    MdLine {
+        kind: MdLineKind::Body,
+        spans: parse_inline_spans(line),
+    }
+}
+
+fn parse_inline_spans(text: &str) -> Vec<MdSpan> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = Vec::new();
+    let mut plain = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '*' && i + 1 < chars.len() && chars[i + 1] == '*' {
+            if !plain.is_empty() {
+                out.push(MdSpan { text: std::mem::take(&mut plain), bold: false });
+            }
+            i += 2;
+            let start = i;
+            while i + 1 < chars.len() && !(chars[i] == '*' && chars[i + 1] == '*') {
+                i += 1;
+            }
+            let inner: String = chars[start..i].iter().collect();
+            out.push(MdSpan { text: inner, bold: true });
+            if i + 1 < chars.len() {
+                i += 2;
+            }
+            continue;
+        }
+        if chars[i] == '*' || chars[i] == '`' {
+            let marker = chars[i];
+            i += 1;
+            let start = i;
+            while i < chars.len() && chars[i] != marker {
+                i += 1;
+            }
+            plain.extend(chars[start..i].iter());
+            if i < chars.len() {
+                i += 1;
+            }
+            continue;
+        }
+        plain.push(chars[i]);
+        i += 1;
+    }
+    if !plain.is_empty() {
+        out.push(MdSpan { text: plain, bold: false });
+    }
+    if out.is_empty() {
+        out.push(MdSpan { text: String::new(), bold: false });
+    }
+    out
+}
+
+fn plain_with_bold_chars(spans: &[MdSpan]) -> Vec<(char, bool)> {
+    spans
+        .iter()
+        .flat_map(|s| s.text.chars().map(|c| (c, s.bold)))
+        .collect()
+}
+
+fn spans_from_chars(chars: &[(char, bool)]) -> Vec<MdSpan> {
+    if chars.is_empty() {
+        return vec![MdSpan { text: String::new(), bold: false }];
+    }
+    let mut out = Vec::new();
+    let mut text = String::new();
+    let mut bold = chars[0].1;
+    for &(ch, is_bold) in chars {
+        if is_bold == bold {
+            text.push(ch);
+        } else {
+            out.push(MdSpan { text: std::mem::take(&mut text), bold });
+            bold = is_bold;
+            text.push(ch);
+        }
+    }
+    out.push(MdSpan { text, bold });
+    out
+}
+
+fn wrap_logical_md_line(font: &Font, line: &MdLine, px: f32, max_w: f32) -> Vec<WrappedMdLine> {
+    let prefix = line.plain_prefix();
+    let heading = line.kind == MdLineKind::Heading;
+    let char_map: Vec<(char, bool)> = prefix
+        .chars()
+        .map(|c| (c, heading))
+        .chain(plain_with_bold_chars(&line.spans).into_iter().map(|(c, b)| (c, heading || b)))
+        .collect();
+    let full_plain: String = char_map.iter().map(|(c, _)| *c).collect();
+    if full_plain.is_empty() {
+        return Vec::new();
+    }
+    let physical = wrap(font, &full_plain, px, max_w, usize::MAX);
+    let marker_w = measure(font, &prefix, px);
+    let mut offset = 0;
+    physical
+        .into_iter()
+        .enumerate()
+        .map(|(idx, phys)| {
+            let len = phys.chars().count();
+            let slice = &char_map[offset..offset + len];
+            offset += len;
+            WrappedMdLine {
+                kind: line.kind,
+                spans: spans_from_chars(slice),
+                indent: if idx == 0 { 0.0 } else { marker_w },
+            }
+        })
+        .collect()
+}
+
+fn reader_wrapped_md_lines(font: &Font, text: &str, surface_w: u32) -> Vec<WrappedMdLine> {
+    let text_w = surface_w as f32 - 16.0 - 28.0;
+    markdown_lite(text)
+        .iter()
+        .flat_map(|line| wrap_logical_md_line(font, line, TEXT_PX, text_w))
+        .collect()
+}
+
+fn draw_spanned_line(
+    pixmap: &mut Pixmap,
+    font: &Font,
+    spans: &[MdSpan],
+    x: f32,
+    baseline: f32,
+    px: f32,
+    color: [u8; 3],
+    force_bold: bool,
+) {
+    let pw = pixmap.width();
+    let w = pw as i32;
+    let h = pixmap.height() as i32;
+    let data = pixmap.data_mut();
+    let mut pen = x;
+    for span in spans {
+        if span.text.is_empty() {
+            continue;
+        }
+        let bold = force_bold || span.bold;
+        for pass in 0..if bold { 2 } else { 1 } {
+            let offset = if bold && pass == 1 { 0.6 } else { 0.0 };
+            let mut p = pen + offset;
+            for ch in span.text.chars() {
+                let (metrics, bitmap) = font.rasterize(ch, px);
+                let gx = p + metrics.xmin as f32;
+                let gy = baseline - (metrics.height as f32 + metrics.ymin as f32);
+                for row in 0..metrics.height {
+                    for col in 0..metrics.width {
+                        let cov = bitmap[row * metrics.width + col] as f32 / 255.0;
+                        if cov <= 0.0 {
+                            continue;
+                        }
+                        let px_x = (gx + col as f32) as i32;
+                        let px_y = (gy + row as f32) as i32;
+                        if px_x < 0 || px_y < 0 || px_x >= w || px_y >= h {
+                            continue;
+                        }
+                        let idx = ((px_y as u32 * pw + px_x as u32) * 4) as usize;
+                        let a = cov;
+                        data[idx] = ((1.0 - a) * data[idx] as f32 + a * color[2] as f32) as u8;
+                        data[idx + 1] = ((1.0 - a) * data[idx + 1] as f32 + a * color[1] as f32) as u8;
+                        data[idx + 2] = ((1.0 - a) * data[idx + 2] as f32 + a * color[0] as f32) as u8;
+                        data[idx + 3] = 255;
+                    }
+                }
+                p += font.metrics(ch, px).advance_width;
+            }
+        }
+        pen += measure(font, &span.text, px);
+    }
 }
 
 /// Wrap `text` into at most `budget` lines; when more would fit, reserve the last line for a
@@ -6740,5 +7013,49 @@ mod tests {
         assert!(tucked_copy.y >= tucked.y);
         assert!(tucked_copy.x + tucked_copy.w <= tucked.x + tucked.w);
         assert!(tucked_copy.y + tucked_copy.h <= tucked.y + tucked.h);
+    }
+
+    #[test]
+    fn markdown_lite_strips_markers_to_plain() {
+        let lines = markdown_lite("**bold** and `code`");
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].plain_text(), "bold and code");
+        let plain = markdown_plain_projection("* item\n# Title");
+        assert!(!plain.contains('*') || plain.starts_with('•'));
+        assert!(!plain.contains('#'));
+        assert!(plain.contains('•'));
+    }
+
+    #[test]
+    fn markdown_lite_marks_bold_spans() {
+        let lines = markdown_lite("Say **hello** there");
+        assert_eq!(lines.len(), 1);
+        assert_eq!(lines[0].spans.len(), 3);
+        assert!(!lines[0].spans[0].bold);
+        assert!(lines[0].spans[1].bold);
+        assert_eq!(lines[0].spans[1].text, "hello");
+    }
+
+    #[test]
+    fn markdown_lite_maps_bullets_and_headings() {
+        let lines = markdown_lite("# Heading\n- bullet\n2. second");
+        assert_eq!(lines.len(), 3);
+        assert_eq!(lines[0].kind, MdLineKind::Heading);
+        assert_eq!(lines[1].kind, MdLineKind::Bullet);
+        assert_eq!(lines[2].kind, MdLineKind::Numbered(2));
+        assert_eq!(lines[1].plain_text(), "• bullet");
+        assert_eq!(lines[2].plain_text(), "2. second");
+    }
+
+    #[test]
+    fn bubble_renders_plain_projection() {
+        let raw = "**Hello**\n- one";
+        let plain = markdown_plain_projection(raw);
+        assert!(!plain.contains("**"));
+        assert!(plain.contains("Hello"));
+        assert!(plain.contains("• one"));
+        let font = load_font().expect("system font available for bubble projection test");
+        let (lines, _) = budgeted_lines(&font, &plain, TEXT_PX, BUBBLE_W - 28.0, bubble_line_budget());
+        assert!(lines.iter().any(|line| line.contains('•')));
     }
 }

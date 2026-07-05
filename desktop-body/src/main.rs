@@ -570,6 +570,13 @@ fn reply_bubble(awaiting_reply: bool, text: &str) -> String {
     }
 }
 
+/// The activity wire is the union of the body's two honest brackets — the governance bracket
+/// (F2: `action_request`→`action_result`) and the chat bracket (`said`→reply landing) — and
+/// nothing else; soul tiers and route health never reach it (the F4 law, fourth application).
+fn body_activity(action_in_flight: bool, awaiting_reply: bool) -> bool {
+    action_in_flight || awaiting_reply
+}
+
 trait IfEmpty {
     fn if_empty(self, fallback: &str) -> String;
 }
@@ -1651,7 +1658,7 @@ impl App {
             route_health: route_health.as_deref(),
             route_flash,
             alert_level: self.active_alert_level,
-            activity: self.action_in_flight.is_some(),
+            activity: body_activity(self.action_in_flight.is_some(), self.awaiting_reply),
             receipt_rail: &receipt_rail_items,
             interior_rows: if onboarding_view.is_some() { &[] } else { &interior_rows },
             settings: if onboarding_view.is_some() { &[] } else { &settings_rows },
@@ -4372,6 +4379,22 @@ mod tests {
         assert!(!a.is_empty());
         assert!(a.starts_with("body-req-"));
         assert!(b.starts_with("body-req-"));
+    }
+
+    #[test]
+    fn chat_reply_bracket_drives_activity() {
+        assert!(body_activity(false, true));
+    }
+
+    #[test]
+    fn action_bracket_still_drives_activity() {
+        assert!(body_activity(true, false));
+        assert!(body_activity(true, true));
+    }
+
+    #[test]
+    fn activity_rests_when_both_brackets_closed() {
+        assert!(!body_activity(false, false));
     }
 }
 

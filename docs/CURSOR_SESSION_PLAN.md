@@ -1970,3 +1970,48 @@ Unchanged.
 
 
 
+
+---
+
+## Lead audit — F3c (Fable, 2026-07-05)
+
+**Verdict: PASS — zero required fixes.** Composergrok's first slice is pin-for-pin faithful to the brief. Every claim in the builder report verified independently.
+
+### Diff review (`5335c51..9c42afe`, render.rs only)
+
+- `draw_eyes` diff is EXACTLY the deliberate unfreeze: the `pupil_dx` param + the pupil-x expression (`ex + sign * 2.0 + pupil_dx`). White ellipse, blink guard, colors, everything else byte-unchanged.
+- `activity_gaze_dx` is the pure fn per pin 2, doc comment carries the activity-only law verbatim. Constants exact (`GAZE_SWEEP_DX = 3.0`, `GAZE_PERIOD_S = 2.6`).
+- Threading per pin 4: `gaze_dx` computed beside bob/blink; both `draw_body_content` call sites; pinned/frame views untouched (zero hunks).
+- All 4 named tests assert for real (the F4 lesson, checked first): Q-point idle ≠ ink / active == ink exactly / result-side clear; no compute-and-drop renders. Q-point margins re-derived: 3.08px inside the swept pupil, 6.04px outside the centered one — safe against AA both ways.
+- Test-build warnings: only the pre-existing cx/cy/ay trio. No new unused-variable tells.
+
+### Rest-frame pixel identity (the refined canary — verified against a real origin build)
+
+Built origin `48aa1bf` in a worktree, injected an identical frame-hash test into both trees (full untucked clay `Sprite::paint`, `activity=false`, `alert_level=None`, Neutral, four `t` values: 0, 0.65 (+sin peak), 1.95 (−sin peak), 3.9 (mid-blink)). **All four canvas hashes identical origin↔F3c:**
+
+```
+t=0    316cf57c8f258acb
+t=0.65 aba6e93f304c5f3c
+t=1.95 282270fa5d3e27dc
+t=3.9  15b8505b9e675684
+```
+
+At rest the figure paints the exact old pixels; the unfreeze is invisible until activity is on. (Injected test removed after the run; tree clean.)
+
+### Gates (independently re-run at `9c42afe`, forced recompile)
+
+- `cargo test`: **150 + 0 / 29** (baseline 146 + exactly the 4 named tests; existing tests byte-unmodified).
+- `cargo build --release`: **9 known warnings**, nothing new.
+- `npx tsc --noEmit`: clean. `npx vitest run`: **278 / 31**.
+
+### Canaries (vs origin `48aa1bf`)
+
+main.rs + presence.rs byte-untouched. `draw_mouth`, `draw_closed_eyes`, `draw_bump`, `draw_bump_halo`, `draw_bump_eyes_awake`, `draw_ring`, `draw_figure`, `draw_frame_face`, `draw_pinned_view`, `draw_frame_view`, pose fns: zero diff hunks — byte-identical. Zero new color values (`EYE_INK_BGRA` in tests is a channel swap of the existing ink). Bar/tips/halo, hit/summon/input geometry untouched.
+
+### Owner walk script — F3c (the gate before push)
+
+1. **Rest**: untucked figure — eyes exactly as they've always been (blink, emotion faces all unchanged).
+2. **Confirm**: fire a gated Edit → amber ring + Curious face; **gaze does not move** while waiting on you.
+3. **In flight**: approve → green boundary ring AND the pupils scan slowly side to side (~2.6s cycle) — the buddy is reading.
+4. **Result lands**: ring gone, gaze centered, decision face as before. No lingering motion.
+5. Amplitude (3px) and cadence (2.6s) are each one named constant — tune at the walk if the scan reads too subtle or too twitchy.

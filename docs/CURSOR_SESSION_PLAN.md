@@ -2015,3 +2015,7 @@ main.rs + presence.rs byte-untouched. `draw_mouth`, `draw_closed_eyes`, `draw_bu
 3. **In flight**: approve → green boundary ring AND the pupils scan slowly side to side (~2.6s cycle) — the buddy is reading.
 4. **Result lands**: ring gone, gaze centered, decision face as before. No lingering motion.
 5. Amplitude (3px) and cadence (2.6s) are each one named constant — tune at the walk if the scan reads too subtle or too twitchy.
+
+## Owner walk — F3c (2026-07-05): PASS → SHIPPED
+
+Walk successful, owner ruling: push. F3c ships at the briefed amplitude/cadence (3px / 2.6s — no tuning requested). The expression pass is complete: bar tips (F4), waking tucked eyes (F3b), working untucked gaze (F3c), all driven by the one activity wire.

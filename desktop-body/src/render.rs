@@ -3939,19 +3939,27 @@ fn draw_tucked_bubble(pixmap: &mut Pixmap, font: &Font, edge: BumpEdge, w: u32, 
         pixmap.stroke_path(&path, &border, &stroke, Transform::identity(), None);
     }
     let max_lines = (((rect.h - pad_top - 6.0) / LINE_H).floor() as i32).max(1) as usize;
-    let lines = if text.is_empty() {
-        Vec::new()
+    let (lines, hidden) = if text.is_empty() {
+        (Vec::new(), 0)
     } else {
-        wrap(font, text, TEXT_PX, rect.w - pad_x * 2.0, max_lines)
+        budgeted_lines(font, text, TEXT_PX, rect.w - pad_x * 2.0, max_lines)
     };
     let mut baseline = rect.y + pad_top;
     if lines.is_empty() {
         draw_line(pixmap, font, "…", rect.x + pad_x, baseline, TEXT_PX, [130, 138, 150]);
     } else {
-        for line in &lines {
-            draw_line(pixmap, font, line, rect.x + pad_x, baseline, TEXT_PX, [16, 24, 44]);
+        for (i, line) in lines.iter().enumerate() {
+            let color = if hidden > 0 && i + 1 == lines.len() {
+                [130, 122, 114]
+            } else {
+                [16, 24, 44]
+            };
+            draw_line(pixmap, font, line, rect.x + pad_x, baseline, TEXT_PX, color);
             baseline += LINE_H;
         }
+    }
+    if !text.is_empty() {
+        draw_expand_glyph(pixmap, tucked_bubble_expand_rect(edge, w, h));
     }
 }
 
@@ -6413,5 +6421,76 @@ mod tests {
         let (lines, hidden) = budgeted_lines(&font, &long, TEXT_PX, SURFACE_W as f32 - 44.0, budget);
         assert!(hidden > 0);
         assert!(lines.last().unwrap().starts_with('+'));
+    }
+
+    #[test]
+    fn tucked_bubble_overflow_draws_more_marker() {
+        let font = load_font().expect("system font available for tucked bubble test");
+        let pad_top = 18.0;
+        let max_lines =
+            (((TUCK_PEEK_BUBBLE_H - pad_top - 6.0) / LINE_H).floor() as i32).max(1) as usize;
+        let long = (0..60).map(|i| format!("word{i}")).collect::<Vec<_>>().join(" ");
+        let (lines, hidden) = budgeted_lines(&font, &long, TEXT_PX, TUCK_PEEK_W - 24.0, max_lines);
+        assert!(hidden > 0);
+        assert!(lines.last().unwrap().starts_with('+'));
+    }
+
+    #[test]
+    fn tucked_expand_glyph_inside_peek_bubble() {
+        const W: u32 = 200;
+        const H: u32 = 120;
+        let edge = BumpEdge::Left;
+        let bubble = tucked_bubble_rect(edge, W, H);
+        let expand = tucked_bubble_expand_rect(edge, W, H);
+        assert!(expand.x >= bubble.x);
+        assert!(expand.y >= bubble.y);
+        assert!(expand.x + expand.w <= bubble.x + bubble.w);
+        assert!(expand.y + expand.h <= bubble.y + bubble.h);
+    }
+
+    #[test]
+    fn reader_paints_identically_tucked_and_untucked() {
+        let w = SURFACE_W;
+        let h = 480_u32;
+        let sprite = Sprite::new();
+        let text = "Same reader card whether the buddy was tucked or open.";
+        let paint = |tucked: Option<BumpEdge>| -> Vec<u8> {
+            let mut canvas = vec![0_u8; (w * h * 4) as usize];
+            let view = BodyView {
+                t: 0.0,
+                emotion: Emotion::Neutral,
+                speech: Some(text),
+                torso_output: TorsoOutput::Text(TextCard { title: "", body: "" }),
+                chat_open: false,
+                tucked,
+                tucked_show_bubble: tucked.is_some(),
+                tucked_show_input: false,
+                input_text: "",
+                input_placeholder: "",
+                input_focused: false,
+                review_pending: false,
+                edit_pending: false,
+                posture_badge: None,
+                surface_bloom: &[],
+                route_health: None,
+                route_flash: false,
+                alert_level: None,
+                activity: false,
+                receipt_rail: &[],
+                interior_rows: &[],
+                settings: &[],
+                onboarding: None,
+                layout: Layout::initial(),
+                pinned: None,
+                frame: None,
+                color: CLAY_DEFAULT,
+                dock_show: DockShow::Both,
+                skin: Skin::Clay,
+                reader: Some(text),
+            };
+            sprite.paint(&mut canvas, w, h, &view);
+            canvas
+        };
+        assert_eq!(paint(Some(BumpEdge::Left)), paint(None));
     }
 }

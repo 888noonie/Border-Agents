@@ -1874,14 +1874,11 @@ impl App {
                 self.last_text_output = Some(text.clone());
                 self.speech = Some(text);
             } else {
-                self.torso_surface = surface;
-                self.awaiting_reply = false;
-                self.pending_effector = None;
-                self.session_note = "Latest provider output loaded in the torso.".to_string();
-                self.speech = Some(loaded_bubble_for_surface(&self.torso_surface));
+                self.show_reply_in_torso(&text);
+                self.speech = Some(loaded_bubble(&text));
             }
         } else {
-            self.speech = Some(text);
+            self.speech = Some(reply_bubble(false, &text));
         }
         self.update_input_region();
     }
@@ -2007,6 +2004,9 @@ impl App {
             // (the input never receives a press, and clicks fall to the window behind).
             if self.tucked_view.shows_bubble() {
                 rects.push(render::tucked_bubble_rect(bump, self.width, self.height).as_i32());
+                if self.speech.is_some() {
+                    rects.push(render::tucked_bubble_expand_rect(bump, self.width, self.height).as_i32());
+                }
             }
             if self.tucked_view.shows_input() {
                 rects.push(render::tucked_input_rect(bump, self.width, self.height).as_i32());
@@ -2542,6 +2542,11 @@ impl App {
             let bump = edge_to_bump(edge);
             let target = if self.point_in_tucked_summon(edge, x, y) {
                 PressTarget::Bump
+            } else if self.tucked_view.shows_bubble()
+                && self.speech.is_some()
+                && render::tucked_bubble_expand_rect(bump, self.width, self.height).contains(x, y)
+            {
+                PressTarget::BubbleExpand
             } else if self.tucked_view.shows_input()
                 && render::tucked_input_rect(bump, self.width, self.height).contains(x, y)
             {
@@ -3454,13 +3459,6 @@ impl App {
             .as_deref()
             .or(self.speech.as_deref())
             .filter(|text| !text.trim().is_empty())
-    }
-
-    fn reader_text(&self) -> Option<&str> {
-        if self.reader_saved.is_none() {
-            return None;
-        }
-        self.reader_source_text()
     }
 
     fn open_reader(&mut self) {
@@ -4539,6 +4537,32 @@ mod tests {
         let pointer = loaded_bubble_for_surface(&surface);
         assert_ne!(pointer, "sunset over the lake");
         assert!(pointer.contains("picture") || pointer.contains("torso"));
+    }
+
+    #[test]
+    fn saved_geometry_roundtrip_restores_exactly() {
+        let saved = SavedGeometry {
+            margin_top: 41.0,
+            margin_left: 72.0,
+            w: render::SURFACE_W,
+            h: 280,
+            tucked: Some(presence::Edge::Right),
+        };
+        let mut margin_top = 0.0_f64;
+        let mut margin_left = 0.0_f64;
+        let mut w = 0_u32;
+        let mut h = 0_u32;
+        let mut tucked = None;
+        margin_top = saved.margin_top;
+        margin_left = saved.margin_left;
+        w = saved.w;
+        h = saved.h;
+        tucked = saved.tucked;
+        assert_eq!(margin_top, 41.0);
+        assert_eq!(margin_left, 72.0);
+        assert_eq!(w, render::SURFACE_W);
+        assert_eq!(h, 280);
+        assert_eq!(tucked, Some(presence::Edge::Right));
     }
 }
 

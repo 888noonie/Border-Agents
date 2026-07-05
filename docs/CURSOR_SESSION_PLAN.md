@@ -2019,3 +2019,41 @@ main.rs + presence.rs byte-untouched. `draw_mouth`, `draw_closed_eyes`, `draw_bu
 ## Owner walk — F3c (2026-07-05): PASS → SHIPPED
 
 Walk successful, owner ruling: push. F3c ships at the briefed amplitude/cadence (3px / 2.6s — no tuning requested). The expression pass is complete: bar tips (F4), waking tucked eyes (F3b), working untucked gaze (F3c), all driven by the one activity wire.
+
+---
+
+## Slice F5 — thinking gaze: the chat reply bracket joins the activity wire — brief for Composergrok
+
+**Context.** Everything is pushed (`origin/laminal-ring-pivot` head `8f9f298`, tree clean) — build ON TOP of head. The expression pass shipped (F4 tips, F3b waking eyes, F3c working gaze), all gated on `BodyView.activity` — but that bool only tracks the governance bracket (`action_in_flight`), and with the fast local gateway that green is a flash (F2's own honest note). Meanwhile the buddy's LONGEST real activity — waiting on a provider reply after you type to it — never animates anything. Scouting found the design gift (the F3b pattern repeating): **the chat bracket already exists body-side.** `awaiting_reply` is set exactly once in `submit_input` (main.rs:2422, when `said` goes to the soul) and cleared when the answer lands — `show_reply_in_torso` (:1737, via `say` when a reply was awaited) and `apply_output` (:1753). That IS the ruled green lifecycle (event bracket, no timer), and the body knows both ends itself — no soul inference, law 7 clean. This dissolves the old "eyes-as-activity parked on a soul-side busy signal" prerequisite: no soul/TS change needed at all.
+
+### Design pins
+
+1. **Pure fn `body_activity(action_in_flight: bool, awaiting_reply: bool) -> bool`** in main.rs = `action_in_flight || awaiting_reply`. Doc comment: the activity wire is the union of the body's two honest brackets — the governance bracket (F2: `action_request`→`action_result`) and the chat bracket (`said`→reply landing) — and nothing else; soul tiers and route health never reach it (the F4 law, fourth application).
+2. **One call-site edit**: main.rs:1654 becomes `activity: body_activity(self.action_in_flight.is_some(), self.awaiting_reply),`. This is the ONLY existing-code edit in the slice.
+3. **Everything downstream is already built and stays byte-frozen**: render.rs and presence.rs byte-untouched. Green tips, bump halo, waking eyes, untucked boundary ring, working gaze all light up through the existing `presented_alert_level`/`bump_eyes_awake`/`activity_gaze_dx` paths with zero changes.
+4. **`awaiting_reply` lifecycle untouched**: do not add, move, or remove any set/clear site (:2422 set; :1737, :1753 clears; :658 init). The bracket is proven working code; F5 only reads it.
+5. **Known limit, adjudicated by lead — do not "fix"**: if a reply never comes (dead provider, wizard flow that answers no `said`), the buddy keeps looking busy. That is HONEST — the body is still waiting, and the same staleness is already visible in the "Reply pending" torso card. No timeout, no decay timer (banned by the green ruling). If this bites at a walk it becomes a named follow-up, not a silent guard here.
+6. **Emotion channel untouched**: `submit_input`'s `Emotion::Thinking` stays; the gaze sweep composes with the Thinking face exactly as F3c pinned.
+
+### Named tests (exactly these 3, on the pure fn — the render behavior is already pinned by F4/F3b/F3c tests)
+
+- `chat_reply_bracket_drives_activity` — `body_activity(false, true) == true`.
+- `action_bracket_still_drives_activity` — `body_activity(true, false) == true` and `body_activity(true, true) == true`.
+- `activity_rests_when_both_brackets_closed` — `body_activity(false, false) == false`.
+
+### Gates (forced recompile first: `touch desktop-body/src/*.rs`)
+
+- `cargo test` → baseline **150 + 0 (main) / 29**, growth by these 3 named tests only → expect 153. **All existing tests pass UNMODIFIED — no exceptions** (every render test constructs `BodyView` with a literal `activity:` value, so the call-site change is invisible to them). If anything seems to force a test edit, that is a conflict stop: STOP and report.
+- `cargo build --release` → 9 known warnings, nothing new. `npx tsc --noEmit` clean; `npx vitest run` 278/31 (no TS in scope).
+
+### Canaries (lead re-checks all, vs origin `8f9f298`)
+
+render.rs + presence.rs byte-untouched; diff = the pure fn + tests + the one call-site line; `awaiting_reply` set/clear sites byte-identical; zero new color values (no colors in scope at all); no timers, no new state fields.
+
+### Commit
+
+`feat(body): laminal ring pivot — Slice F5 — thinking gaze (chat reply bracket joins the activity wire; said→reply greens the buddy)`
+
+Builder report appended below this brief, committed separately as `docs: builder report — Slice F5 thinking gaze`. **Commit but DO NOT push** — F5 ships after the owner walk (type to the buddy → while it thinks: green tips + open tucked eyes + scanning untucked gaze; reply lands → everything rests; governance bracket unchanged). **STOP after F5.**
+
+(F5 builder report pending.)

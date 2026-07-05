@@ -2256,3 +2256,16 @@ feat(body): laminal ring pivot — Slice G2 — reader (speech bubble expands to
 ```
 
 `BodyView.reader`; `draw_reader` takeover; `bubble_expand_rect` + expand glyph; `SavedGeometry` + open/close reader; `TorsoAction::Expand` live. Mechanical `reader: None,` on eight BodyView test literals. Five named tests. Gates: cargo 163+0/29, release 9 warnings, tsc clean, vitest 278/31. presence.rs byte-untouched.
+
+## Builder report — G3 (Grok Build, 2026-07-05)
+
+**Status:** G3 complete. **Stopped after G3.** Not pushed.
+
+### Commit
+
+```
+442e717
+feat(body): laminal ring pivot — Slice G3 — reader from the dock (tucked peek bubble expands; all dock modes speak at length)
+```
+
+Tucked peek: `budgeted_lines` + `+N more`; `tucked_bubble_expand_rect`; expand glyph + `BubbleExpand` hit from dock. Same reader takeover as G2. Four named tests. Gates: cargo 167+0/29, release 9 warnings, tsc clean, vitest 278/31. presence.rs byte-untouched; F5 `awaiting_reply` clears sacred; figure draw fns untouched.

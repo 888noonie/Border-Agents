@@ -88,7 +88,11 @@ const EYE_INK: [u8; 4] = [28, 22, 18, 255]; // draw_eyes dark pupil
 
 // --- UI geometry -----------------------------------------------------------------
 
-const BUBBLE_W: f32 = 172.0;
+pub const BUBBLE_W: f32 = 172.0;
+pub const BUBBLE_W_DEFAULT: f32 = BUBBLE_W;
+pub const BUBBLE_W_MIN: f32 = BUBBLE_W;
+pub const BUBBLE_W_MAX: f32 = 420.0;
+const BUBBLE_WIDTH_DRAG_H: f32 = 15.0;
 pub const PINNED_BUBBLE_W_MIN: f32 = 188.0;
 pub const PINNED_BUBBLE_W_MAX: f32 = 292.0;
 const BUBBLE_Y: f32 = 8.0;
@@ -128,13 +132,13 @@ fn copy_glyph_beside(expand: Rect) -> Rect {
 }
 
 /// Copy-all control on the reader card (single source for paint + hit).
-pub fn reader_copy_rect(w: u32, h: u32) -> Rect {
-    copy_glyph_beside(reader_collapse_rect(w, h))
+pub fn reader_copy_rect(layout: &Layout, surface_h: u32) -> Rect {
+    copy_glyph_beside(reader_collapse_rect(layout, surface_h))
 }
 
 /// Reader body text area (below title, above footer) for drag-select hit tests.
-pub fn reader_text_rect(w: u32, h: u32) -> Rect {
-    let card = Rect { x: 8.0, y: 8.0, w: w as f32 - 16.0, h: h as f32 - 16.0 };
+pub fn reader_text_rect(layout: &Layout, surface_h: u32) -> Rect {
+    let card = reader_card_rect(layout, surface_h);
     let top = card.y + 30.0 + PANEL_LABEL_PX + 8.0;
     let bottom = card.y + card.h - 14.0;
     Rect {
@@ -164,15 +168,15 @@ pub fn hit_char_index(font: &Font, line: &str, px: f32, x_offset: f32) -> usize 
 }
 
 /// Collapse control on the reader card (single source for paint + hit).
-pub fn reader_collapse_rect(w: u32, h: u32) -> Rect {
-    expand_glyph_rect(Rect { x: 8.0, y: 8.0, w: w as f32 - 16.0, h: h as f32 - 16.0 })
+pub fn reader_collapse_rect(layout: &Layout, surface_h: u32) -> Rect {
+    expand_glyph_rect(reader_card_rect(layout, surface_h))
 }
 
 /// Wheel notch → line delta (discrete = 3 lines per step; else absolute-derived, min magnitude 1).
 pub fn scroll_delta_lines(discrete: Option<i32>, absolute: f64) -> i32 {
     if let Some(d) = discrete {
         if d != 0 {
-            return -d * 3;
+            return d * 3;
         }
     }
     if absolute == 0.0 {
@@ -181,10 +185,45 @@ pub fn scroll_delta_lines(discrete: Option<i32>, absolute: f64) -> i32 {
     let from_abs = (absolute / f64::from(LINE_H)).round() as i32;
     let mag = from_abs.abs().max(1);
     if absolute > 0.0 {
-        mag
-    } else {
         -mag
+    } else {
+        mag
     }
+}
+
+pub fn max_bubble_w(facing: Facing, _body_len: f32) -> f32 {
+    let figure_half = (TORSO_W / 2.0).max(HEAD_R);
+    match facing {
+        Facing::Right => SURFACE_W as f32 - (FIG_CX + figure_half + UI_GAP) - 4.0,
+        Facing::Left => FIG_CX - figure_half - UI_GAP - 4.0,
+    }
+}
+
+pub fn clamp_bubble_w(facing: Facing, body_len: f32, w: f32) -> f32 {
+    w.clamp(BUBBLE_W_MIN, max_bubble_w(facing, body_len).min(BUBBLE_W_MAX))
+}
+
+pub fn bubble_width_drag_rect(bubble: Rect) -> Rect {
+    Rect {
+        x: bubble.x,
+        y: bubble.y,
+        w: bubble.w,
+        h: BUBBLE_WIDTH_DRAG_H,
+    }
+}
+
+pub fn reader_card_rect(layout: &Layout, surface_h: u32) -> Rect {
+    let anchor = layout.bubble_rect();
+    Rect {
+        x: anchor.x,
+        y: 8.0,
+        w: layout.bubble_w,
+        h: surface_h as f32 - 16.0,
+    }
+}
+
+pub fn reader_width_drag_rect(layout: &Layout, surface_h: u32) -> Rect {
+    bubble_width_drag_rect(reader_card_rect(layout, surface_h))
 }
 
 pub fn clamp_reader_scroll(scroll: usize, total: usize, budget: usize) -> usize {
@@ -200,19 +239,19 @@ fn reader_body_budget(surface_h: u32, total_lines: usize) -> usize {
     }
 }
 
-pub fn reader_total_lines(font: &Font, text: &str, surface_w: u32) -> usize {
-    reader_wrapped_md_lines(font, text, surface_w).len()
+pub fn reader_total_lines(font: &Font, text: &str, card_w: f32) -> usize {
+    reader_wrapped_md_lines(font, text, card_w).len()
 }
 
 pub fn reader_scroll_apply(
     font: &Font,
     text: &str,
-    surface_w: u32,
+    card_w: f32,
     surface_h: u32,
     scroll: usize,
     delta: i32,
 ) -> usize {
-    let total = reader_total_lines(font, text, surface_w);
+    let total = reader_total_lines(font, text, card_w);
     let budget = reader_body_budget(surface_h, total);
     let max_scroll = total.saturating_sub(budget);
     ((scroll as i32) + delta).clamp(0, max_scroll as i32) as usize
@@ -324,12 +363,22 @@ pub enum PerimeterId {
 pub struct Layout {
     pub facing: Facing,
     pub body_len: f32,
+    pub bubble_w: f32,
 }
 
 impl Layout {
+    pub fn new(facing: Facing, body_len: f32, bubble_w: f32) -> Layout {
+        Layout { facing, body_len, bubble_w }
+    }
+
     #[cfg(test)]
     pub fn initial() -> Layout {
-        Layout { facing: Facing::Right, body_len: BODY_LEN_DEFAULT }
+        Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT)
+    }
+
+    /// The top strip of the speech bubble — drag left→right to widen.
+    pub fn bubble_width_drag_rect(&self) -> Rect {
+        bubble_width_drag_rect(self.bubble_rect())
     }
 
     /// Bottom of the torso — where the hips/legs start.
@@ -356,7 +405,7 @@ impl Layout {
     /// input region uses this full rect).
     pub fn bubble_rect(&self) -> Rect {
         let h = 30.0 + bubble_line_budget() as f32 * LINE_H + 12.0;
-        Rect { x: self.ui_x(BUBBLE_W), y: BUBBLE_Y, w: BUBBLE_W, h }
+        Rect { x: self.ui_x(self.bubble_w), y: BUBBLE_Y, w: self.bubble_w, h }
     }
 
     /// The expand affordance at the speech bubble's top-right (single source for paint + hit).
@@ -372,7 +421,7 @@ impl Layout {
     /// Chat input box sized for `lines` lines of text.
     pub fn input_rect(&self, lines: usize) -> Rect {
         let lines = lines.clamp(1, INPUT_MAX_LINES) as f32;
-        Rect { x: self.ui_x(BUBBLE_W), y: INPUT_Y, w: BUBBLE_W, h: 16.0 + lines * LINE_H }
+        Rect { x: self.ui_x(self.bubble_w), y: INPUT_Y, w: self.bubble_w, h: 16.0 + lines * LINE_H }
     }
 
     /// The input box at its maximum height — what the input region covers, so
@@ -1660,6 +1709,7 @@ impl Sprite {
         let Some(mut pixmap) = Pixmap::new(w, h) else {
             return;
         };
+        let gaze_dx = activity_gaze_dx(view.activity, view.t);
 
         // Reader takeover wins over every other mode (onboarding precedent).
         if let Some(text) = view.reader {
@@ -1668,7 +1718,7 @@ impl Sprite {
                     &mut pixmap,
                     font,
                     text,
-                    w,
+                    &view.layout,
                     h,
                     view.reader_scroll,
                     view.reader_copied,
@@ -1708,7 +1758,7 @@ impl Sprite {
                 draw_bump(&mut pixmap, edge, w, h, view.color);
                 draw_bump_halo(&mut pixmap, edge, w, h, view.activity, view.alert_level);
                 if bump_eyes_awake(view.activity) {
-                    draw_bump_eyes_awake(&mut pixmap, edge, w, h);
+                    draw_bump_eyes_awake(&mut pixmap, edge, w, h, gaze_dx);
                 }
             }
             if let Some(font) = &self.font {
@@ -1734,7 +1784,6 @@ impl Sprite {
         }
 
         let bob = (view.t * std::f32::consts::TAU / 3.6).sin() * 3.0;
-        let gaze_dx = activity_gaze_dx(view.activity, view.t);
         // A ~150ms blink every 4s.
         let blinking = (view.t % 4.0) > 3.85;
         let face = view.emotion.face();
@@ -3154,7 +3203,7 @@ fn draw_bump_halo(
 /// F3b sibling to `draw_bump` (and `draw_bump_halo`). Draws the awake Morph eyes (white + pupil)
 /// when the tucked head is visible and activity green is on. Bodies of `draw_bump`,
 /// `draw_bump_halo`, `draw_closed_eyes` and `draw_eyes` remain byte-identical.
-fn draw_bump_eyes_awake(pixmap: &mut Pixmap, edge: BumpEdge, w: u32, h: u32) {
+fn draw_bump_eyes_awake(pixmap: &mut Pixmap, edge: BumpEdge, w: u32, h: u32, pupil_dx: f32) {
     let centers = bump_eye_centers(edge, w, h);
     let white = solid(Color::from_rgba8(BUMP_EYE_WHITE[0], BUMP_EYE_WHITE[1], BUMP_EYE_WHITE[2], BUMP_EYE_WHITE[3]));
     let pupil = solid(Color::from_rgba8(EYE_INK[0], EYE_INK[1], EYE_INK[2], EYE_INK[3]));
@@ -3162,7 +3211,7 @@ fn draw_bump_eyes_awake(pixmap: &mut Pixmap, edge: BumpEdge, w: u32, h: u32) {
         if let Some(eye) = PathBuilder::from_circle(ex, ey, BUMP_EYE_WHITE_R) {
             pixmap.fill_path(&eye, &white, FillRule::Winding, Transform::identity(), None);
         }
-        if let Some(p) = PathBuilder::from_circle(ex, ey, BUMP_EYE_PUPIL_R) {
+        if let Some(p) = PathBuilder::from_circle(ex + pupil_dx, ey, BUMP_EYE_PUPIL_R) {
             pixmap.fill_path(&p, &pupil, FillRule::Winding, Transform::identity(), None);
         }
     }
@@ -4064,14 +4113,14 @@ fn draw_reader(
     pixmap: &mut Pixmap,
     font: &Font,
     text: &str,
-    w: u32,
-    h: u32,
+    layout: &Layout,
+    surface_h: u32,
     scroll: usize,
     copied: bool,
     selection: Option<(ReaderPos, ReaderPos)>,
-    clay: [u8; 3],
+    instance_color: [u8; 3],
 ) {
-    let card = Rect { x: 8.0, y: 8.0, w: w as f32 - 16.0, h: h as f32 - 16.0 };
+    let card = reader_card_rect(layout, surface_h);
     let bg = Color::from_rgba8(247, 251, 255, 245);
     let border = solid(Color::from_rgba8(0, 0, 0, 175));
     draw_round_rect(pixmap, card, bg);
@@ -4080,19 +4129,19 @@ fn draw_reader(
         stroke.width = 1.0;
         pixmap.stroke_path(&path, &border, &stroke, Transform::identity(), None);
     }
-    draw_copy_glyph(pixmap, reader_copy_rect(w, h));
-    draw_expand_glyph(pixmap, reader_collapse_rect(w, h));
+    draw_copy_glyph(pixmap, reader_copy_rect(layout, surface_h));
+    draw_expand_glyph(pixmap, reader_collapse_rect(layout, surface_h));
     let pad_x = 14.0;
     let mut baseline = card.y + 30.0;
     draw_line(pixmap, font, "Latest output", card.x + pad_x, baseline, PANEL_LABEL_PX, [102, 88, 76]);
     baseline += PANEL_LABEL_PX + 8.0;
-    let wrapped = reader_wrapped_md_lines(font, text, w);
-    let body_budget = reader_body_budget(h, wrapped.len());
+    let wrapped = reader_wrapped_md_lines(font, text, card.w);
+    let body_budget = reader_body_budget(surface_h, wrapped.len());
     let scroll = clamp_reader_scroll(scroll, wrapped.len(), body_budget);
     let end = (scroll + body_budget).min(wrapped.len());
     let visible = &wrapped[scroll..end];
     let norm_sel = selection.map(normalize_reader_selection);
-    let highlight = Color::from_rgba8(clay[0], clay[1], clay[2], 70);
+    let highlight = Color::from_rgba8(instance_color[0], instance_color[1], instance_color[2], 70);
     for (row, line) in visible.iter().enumerate() {
         let line_idx = scroll + row;
         let plain = plain_wrapped_line(line);
@@ -4143,7 +4192,7 @@ fn draw_input(
     t: f32,
 ) {
     let pad = 12.0;
-    let max_w = BUBBLE_W - pad * 2.0;
+    let max_w = layout.bubble_w - pad * 2.0;
 
     // Wrap the whole text, then keep the tail — the newest words stay visible.
     let all = wrap(font, text, TEXT_PX, max_w, usize::MAX);
@@ -4580,13 +4629,22 @@ fn plain_wrapped_line(line: &WrappedMdLine) -> String {
     line.spans.iter().map(|s| s.text.as_str()).collect()
 }
 
-pub fn reader_hit_pos(font: &Font, text: &str, w: u32, h: u32, scroll: usize, x: f32, y: f32) -> Option<ReaderPos> {
-    let area = reader_text_rect(w, h);
+pub fn reader_hit_pos(
+    font: &Font,
+    text: &str,
+    layout: &Layout,
+    surface_h: u32,
+    scroll: usize,
+    x: f32,
+    y: f32,
+) -> Option<ReaderPos> {
+    let area = reader_text_rect(layout, surface_h);
     if x < area.x || y < area.y || x >= area.x + area.w || y >= area.y + area.h {
         return None;
     }
-    let wrapped = reader_wrapped_md_lines(font, text, w);
-    let body_budget = reader_body_budget(h, wrapped.len());
+    let card = reader_card_rect(layout, surface_h);
+    let wrapped = reader_wrapped_md_lines(font, text, card.w);
+    let body_budget = reader_body_budget(surface_h, wrapped.len());
     let scroll = clamp_reader_scroll(scroll, wrapped.len(), body_budget);
     let row = ((y - area.y) / LINE_H).floor() as usize;
     if row >= body_budget || scroll + row >= wrapped.len() {
@@ -4600,8 +4658,8 @@ pub fn reader_hit_pos(font: &Font, text: &str, w: u32, h: u32, scroll: usize, x:
     Some(ReaderPos { line: line_idx, ch })
 }
 
-pub fn reader_selection_plain(font: &Font, text: &str, w: u32, sel: (ReaderPos, ReaderPos)) -> String {
-    let wrapped = reader_wrapped_md_lines(font, text, w);
+pub fn reader_selection_plain(font: &Font, text: &str, card_w: f32, sel: (ReaderPos, ReaderPos)) -> String {
+    let wrapped = reader_wrapped_md_lines(font, text, card_w);
     let (start, end) = normalize_reader_selection(sel);
     if wrapped.is_empty() {
         return String::new();
@@ -4629,8 +4687,8 @@ pub fn reader_selection_plain(font: &Font, text: &str, w: u32, sel: (ReaderPos, 
     out
 }
 
-fn reader_wrapped_md_lines(font: &Font, text: &str, surface_w: u32) -> Vec<WrappedMdLine> {
-    let text_w = surface_w as f32 - 16.0 - 28.0;
+fn reader_wrapped_md_lines(font: &Font, text: &str, card_w: f32) -> Vec<WrappedMdLine> {
+    let text_w = card_w - 28.0;
     markdown_lite(text)
         .iter()
         .flat_map(|line| wrap_logical_md_line(font, line, TEXT_PX, text_w))
@@ -4937,7 +4995,7 @@ mod tests {
     fn image_card_draws_a_decoded_image_without_panicking() {
         // Drives the real draw path with a decoded image fitted into the output pane.
         let image = decode_image_bytes(include_bytes!("../assets/eiffel-tower.jpg")).unwrap();
-        let layout = Layout { facing: Facing::Right, body_len: BODY_LEN_MIN };
+        let layout = Layout::new(Facing::Right, BODY_LEN_MIN, BUBBLE_W_DEFAULT);
         let rect = layout.output_panel_rect();
         let mut pixmap = Pixmap::new(SURFACE_W, layout.surface_h()).unwrap();
         draw_image_card(&mut pixmap, rect, &ImageCard { image: Some(&image) });
@@ -4947,8 +5005,8 @@ mod tests {
 
     #[test]
     fn surface_grows_with_body_stretch() {
-        let short = Layout { facing: Facing::Right, body_len: BODY_LEN_MIN };
-        let tall = Layout { facing: Facing::Right, body_len: BODY_LEN_MAX };
+        let short = Layout::new(Facing::Right, BODY_LEN_MIN, BUBBLE_W_DEFAULT);
+        let tall = Layout::new(Facing::Right, BODY_LEN_MAX, BUBBLE_W_DEFAULT);
         assert!(tall.surface_h() > short.surface_h());
         // Even fully squashed, the UI column still fits.
         assert!(short.surface_h() >= UI_MIN_H as u32);
@@ -5045,8 +5103,8 @@ mod tests {
 
     #[test]
     fn ui_flips_to_face_inward() {
-        let right = Layout { facing: Facing::Right, body_len: BODY_LEN_DEFAULT };
-        let left = Layout { facing: Facing::Left, body_len: BODY_LEN_DEFAULT };
+        let right = Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT);
+        let left = Layout::new(Facing::Left, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT);
         // Facing right: UI sits right of the figure; facing left: entirely left of it.
         assert!(right.bubble_rect().x > FIG_CX);
         assert!(left.bubble_rect().x + left.bubble_rect().w < FIG_CX);
@@ -5066,7 +5124,7 @@ mod tests {
         assert!(bbox.x <= head.x && bbox.x + bbox.w >= head.x + head.w);
         assert!(bbox.y <= head.y && bbox.y + bbox.h >= head.y + head.h);
         // Torso fits inside, and the bbox reaches past the arms-at-reach flank on each side.
-        let torso = Layout { facing: Facing::Right, body_len: BODY_LEN_DEFAULT }.torso_rect();
+        let torso = Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT).torso_rect();
         assert!(bbox.x <= torso.x && bbox.x + bbox.w >= torso.x + torso.w);
         let arm_reach = ARM_UPPER + ARM_FORE;
         assert!(bbox.w >= TORSO_W + arm_reach * 2.0);
@@ -5162,7 +5220,7 @@ mod tests {
     #[test]
     fn perimeter_controls_surround_the_torso_and_own_chat_buttons() {
         for facing in [Facing::Left, Facing::Right] {
-            let l = Layout { facing, body_len: BODY_LEN_MIN };
+            let l = Layout::new(facing, BODY_LEN_MIN, BUBBLE_W_DEFAULT);
             let review = l.review_button_rect();
             let paste = l.paste_button_rect();
             let edit = l.edit_button_rect();
@@ -5182,7 +5240,7 @@ mod tests {
 
     #[test]
     fn interior_rows_fit_inside_the_torso_panel_and_stack_in_order() {
-        let l = Layout { facing: Facing::Right, body_len: BODY_LEN_DEFAULT };
+        let l = Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT);
         let panel = l.output_panel_rect();
         let rows = l.interior_rows();
         // Seven perimeter controls fold into the interior list.
@@ -5215,7 +5273,7 @@ mod tests {
     fn interior_rows_empty_when_torso_too_short_to_fit_a_row() {
         // A near-zero body length can't legibly fit even one row — fail closed rather than draw
         // a cramped, unreadable list.
-        let l = Layout { facing: Facing::Right, body_len: BODY_LEN_MIN };
+        let l = Layout::new(Facing::Right, BODY_LEN_MIN, BUBBLE_W_DEFAULT);
         let rows = l.interior_rows();
         // BODY_LEN_MIN is small enough that row_h clamps below the 10px legibility floor.
         assert!(rows.is_empty(), "expected no interior rows at BODY_LEN_MIN, got {}", rows.len());
@@ -5223,7 +5281,7 @@ mod tests {
 
     #[test]
     fn interior_rows_for_fills_the_panel_evenly_and_caps_row_height() {
-        let l = Layout { facing: Facing::Right, body_len: BODY_LEN_DEFAULT };
+        let l = Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT);
         let panel = l.output_panel_rect();
         // 10 rows (the full chat-open set) should still fit a default torso and stay in-panel.
         let rects = l.interior_rows_for(10);
@@ -5240,7 +5298,7 @@ mod tests {
 
     #[test]
     fn interior_rows_for_zero_count_returns_empty() {
-        let l = Layout { facing: Facing::Right, body_len: BODY_LEN_DEFAULT };
+        let l = Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT);
         assert!(l.interior_rows_for(0).is_empty());
     }
 
@@ -5248,10 +5306,7 @@ mod tests {
     fn onboarding_layout_degenerate_when_content_too_short() {
         // onboarding_layout returns empty interactive rects when content.h < 24; use a torso
         // short enough that output_panel_rect().h - 16 < 24 (body_len < ~48).
-        let l = Layout {
-            facing: Facing::Right,
-            body_len: 40.0,
-        };
+        let l = Layout::new(Facing::Right, 40.0, BUBBLE_W_DEFAULT);
         let panel = l.output_panel_rect();
         assert!(panel.h < 32.0, "test fixture must exercise content.h < 24, got panel.h {}", panel.h);
         let layout = l.onboarding_layout(3, 2, true, true);
@@ -5262,7 +5317,7 @@ mod tests {
 
     #[test]
     fn onboarding_layout_fits_inside_torso_and_hit_test_matches_primary() {
-        let l = Layout { facing: Facing::Right, body_len: BODY_LEN_DEFAULT };
+        let l = Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT);
         let panel = l.output_panel_rect();
         let layout = l.onboarding_layout(3, 2, true, true);
         assert!(layout.card.x >= panel.x);
@@ -5288,7 +5343,7 @@ mod tests {
             body_len > BODY_LEN_DEFAULT,
             "connect needs more than default stretch, got {body_len}"
         );
-        let l = Layout { facing: Facing::Right, body_len };
+        let l = Layout::new(Facing::Right, body_len, BUBBLE_W_DEFAULT);
         let layout = l.onboarding_layout(4, 2, true, true);
         assert_eq!(layout.options.len(), 4);
         assert_eq!(layout.fields.len(), 2);
@@ -5865,11 +5920,11 @@ mod tests {
         // for eyes, use bump compose
         let mut b = Pixmap::new(200, 120).unwrap();
         draw_bump(&mut b, BumpEdge::Left, 200, 120, color);
-        if bump_eyes_awake(true) { draw_bump_eyes_awake(&mut b, BumpEdge::Left, 200, 120); }
+        if bump_eyes_awake(true) { draw_bump_eyes_awake(&mut b, BumpEdge::Left, 200, 120, 0.0); }
         let act_b = b.data().to_vec();
         let mut b2 = Pixmap::new(200, 120).unwrap();
         draw_bump(&mut b2, BumpEdge::Left, 200, 120, color);
-        if bump_eyes_awake(false) { draw_bump_eyes_awake(&mut b2, BumpEdge::Left, 200, 120); }
+        if bump_eyes_awake(false) { draw_bump_eyes_awake(&mut b2, BumpEdge::Left, 200, 120, 0.0); }
         let no_b = b2.data().to_vec();
         assert_ne!(act_b, no_b);
     }
@@ -5896,7 +5951,7 @@ mod tests {
         let plain = b.data().to_vec();
         let mut be = Pixmap::new(200, 120).unwrap();
         draw_bump(&mut be, BumpEdge::Left, 200, 120, color);
-        if bump_eyes_awake(false) { draw_bump_eyes_awake(&mut be, BumpEdge::Left, 200, 120); }
+        if bump_eyes_awake(false) { draw_bump_eyes_awake(&mut be, BumpEdge::Left, 200, 120, 0.0); }
         assert_eq!(be.data().to_vec(), plain);
     }
 
@@ -6333,7 +6388,7 @@ mod tests {
         let edge = BumpEdge::Left;
         let mut pix = Pixmap::new(BW, BH).unwrap();
         draw_bump(&mut pix, edge, BW, BH, [180, 100, 60]);
-        draw_bump_eyes_awake(&mut pix, edge, BW, BH);
+        draw_bump_eyes_awake(&mut pix, edge, BW, BH, 0.0);
         // compute anchor
         let (cx, cy) = bump_center(edge, BW, BH);
         let (dx, _dy) = (BUMP_R * BUMP_FACE_NUDGE, 0.0);
@@ -6369,14 +6424,14 @@ mod tests {
         let mut route = Pixmap::new(BW, BH).unwrap();
         draw_bump(&mut route, edge, BW, BH, [180, 100, 60]);
         if bump_eyes_awake(false) {
-            draw_bump_eyes_awake(&mut route, edge, BW, BH);
+            draw_bump_eyes_awake(&mut route, edge, BW, BH, 0.0);
         }
         assert_eq!(route.data().to_vec(), plain_buf, "route green must leave head asleep");
         // activity does wake
         let mut active = Pixmap::new(BW, BH).unwrap();
         draw_bump(&mut active, edge, BW, BH, [180, 100, 60]);
         if bump_eyes_awake(true) {
-            draw_bump_eyes_awake(&mut active, edge, BW, BH);
+            draw_bump_eyes_awake(&mut active, edge, BW, BH, 0.0);
         }
         assert_ne!(active.data().to_vec(), plain_buf, "activity green must wake the head");
     }
@@ -6440,8 +6495,8 @@ mod tests {
 
     #[test]
     fn output_panel_lives_inside_stretchable_torso() {
-        let short = Layout { facing: Facing::Right, body_len: BODY_LEN_MIN };
-        let tall = Layout { facing: Facing::Right, body_len: BODY_LEN_MAX };
+        let short = Layout::new(Facing::Right, BODY_LEN_MIN, BUBBLE_W_DEFAULT);
+        let tall = Layout::new(Facing::Right, BODY_LEN_MAX, BUBBLE_W_DEFAULT);
         let torso = tall.torso_rect();
         let panel = tall.output_panel_rect();
 
@@ -6454,7 +6509,7 @@ mod tests {
 
     #[test]
     fn torso_actions_live_inside_output_panel() {
-        let layout = Layout { facing: Facing::Right, body_len: BODY_LEN_DEFAULT };
+        let layout = Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT);
         let panel = layout.output_panel_rect();
         for action in [TorsoAction::Expand, TorsoAction::Copy, TorsoAction::Scroll] {
             let rect = layout.torso_action_rect(action);
@@ -6598,7 +6653,7 @@ mod tests {
         // The whole point of the passport: overflowing persona/provider/preview must NOT spill
         // past the torso column the way the old six-field SessionCard did.
         let font = load_font().expect("system font available for passport layout test");
-        let layout = Layout { facing: Facing::Right, body_len: BODY_LEN_MIN };
+        let layout = Layout::new(Facing::Right, BODY_LEN_MIN, BUBBLE_W_DEFAULT);
         let panel = layout.output_panel_rect();
         // The drawing column itself is no wider than the 142px torso.
         assert!(panel.w <= TORSO_W, "output panel ({}) must fit TORSO_W ({TORSO_W})", panel.w);
@@ -6993,23 +7048,26 @@ mod tests {
         let body = paint(None);
         let reader = paint(Some(text));
         assert_ne!(body, reader, "reader open must paint a different surface than the figure");
-        let head_idx = ((HEAD_CY as u32 * w + FIG_CX as u32) * 4) as usize;
+        let card = reader_card_rect(&layout, h);
+        let sample_x = (card.x + card.w * 0.5) as u32;
+        let sample_y = (card.y + 40.0) as u32;
+        let card_idx = ((sample_y * w + sample_x) * 4) as usize;
         assert_ne!(
-            &body[head_idx..head_idx + 3],
-            &reader[head_idx..head_idx + 3],
-            "reader takeover must replace the figure head pixels",
+            &body[card_idx..card_idx + 3],
+            &reader[card_idx..card_idx + 3],
+            "reader takeover must replace pixels inside the reader card",
         );
         assert!(
-            reader[head_idx] > 200 && reader[head_idx + 1] > 240,
-            "reader card must paint bubble background over the head, not clay",
+            reader[card_idx] > 200 && reader[card_idx + 1] > 240,
+            "reader card must paint bubble background, not clay",
         );
     }
 
     #[test]
     fn reader_card_spans_surface_height() {
-        let w = SURFACE_W;
+        let layout = Layout::initial();
         let h = 720_u32;
-        let card = Rect { x: 8.0, y: 8.0, w: w as f32 - 16.0, h: h as f32 - 16.0 };
+        let card = reader_card_rect(&layout, h);
         assert!((card.h - (h as f32 - 16.0)).abs() < 0.01);
     }
 
@@ -7124,7 +7182,7 @@ mod tests {
     fn reader_window_draws_the_scrolled_lines() {
         let font = load_font().expect("system font available for reader scroll test");
         let text = (0..60).map(|i| format!("line{i}")).collect::<Vec<_>>().join("\n");
-        let all = reader_wrapped_md_lines(&font, &text, SURFACE_W);
+        let all = reader_wrapped_md_lines(&font, &text, BUBBLE_W_DEFAULT);
         let h = 480_u32;
         let budget = reader_body_budget(h, all.len());
         let scroll = 5;
@@ -7193,10 +7251,9 @@ mod tests {
         assert!(bubble_copy.x + bubble_copy.w <= bubble.x + bubble.w);
         assert!(bubble_copy.y + bubble_copy.h <= bubble.y + bubble.h);
 
-        let w = SURFACE_W;
         let h = 720_u32;
-        let card = Rect { x: 8.0, y: 8.0, w: w as f32 - 16.0, h: h as f32 - 16.0 };
-        let reader_copy = reader_copy_rect(w, h);
+        let card = reader_card_rect(&layout, h);
+        let reader_copy = reader_copy_rect(&layout, h);
         assert!(reader_copy.x >= card.x);
         assert!(reader_copy.y >= card.y);
         assert!(reader_copy.x + reader_copy.w <= card.x + card.w);
@@ -7330,7 +7387,7 @@ mod tests {
             ReaderPos { line: 0, ch: 6 },
             ReaderPos { line: 1, ch: 4 },
         );
-        let plain = reader_selection_plain(&font, text, SURFACE_W, sel);
+        let plain = reader_selection_plain(&font, text, BUBBLE_W_DEFAULT, sel);
         assert_eq!(plain, "line\nBeta");
     }
 

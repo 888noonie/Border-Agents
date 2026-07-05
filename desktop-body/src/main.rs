@@ -673,11 +673,8 @@ fn main() {
         loop_signal: None,
         screen: None,
         width: render::SURFACE_W,
-        height: render::Layout {
-            facing: Facing::Right,
-            body_len: startup_settings.body_len,
-        }
-        .surface_h(),
+        height: render::Layout::new(Facing::Right, startup_settings.body_len, render::BUBBLE_W_DEFAULT)
+            .surface_h(),
         margin_left: env_i32("BB_MARGIN_LEFT", 48) as f64,
         margin_top: env_i32("BB_MARGIN_TOP", 48) as f64,
         start: Instant::now(),
@@ -743,6 +740,7 @@ fn main() {
         reader_scroll: 0,
         reader_copied: false,
         reader_selection: None,
+        speech_bubble_w: render::BUBBLE_W_DEFAULT,
     };
     app.init_hermes_surface();
 
@@ -1027,6 +1025,10 @@ enum PressTarget {
     ReaderCopy,
     /// Drag-select text inside the reader body.
     ReaderText,
+    /// Drag the speech bubble's top edge left→right to widen it.
+    BubbleWidthDrag,
+    /// Drag the reader card's top edge left→right to widen it.
+    ReaderWidthDrag,
     /// The legs/feet zone — dragging it vertically stretches the body.
     Feet,
     Bump,
@@ -1347,6 +1349,8 @@ struct App {
     reader_copied: bool,
     /// Drag-select range in the reader's full wrapped-line list.
     reader_selection: Option<(render::ReaderPos, render::ReaderPos)>,
+    /// User-stretched speech bubble / reader column width.
+    speech_bubble_w: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1435,7 +1439,7 @@ impl App {
     /// The current parameterized surface layout (facing + stretch) — single source
     /// for drawing, hit-testing, and input regions so they can never disagree.
     fn layout(&self) -> render::Layout {
-        render::Layout { facing: self.facing, body_len: self.body_len }
+        render::Layout::new(self.facing, self.body_len, self.speech_bubble_w)
     }
 
     fn pinned_layout(&self) -> Option<render::PinnedLayout> {
@@ -2008,10 +2012,12 @@ impl App {
         // Tucked: only the bump catches the pointer — everything else is click-through,
         // so the screen space the buddy stepped aside from is truly freed.
         let rects = if self.reader_saved.is_some() {
+            let layout = self.layout();
             vec![
                 (0, 0, self.width as i32, self.height as i32),
-                render::reader_copy_rect(self.width, self.height).as_i32(),
-                render::reader_collapse_rect(self.width, self.height).as_i32(),
+                render::reader_copy_rect(&layout, self.height).as_i32(),
+                render::reader_collapse_rect(&layout, self.height).as_i32(),
+                render::reader_width_drag_rect(&layout, self.height).as_i32(),
             ]
         } else if let Some(edge) = self.tucked {
             let bump = edge_to_bump(edge);
@@ -2068,6 +2074,7 @@ impl App {
                 rects.push(self.offset_rect_for_body(layout.bubble_rect()).as_i32());
                 rects.push(self.offset_rect_for_body(layout.bubble_copy_rect()).as_i32());
                 rects.push(self.offset_rect_for_body(layout.bubble_expand_rect()).as_i32());
+                rects.push(self.offset_rect_for_body(layout.bubble_width_drag_rect()).as_i32());
             }
             if self.chat_open {
                 rects.push(self.offset_rect_for_body(layout.input_region_rect()).as_i32());
@@ -2555,11 +2562,14 @@ impl App {
             self.update_input_region();
         }
         if self.reader_saved.is_some() {
-            let target = if render::reader_collapse_rect(self.width, self.height).contains(x, y) {
+            let layout = self.layout();
+            let target = if render::reader_collapse_rect(&layout, self.height).contains(x, y) {
                 PressTarget::ReaderCollapse
-            } else if render::reader_copy_rect(self.width, self.height).contains(x, y) {
+            } else if render::reader_copy_rect(&layout, self.height).contains(x, y) {
                 PressTarget::ReaderCopy
-            } else if render::reader_text_rect(self.width, self.height).contains(x, y) {
+            } else if render::reader_width_drag_rect(&layout, self.height).contains(x, y) {
+                PressTarget::ReaderWidthDrag
+            } else if render::reader_text_rect(&layout, self.height).contains(x, y) {
                 PressTarget::ReaderText
             } else {
                 PressTarget::Outside
@@ -2653,6 +2663,8 @@ impl App {
             PressTarget::BubbleCopy
         } else if self.speech.is_some() && layout.bubble_expand_rect().contains(body_x, y) {
             PressTarget::BubbleExpand
+        } else if self.speech.is_some() && layout.bubble_width_drag_rect().contains(body_x, y) {
+            PressTarget::BubbleWidthDrag
         } else if self.chat_open && layout.input_region_rect().contains(body_x, y) {
             PressTarget::Input
         } else if let Some(action) = render::torso_action_at(&layout, body_x, y) {
@@ -2701,6 +2713,12 @@ impl App {
             press.grabbed_sent = true;
         }
         let stretching = press.target == PressTarget::Feet;
+        if matches!(press.target, PressTarget::BubbleWidthDrag | PressTarget::ReaderWidthDrag) {
+            self.speech_bubble_w =
+                render::clamp_bubble_w(self.facing, self.body_len, self.speech_bubble_w + dx as f32);
+            self.update_input_region();
+            return;
+        }
         if self.drag {
             self.margin_left += dx;
             self.margin_top += dy;
@@ -2897,13 +2915,16 @@ impl App {
                     self.reader_selection,
                     self.reader_source_text().map(str::to_string),
                 ) {
-                    let plain = render::reader_selection_plain(font, &text, self.width, sel);
+                    let plain = render::reader_selection_plain(font, &text, self.speech_bubble_w, sel);
                     if !plain.is_empty() {
                         if copy_to_clipboard(&plain).is_ok() {
                             self.reader_copied = true;
                         }
                     }
                 }
+            }
+            PressTarget::BubbleWidthDrag | PressTarget::ReaderWidthDrag => {
+                self.input_focused = false;
             }
             PressTarget::Body
             | PressTarget::Feet
@@ -3568,10 +3589,11 @@ impl App {
         let Some(font) = self.sprite.font() else { return };
         let text = self.reader_source_text().map(str::to_string);
         let Some(text) = text else { return };
+        let layout = self.layout();
         let Some(pos) = render::reader_hit_pos(
             font,
             &text,
-            self.width,
+            &layout,
             self.height,
             self.reader_scroll,
             x as f32,
@@ -3587,10 +3609,11 @@ impl App {
         let Some(font) = self.sprite.font() else { return };
         let text = self.reader_source_text().map(str::to_string);
         let Some(text) = text else { return };
+        let layout = self.layout();
         let Some(pos) = render::reader_hit_pos(
             font,
             &text,
-            self.width,
+            &layout,
             self.height,
             self.reader_scroll,
             x as f32,
@@ -3612,8 +3635,14 @@ impl App {
         let text = self.reader_source_text().map(str::to_string);
         let Some(text) = text else { return };
         self.reader_copied = false;
-        self.reader_scroll =
-            render::reader_scroll_apply(font, &text, self.width, self.height, self.reader_scroll, delta);
+        self.reader_scroll = render::reader_scroll_apply(
+            font,
+            &text,
+            self.speech_bubble_w,
+            self.height,
+            self.reader_scroll,
+            delta,
+        );
     }
 
     fn close_reader(&mut self) {

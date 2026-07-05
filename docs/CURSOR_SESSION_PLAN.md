@@ -2374,3 +2374,16 @@ feat(body): laminal ring pivot — Slice J1 — full access (reader scrolls the 
 ```
 
 `App.reader_scroll` / `reader_copied`; `BodyView.reader_scroll` / `reader_copied`. Reader wraps full text (`usize::MAX`), scroll window, `lines A–B of N` footer, event-bracketed `Copied ✓`. Wheel `Axis` arm + `scroll_delta_lines`. Copy-all glyphs on bubble/tucked/reader (`BubbleCopy` / `ReaderCopy`). Five named tests + `reader_scroll_resets_on_open` in main. Gates: cargo 172+0/29, release 9 warnings, tsc clean, vitest 278/31. presence.rs byte-untouched.
+
+## Builder report — J2 (Grok Build, 2026-07-06)
+
+**Status:** J2 complete. Not pushed.
+
+### Commit
+
+```
+0f199fc
+feat(body): laminal ring pivot — Slice J2 — output formatting (markdown-lite: bold, bullets, headings; clipboard stays raw)
+```
+
+`markdown_lite` / `markdown_plain_projection`; reader renders `WrappedMdLine` with bold double-strike; bubble/tucked use plain projection through `budgeted_lines`. Scroll indices count wrapped MdLines. Clipboard stays raw (`copy_preserves_raw_markdown`). Five named tests. Gates: cargo 177+0/29, release 9 warnings, tsc clean, vitest 278/31. presence.rs byte-untouched.

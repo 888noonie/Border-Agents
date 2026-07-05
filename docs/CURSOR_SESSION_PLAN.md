@@ -2292,3 +2292,13 @@ Tucked peek: `budgeted_lines` + `+N more`; `tucked_bubble_expand_rect`; expand g
 **Process notes (minor, for next batch):** docs reports landed after all three feats (G2+G3 folded into one commit) rather than interleaved per slice — bisectability of the feat commits is intact, so accepted.
 
 **Verdict: PASS, zero required fixes.** Ready for the combined owner walk (see brief's walk script).
+
+---
+
+## Owner walk — G-series batch (G1+G2+G3) — PASS 2026-07-05
+
+Combined walk PASS ("Nailed it!"): long reply carried honestly in the bubble, full-height reader bottom-to-top, collapse restores geometry, dock modes covered. Owner ruling: **PUSH**. First 3-slice batch lands clean — zero fixes end to end.
+
+**Backlog for the next sweep (owner request at walk):**
+- **Selectable text + Copy / Copy-all button in the speech bubble** (and by extension the reader): today Copy lives on the torso action row only; the bubble/reader should carry their own copy affordance, and text selection (drag-select a span) wants design — selection state, highlight paint, clipboard of the selected span vs copy-all.
+- Lead-observed at walk (candidate, same sweep): reader shows raw markdown (`**bold**`, `*italic*`, list markers) verbatim — a minimal markdown-aware text pass (bold/italic/lists) would make provider replies read clean.

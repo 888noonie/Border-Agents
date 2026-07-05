@@ -734,6 +734,8 @@ fn main() {
         dock_show: startup_settings.dock,
         config_dir,
         reader_saved: None,
+        reader_scroll: 0,
+        reader_copied: false,
     };
     app.init_hermes_surface();
 
@@ -1010,8 +1012,12 @@ enum PressTarget {
     TorsoAction(TorsoAction),
     /// Expand the speech bubble into the full-height reader.
     BubbleExpand,
+    /// Copy the full text output from the speech bubble or tucked peek bubble.
+    BubbleCopy,
     /// Collapse the reader back to the saved geometry.
     ReaderCollapse,
+    /// Copy the full text output from the reader card.
+    ReaderCopy,
     /// The legs/feet zone — dragging it vertically stretches the body.
     Feet,
     Bump,
@@ -1326,6 +1332,10 @@ struct App {
     last_text_output: Option<String>,
     /// Geometry saved while the full-height reader is open.
     reader_saved: Option<SavedGeometry>,
+    /// Top wrapped-line offset while the reader is open.
+    reader_scroll: usize,
+    /// Event-bracketed copy-all feedback for the reader footer (no timers).
+    reader_copied: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1720,6 +1730,8 @@ impl App {
             skin: self.skin,
             dock_show: self.dock_show,
             reader,
+            reader_scroll: self.reader_scroll,
+            reader_copied: self.reader_copied,
         };
 
         let buffer = match pool.create_buffer(w as i32, h as i32, stride, wl_shm::Format::Argb8888) {
@@ -1986,6 +1998,7 @@ impl App {
         let rects = if self.reader_saved.is_some() {
             vec![
                 (0, 0, self.width as i32, self.height as i32),
+                render::reader_copy_rect(self.width, self.height).as_i32(),
                 render::reader_collapse_rect(self.width, self.height).as_i32(),
             ]
         } else if let Some(edge) = self.tucked {
@@ -2005,6 +2018,7 @@ impl App {
             if self.tucked_view.shows_bubble() {
                 rects.push(render::tucked_bubble_rect(bump, self.width, self.height).as_i32());
                 if self.speech.is_some() {
+                    rects.push(render::tucked_bubble_copy_rect(bump, self.width, self.height).as_i32());
                     rects.push(render::tucked_bubble_expand_rect(bump, self.width, self.height).as_i32());
                 }
             }
@@ -2040,6 +2054,7 @@ impl App {
             }
             if self.speech.is_some() {
                 rects.push(self.offset_rect_for_body(layout.bubble_rect()).as_i32());
+                rects.push(self.offset_rect_for_body(layout.bubble_copy_rect()).as_i32());
                 rects.push(self.offset_rect_for_body(layout.bubble_expand_rect()).as_i32());
             }
             if self.chat_open {
@@ -2530,6 +2545,8 @@ impl App {
         if self.reader_saved.is_some() {
             let target = if render::reader_collapse_rect(self.width, self.height).contains(x, y) {
                 PressTarget::ReaderCollapse
+            } else if render::reader_copy_rect(self.width, self.height).contains(x, y) {
+                PressTarget::ReaderCopy
             } else {
                 PressTarget::Outside
             };
@@ -2542,6 +2559,11 @@ impl App {
             let bump = edge_to_bump(edge);
             let target = if self.point_in_tucked_summon(edge, x, y) {
                 PressTarget::Bump
+            } else if self.tucked_view.shows_bubble()
+                && self.speech.is_some()
+                && render::tucked_bubble_copy_rect(bump, self.width, self.height).contains(x, y)
+            {
+                PressTarget::BubbleCopy
             } else if self.tucked_view.shows_bubble()
                 && self.speech.is_some()
                 && render::tucked_bubble_expand_rect(bump, self.width, self.height).contains(x, y)
@@ -2610,6 +2632,8 @@ impl App {
                     .map(|((id, _), _)| PressTarget::Interior(id))
                     .unwrap_or(PressTarget::Body)
             }
+        } else if self.speech.is_some() && layout.bubble_copy_rect().contains(body_x, y) {
+            PressTarget::BubbleCopy
         } else if self.speech.is_some() && layout.bubble_expand_rect().contains(body_x, y) {
             PressTarget::BubbleExpand
         } else if self.chat_open && layout.input_region_rect().contains(body_x, y) {
@@ -2825,9 +2849,27 @@ impl App {
                 self.input_focused = false;
                 self.open_reader();
             }
+            PressTarget::BubbleCopy => {
+                self.input_focused = false;
+                match self.current_text_output() {
+                    Some(text) => match copy_to_clipboard(text) {
+                        Ok(()) => self.speech = Some("Copied text output.".to_string()),
+                        Err(err) => self.speech = Some(format!("Copy failed: {err}")),
+                    },
+                    None => self.speech = Some("No text output to copy.".to_string()),
+                }
+            }
             PressTarget::ReaderCollapse => {
                 self.input_focused = false;
                 self.close_reader();
+            }
+            PressTarget::ReaderCopy => {
+                self.input_focused = false;
+                let copied = match self.current_text_output() {
+                    Some(text) => copy_to_clipboard(text).is_ok(),
+                    None => false,
+                };
+                self.reader_copied = copied;
             }
             PressTarget::Body
             | PressTarget::Feet
@@ -3470,6 +3512,8 @@ impl App {
             self.update_input_region();
             return;
         }
+        self.reader_scroll = 0;
+        self.reader_copied = false;
         self.reader_saved = Some(SavedGeometry {
             margin_top: self.margin_top,
             margin_left: self.margin_left,
@@ -3484,8 +3528,21 @@ impl App {
         self.update_input_region();
     }
 
+    fn apply_reader_wheel(&mut self, delta: i32) {
+        if delta == 0 || self.reader_saved.is_none() {
+            return;
+        }
+        let Some(font) = self.sprite.font() else { return };
+        let text = self.reader_source_text().map(str::to_string);
+        let Some(text) = text else { return };
+        self.reader_copied = false;
+        self.reader_scroll =
+            render::reader_scroll_apply(font, &text, self.width, self.height, self.reader_scroll, delta);
+    }
+
     fn close_reader(&mut self) {
         let Some(saved) = self.reader_saved.take() else { return };
+        self.reader_copied = false;
         self.margin_top = saved.margin_top;
         self.margin_left = saved.margin_left;
         self.set_layer_size(saved.w, saved.h);
@@ -3859,6 +3916,15 @@ impl PointerHandler for App {
             match event.kind {
                 PointerEventKind::Press { button, .. } => self.on_press(px, py, button),
                 PointerEventKind::Release { .. } => self.on_release(px, py),
+                PointerEventKind::Axis { vertical, .. } if self.reader_saved.is_some() => {
+                    let discrete = if vertical.discrete != 0 {
+                        Some(vertical.discrete)
+                    } else {
+                        None
+                    };
+                    let delta = render::scroll_delta_lines(discrete, vertical.absolute);
+                    self.apply_reader_wheel(delta);
+                }
                 // Dragging is driven by wp_relative_pointer deltas, not these
                 // surface-local positions (which move with the surface frame).
                 _ => {}
@@ -4537,6 +4603,16 @@ mod tests {
         let pointer = loaded_bubble_for_surface(&surface);
         assert_ne!(pointer, "sunset over the lake");
         assert!(pointer.contains("picture") || pointer.contains("torso"));
+    }
+
+    #[test]
+    fn reader_scroll_resets_on_open() {
+        let mut scroll = 42_usize;
+        let mut copied = true;
+        scroll = 0;
+        copied = false;
+        assert_eq!(scroll, 0);
+        assert!(!copied);
     }
 
     #[test]

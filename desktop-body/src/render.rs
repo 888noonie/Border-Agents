@@ -116,9 +116,88 @@ fn expand_glyph_rect(card: Rect) -> Rect {
     }
 }
 
+fn copy_glyph_beside(expand: Rect) -> Rect {
+    let size = 18.0;
+    let gap = 4.0;
+    Rect {
+        x: expand.x - size - gap,
+        y: expand.y,
+        w: size,
+        h: size,
+    }
+}
+
+/// Copy-all control on the reader card (single source for paint + hit).
+pub fn reader_copy_rect(w: u32, h: u32) -> Rect {
+    copy_glyph_beside(reader_collapse_rect(w, h))
+}
+
 /// Collapse control on the reader card (single source for paint + hit).
 pub fn reader_collapse_rect(w: u32, h: u32) -> Rect {
     expand_glyph_rect(Rect { x: 8.0, y: 8.0, w: w as f32 - 16.0, h: h as f32 - 16.0 })
+}
+
+/// Wheel notch → line delta (discrete = 3 lines per step; else absolute-derived, min magnitude 1).
+pub fn scroll_delta_lines(discrete: Option<i32>, absolute: f64) -> i32 {
+    if let Some(d) = discrete {
+        if d != 0 {
+            return -d * 3;
+        }
+    }
+    if absolute == 0.0 {
+        return 0;
+    }
+    let from_abs = (absolute / f64::from(LINE_H)).round() as i32;
+    let mag = from_abs.abs().max(1);
+    if absolute > 0.0 {
+        mag
+    } else {
+        -mag
+    }
+}
+
+pub fn clamp_reader_scroll(scroll: usize, total: usize, budget: usize) -> usize {
+    scroll.min(total.saturating_sub(budget))
+}
+
+fn reader_body_budget(surface_h: u32, total_lines: usize) -> usize {
+    let line_budget = reader_line_budget(surface_h);
+    if total_lines > line_budget {
+        line_budget.saturating_sub(1).max(1)
+    } else {
+        line_budget
+    }
+}
+
+pub fn reader_total_lines(font: &Font, text: &str, surface_w: u32) -> usize {
+    let text_w = surface_w as f32 - 16.0 - 28.0;
+    wrap(font, text, TEXT_PX, text_w, usize::MAX).len()
+}
+
+pub fn reader_scroll_apply(
+    font: &Font,
+    text: &str,
+    surface_w: u32,
+    surface_h: u32,
+    scroll: usize,
+    delta: i32,
+) -> usize {
+    let total = reader_total_lines(font, text, surface_w);
+    let budget = reader_body_budget(surface_h, total);
+    let max_scroll = total.saturating_sub(budget);
+    ((scroll as i32) + delta).clamp(0, max_scroll as i32) as usize
+}
+
+pub fn reader_footer_text(scroll: usize, visible_count: usize, total: usize, copied: bool) -> String {
+    if copied {
+        return "Copied ✓".to_string();
+    }
+    if total <= visible_count {
+        return String::new();
+    }
+    let a = scroll + 1;
+    let b = (scroll + visible_count).min(total);
+    format!("lines {a}–{b} of {total}")
 }
 const TEXT_PX: f32 = 16.0;
 const LINE_H: f32 = TEXT_PX * 1.3;
@@ -253,6 +332,11 @@ impl Layout {
     /// The expand affordance at the speech bubble's top-right (single source for paint + hit).
     pub fn bubble_expand_rect(&self) -> Rect {
         expand_glyph_rect(self.bubble_rect())
+    }
+
+    /// Copy-all on the speech bubble, beside the expand glyph (single source for paint + hit).
+    pub fn bubble_copy_rect(&self) -> Rect {
+        copy_glyph_beside(self.bubble_expand_rect())
     }
 
     /// Chat input box sized for `lines` lines of text.
@@ -976,6 +1060,11 @@ pub fn tucked_bubble_expand_rect(edge: BumpEdge, w: u32, h: u32) -> Rect {
     expand_glyph_rect(tucked_bubble_rect(edge, w, h))
 }
 
+/// Copy-all on the tucked peek bubble, beside the expand glyph (single source for paint + hit).
+pub fn tucked_bubble_copy_rect(edge: BumpEdge, w: u32, h: u32) -> Rect {
+    copy_glyph_beside(tucked_bubble_expand_rect(edge, w, h))
+}
+
 pub fn tucked_bubble_rect(edge: BumpEdge, w: u32, h: u32) -> Rect {
     let (x, top) = tucked_peek_origin(edge, w, h);
     Rect { x, y: top, w: TUCK_PEEK_W, h: TUCK_PEEK_BUBBLE_H }
@@ -1485,6 +1574,10 @@ pub struct BodyView<'a> {
     pub dock_show: DockShow,
     /// When `Some`, the reader takes over the whole surface (onboarding-style takeover).
     pub reader: Option<&'a str>,
+    /// Top wrapped-line offset into the reader's full text.
+    pub reader_scroll: usize,
+    /// Event-bracketed copy-all feedback for the reader footer (no timers).
+    pub reader_copied: bool,
 }
 
 pub fn receipt_rail_visible_for_body_len(body_len: f32) -> bool {
@@ -1518,6 +1611,10 @@ impl Sprite {
         }
     }
 
+    pub fn font(&self) -> Option<&Font> {
+        self.font.as_ref()
+    }
+
     /// Render the body into a premultiplied-BGRA `wl_shm` canvas of size `w`×`h`.
     /// The pixmap matches the actual buffer so the row stride always matches;
     /// drawing uses surface-local coordinates and simply clips.
@@ -1529,7 +1626,15 @@ impl Sprite {
         // Reader takeover wins over every other mode (onboarding precedent).
         if let Some(text) = view.reader {
             if let Some(font) = &self.font {
-                draw_reader(&mut pixmap, font, text, w, h);
+                draw_reader(
+                    &mut pixmap,
+                    font,
+                    text,
+                    w,
+                    h,
+                    view.reader_scroll,
+                    view.reader_copied,
+                );
             }
             blit_premultiplied_bgra(pixmap.data(), canvas);
             return;
@@ -3802,7 +3907,56 @@ fn draw_bubble(pixmap: &mut Pixmap, font: &Font, layout: &Layout, text: &str) {
         baseline += LINE_H;
     }
     if !text.is_empty() {
-        draw_expand_glyph(pixmap, expand_glyph_rect(rect));
+        let expand = expand_glyph_rect(rect);
+        draw_copy_glyph(pixmap, copy_glyph_beside(expand));
+        draw_expand_glyph(pixmap, expand);
+    }
+}
+
+fn draw_copy_glyph(pixmap: &mut Pixmap, rect: Rect) {
+    if rect.w <= 0.0 || rect.h <= 0.0 {
+        return;
+    }
+    draw_round_rect(pixmap, rect, Color::from_rgba8(0, 0, 0, 140));
+    if let Some(path) = round_rect_path(rect, rect.w.min(rect.h) / 2.0) {
+        let mut stroke = Stroke::default();
+        stroke.width = 1.0;
+        pixmap.stroke_path(
+            &path,
+            &solid(Color::from_rgba8(255, 255, 255, 175)),
+            &stroke,
+            Transform::identity(),
+            None,
+        );
+    }
+    let icon = solid(Color::from_rgba8(255, 255, 255, 225));
+    let inset = 4.5;
+    let off = 3.5;
+    let mut back = PathBuilder::new();
+    back.move_to(rect.x + inset + off, rect.y + inset);
+    back.line_to(rect.x + rect.w - inset, rect.y + inset);
+    back.line_to(rect.x + rect.w - inset, rect.y + rect.h - inset - off);
+    back.line_to(rect.x + inset + off, rect.y + rect.h - inset - off);
+    back.close();
+    if let Some(path) = back.finish() {
+        let mut stroke = Stroke::default();
+        stroke.width = 1.2;
+        stroke.line_cap = tiny_skia::LineCap::Round;
+        stroke.line_join = tiny_skia::LineJoin::Round;
+        pixmap.stroke_path(&path, &icon, &stroke, Transform::identity(), None);
+    }
+    let mut front = PathBuilder::new();
+    front.move_to(rect.x + inset, rect.y + inset + off);
+    front.line_to(rect.x + rect.w - inset - off, rect.y + inset + off);
+    front.line_to(rect.x + rect.w - inset - off, rect.y + rect.h - inset);
+    front.line_to(rect.x + inset, rect.y + rect.h - inset);
+    front.close();
+    if let Some(path) = front.finish() {
+        let mut stroke = Stroke::default();
+        stroke.width = 1.2;
+        stroke.line_cap = tiny_skia::LineCap::Round;
+        stroke.line_join = tiny_skia::LineJoin::Round;
+        pixmap.stroke_path(&path, &icon, &stroke, Transform::identity(), None);
     }
 }
 
@@ -3840,8 +3994,16 @@ fn draw_expand_glyph(pixmap: &mut Pixmap, rect: Rect) {
     }
 }
 
-/// Full-surface reader takeover — one card spanning the column, honest overflow marker.
-fn draw_reader(pixmap: &mut Pixmap, font: &Font, text: &str, w: u32, h: u32) {
+/// Full-surface reader takeover — scrolls the whole wrapped reply; footer reports position.
+fn draw_reader(
+    pixmap: &mut Pixmap,
+    font: &Font,
+    text: &str,
+    w: u32,
+    h: u32,
+    scroll: usize,
+    copied: bool,
+) {
     let card = Rect { x: 8.0, y: 8.0, w: w as f32 - 16.0, h: h as f32 - 16.0 };
     let bg = Color::from_rgba8(247, 251, 255, 245);
     let border = solid(Color::from_rgba8(0, 0, 0, 175));
@@ -3851,21 +4013,26 @@ fn draw_reader(pixmap: &mut Pixmap, font: &Font, text: &str, w: u32, h: u32) {
         stroke.width = 1.0;
         pixmap.stroke_path(&path, &border, &stroke, Transform::identity(), None);
     }
+    draw_copy_glyph(pixmap, reader_copy_rect(w, h));
     draw_expand_glyph(pixmap, reader_collapse_rect(w, h));
     let pad_x = 14.0;
+    let text_w = card.w - pad_x * 2.0;
     let mut baseline = card.y + 30.0;
     draw_line(pixmap, font, "Latest output", card.x + pad_x, baseline, PANEL_LABEL_PX, [102, 88, 76]);
     baseline += PANEL_LABEL_PX + 8.0;
-    let budget = reader_line_budget(h);
-    let (lines, hidden) = budgeted_lines(font, text, TEXT_PX, card.w - pad_x * 2.0, budget);
-    for (i, line) in lines.iter().enumerate() {
-        let color = if hidden > 0 && i + 1 == lines.len() {
-            [130, 122, 114]
-        } else {
-            [16, 24, 44]
-        };
-        draw_line(pixmap, font, line, card.x + pad_x, baseline, TEXT_PX, color);
+    let all_lines = wrap(font, text, TEXT_PX, text_w, usize::MAX);
+    let body_budget = reader_body_budget(h, all_lines.len());
+    let scroll = clamp_reader_scroll(scroll, all_lines.len(), body_budget);
+    let end = (scroll + body_budget).min(all_lines.len());
+    let visible = &all_lines[scroll..end];
+    for line in visible {
+        draw_line(pixmap, font, line, card.x + pad_x, baseline, TEXT_PX, [16, 24, 44]);
         baseline += LINE_H;
+    }
+    let footer = reader_footer_text(scroll, visible.len(), all_lines.len(), copied);
+    if !footer.is_empty() {
+        let footer_y = card.y + card.h - 10.0;
+        draw_line(pixmap, font, &footer, card.x + pad_x, footer_y, PANEL_LABEL_PX, [130, 122, 114]);
     }
 }
 
@@ -3959,7 +4126,9 @@ fn draw_tucked_bubble(pixmap: &mut Pixmap, font: &Font, edge: BumpEdge, w: u32, 
         }
     }
     if !text.is_empty() {
-        draw_expand_glyph(pixmap, tucked_bubble_expand_rect(edge, w, h));
+        let expand = tucked_bubble_expand_rect(edge, w, h);
+        draw_copy_glyph(pixmap, tucked_bubble_copy_rect(edge, w, h));
+        draw_expand_glyph(pixmap, expand);
     }
 }
 
@@ -4766,6 +4935,8 @@ mod tests {
                 dock_show: DockShow::Both,
                 skin: Skin::Clay,
                 reader: None,
+                reader_scroll: 0,
+                reader_copied: false,
             };
             sprite.paint(&mut canvas, w, h, &view);
             canvas
@@ -4871,6 +5042,8 @@ mod tests {
                 dock_show: DockShow::Both,
                 skin: Skin::Clay,
                 reader: None,
+                reader_scroll: 0,
+                reader_copied: false,
             };
             sprite.paint(&mut canvas, w, h, &view);
             canvas
@@ -5051,6 +5224,8 @@ mod tests {
                 dock_show: DockShow::Both,
                 skin,
                 reader: None,
+                reader_scroll: 0,
+                reader_copied: false,
             };
             sprite.paint(&mut canvas, w, h, &view);
             canvas
@@ -5217,6 +5392,8 @@ mod tests {
                 dock_show: DockShow::Both,
                 skin: Skin::Clay,
                 reader: None,
+                reader_scroll: 0,
+                reader_copied: false,
             };
             sprite.paint(&mut canvas, w, h, &view);
             canvas
@@ -5493,6 +5670,8 @@ mod tests {
                 dock_show: DockShow::Both,
                 skin,
                 reader: None,
+                reader_scroll: 0,
+                reader_copied: false,
             };
             sprite.paint(&mut canvas, w, h, &view);
             canvas
@@ -5551,6 +5730,8 @@ mod tests {
                 dock_show,
                 skin: Skin::Clay,
                 reader: None,
+                reader_scroll: 0,
+                reader_copied: false,
             };
             sprite.paint(&mut canvas, w, h, &view);
             canvas
@@ -6174,6 +6355,8 @@ mod tests {
             dock_show: DockShow::Both,
             skin: Skin::Clay,
             reader: None,
+            reader_scroll: 0,
+            reader_copied: false,
         };
 
         sprite.paint(&mut canvas, frame.surface_w, frame.surface_h, &view);
@@ -6267,6 +6450,8 @@ mod tests {
             dock_show: DockShow::Both,
             skin: Skin::Clay,
             reader: None,
+            reader_scroll: 0,
+            reader_copied: false,
         };
         Sprite::new().paint(&mut canvas, w, h, &view);
         let bob = (t * std::f32::consts::TAU / 3.6).sin() * 3.0;
@@ -6370,6 +6555,8 @@ mod tests {
                 dock_show: DockShow::Both,
                 skin: Skin::Clay,
                 reader,
+                reader_scroll: 0,
+                reader_copied: false,
             };
             sprite.paint(&mut canvas, w, h, &view);
             canvas
@@ -6487,10 +6674,71 @@ mod tests {
                 dock_show: DockShow::Both,
                 skin: Skin::Clay,
                 reader: Some(text),
+                reader_scroll: 0,
+                reader_copied: false,
             };
             sprite.paint(&mut canvas, w, h, &view);
             canvas
         };
         assert_eq!(paint(Some(BumpEdge::Left)), paint(None));
+    }
+
+    #[test]
+    fn reader_scroll_clamps_to_text() {
+        assert_eq!(clamp_reader_scroll(0, 10, 4), 0);
+        assert_eq!(clamp_reader_scroll(99, 10, 4), 6);
+        assert_eq!(clamp_reader_scroll(3, 4, 4), 0);
+    }
+
+    #[test]
+    fn reader_window_draws_the_scrolled_lines() {
+        let font = load_font().expect("system font available for reader scroll test");
+        let text = (0..20).map(|i| format!("line{i}")).collect::<Vec<_>>().join("\n");
+        let all = wrap(&font, &text, TEXT_PX, SURFACE_W as f32 - 44.0, usize::MAX);
+        let h = 720_u32;
+        let budget = reader_body_budget(h, all.len());
+        let scroll = 5;
+        let end = (scroll + budget).min(all.len());
+        let visible = &all[scroll..end];
+        assert_eq!(visible.first().map(String::as_str), Some("line5"));
+        assert_eq!(visible.len(), all.len().saturating_sub(scroll));
+    }
+
+    #[test]
+    fn reader_footer_reports_position() {
+        assert_eq!(reader_footer_text(0, 4, 12, false), "lines 1–4 of 12");
+        assert_eq!(reader_footer_text(8, 4, 12, false), "lines 9–12 of 12");
+        assert_eq!(reader_footer_text(0, 12, 12, false), "");
+        assert_eq!(reader_footer_text(0, 4, 12, true), "Copied ✓");
+    }
+
+    #[test]
+    fn copy_glyphs_sit_inside_their_cards() {
+        let layout = Layout::initial();
+        let bubble = layout.bubble_rect();
+        let bubble_copy = layout.bubble_copy_rect();
+        assert!(bubble_copy.x >= bubble.x);
+        assert!(bubble_copy.y >= bubble.y);
+        assert!(bubble_copy.x + bubble_copy.w <= bubble.x + bubble.w);
+        assert!(bubble_copy.y + bubble_copy.h <= bubble.y + bubble.h);
+
+        let w = SURFACE_W;
+        let h = 720_u32;
+        let card = Rect { x: 8.0, y: 8.0, w: w as f32 - 16.0, h: h as f32 - 16.0 };
+        let reader_copy = reader_copy_rect(w, h);
+        assert!(reader_copy.x >= card.x);
+        assert!(reader_copy.y >= card.y);
+        assert!(reader_copy.x + reader_copy.w <= card.x + card.w);
+        assert!(reader_copy.y + reader_copy.h <= card.y + card.h);
+
+        const TW: u32 = 200;
+        const TH: u32 = 120;
+        let edge = BumpEdge::Left;
+        let tucked = tucked_bubble_rect(edge, TW, TH);
+        let tucked_copy = tucked_bubble_copy_rect(edge, TW, TH);
+        assert!(tucked_copy.x >= tucked.x);
+        assert!(tucked_copy.y >= tucked.y);
+        assert!(tucked_copy.x + tucked_copy.w <= tucked.x + tucked.w);
+        assert!(tucked_copy.y + tucked_copy.h <= tucked.y + tucked.h);
     }
 }

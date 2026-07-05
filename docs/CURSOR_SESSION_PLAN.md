@@ -2162,3 +2162,71 @@ Typed to the buddy: green tips + tucked eyes open + untucked gaze scanning while
 **Process change (owner, 2026-07-05): builder prompts now batch THREE slices** (rate economics). Per-slice commits (feat + docs report each), STOP on any existing-test conflict, one combined lead audit + one combined owner walk at the end.
 
 **Walk finding → next batch:** provider text output truncates. Torso text card keeps only the tail of long replies (silent head-cut, no ellipsis, no scroll); untucked bubble caps at 6 lines; torso Expand button is a stub. Owner direction: text output moves to the speech bubble, bubble grows (up to full screen height via an expand affordance), torso freed for future connection controls (decoupled, later slice). → G-series batch briefed below.
+
+---
+
+## G-series batch — the buddy speaks properly — brief for Composergrok (3 slices: G1, G2, G3)
+
+**First 3-slice batch (owner process change 2026-07-05).** Build G1 → G2 → G3 in order, on top of head `697d01a`. Per-slice commits: one `feat` + one `docs:` builder report each (append reports below this brief). Do NOT push. STOP after G3, or immediately on any conflict rule below.
+
+**Owner direction (walk finding, 2026-07-05):** provider text output truncates dishonestly. Text output moves to the speech bubble; the bubble grows, and gains an expand affordance to a full-screen-height reader; works from every dock mode. Torso keeps image/file output (torso-repurpose for connection controls is a LATER slice, out of scope here).
+
+### Ground truth (lead-scouted anchors — verify before building)
+
+- `say()` main.rs:1819 has an order-of-operations bug: `show_reply_in_torso` clears `awaiting_reply` BEFORE `reply_bubble(self.awaiting_reply, …)` reads it, so the "loaded in torso" pointer branch is dead — the bubble already carries reply text, capped at `BUBBLE_MAX_LINES = 6` (render.rs:95).
+- Torso text card `draw_text_card` render.rs:3441 keeps only the TAIL of long text (silent head-cut, no ellipsis).
+- `TorsoAction::Expand` main.rs:3343 is a stub ("Fullscreen image open will land here.").
+- Surface is content-sized: `set_layer_size(requested_surface_w(), layout.surface_h())`; resize machinery proven by feet-drag (main.rs:2601). Screen size lives in `self.screen` (compositor-authoritative via `surface_enter`, main.rs:3553).
+- Bubble column: `BUBBLE_Y = 8.0`, `INPUT_Y = 196.0`, chrome pad 30 top + 12 bottom, `LINE_H = 20.8`.
+- H5 shared `wrap()` + `ellipsize_line_in_place` (render.rs:4110) already give honest ellipsis.
+
+### Law (all three slices)
+
+1. **Figure byte-frozen.** No figure draw fn changes (`draw_eyes`, `draw_bump`, `draw_figure`, halos, bar, tips — all of it). This batch is UI-column + surface-mode work only. Lead audits figure fns md5-identical vs `697d01a`.
+2. **F5 bracket sacred.** `awaiting_reply` must still be cleared exactly where it is today (reply landing in `say()`, `apply_output`); `pending_effector = None` duty survives. The activity wire (`body_activity`) is untouched.
+3. **presence.rs byte-frozen. No TS changes** (vitest stays 278/31, tsc clean).
+4. **Palette rule:** zero new colour literals — reuse bubble bg [247,251,255,245], border [0,0,0,175], text inks [16,24,44] / muted [130,122,114].
+5. **One allowed existing-test edit class (mechanical only):** G2 adds a `BodyView` field, so existing test literals gain one `reader: None,` line each (F4 precedent). NOTHING else in any existing test may change — any other forced edit = STOP and report.
+6. Release warnings stay at **9**. If a fn goes dead, keep it live per the pins below rather than deleting (no drive-by removals).
+
+### Slice G1 — honest growing bubble + text routing
+
+**Pins:**
+1. Replies routing: pure fn `reply_goes_to_bubble(surface: &TorsoSurface) -> bool` — true for `Text`/`Session` classifications, false for image/file stubs. In `say()`: compute `classify_torso_surface(text)` ONCE; if it routes to bubble → bubble carries the FULL text, torso untouched; else (image/file) → torso loads it and the bubble carries `loaded_bubble(text)` — computing the pointer from the classification, which fixes the :1819 ordering bug. `apply_output("text")` likewise: text → bubble (speech), torso stays on its current surface.
+2. Copy must not regress: new `App.last_text_output: Option<String>` set on every text reply/output; `current_text_output()` prefers it over the torso card. Pure fn `copy_source<'a>(last_text: Option<&'a str>, torso: &'a TorsoSurface) -> Option<&'a str>`.
+3. Bubble budget: `BUBBLE_MAX_LINES` const replaced by `fn bubble_line_budget() -> usize` = `((INPUT_Y - BUBBLE_Y - 42.0) / LINE_H).floor()` (= 7; bubble bottom may never cross `INPUT_Y`). `Layout::bubble_rect()` uses the budget (input region stays the max rect — H3 single-source law).
+4. Honest overflow: shared helper `budgeted_lines(font, text, px, max_w, budget) -> (Vec<String>, usize hidden)`; when hidden > 0 the bubble's LAST line (inside the budget) is a muted `+N more` marker line drawn in [130,122,114]. No marker when text fits.
+
+**Named tests (5):** `reply_text_routes_to_bubble_not_torso`, `reply_media_still_routes_to_torso_with_pointer`, `bubble_budget_never_crosses_input_top`, `bubble_overflow_draws_more_marker`, `bubble_marker_absent_when_text_fits`.
+**Gate after G1: cargo 158 + 0 / 29.**
+**Commit:** `feat(body): laminal ring pivot — Slice G1 — honest growing bubble (text output routes to speech; +N-more marker; copy keeps full text)`
+
+### Slice G2 — reader: the bubble expands to full screen height
+
+**Pins:**
+1. New `BodyView.reader: Option<&'a str>` (the one mechanical literal edit, law 5). When `Some`, `Sprite::paint` paints ONLY the reader (whole-surface takeover — onboarding precedent): one rounded card spanning the surface (bubble bg/border reuse), title "Latest output" (`PANEL_LABEL_PX`), body wrapped at `TEXT_PX` via `budgeted_lines` with `reader_line_budget(surface_h)`, honest `+N more` marker on overflow, collapse glyph (reuse the ⤢ drawing from `draw_torso_action`, rotated/as-is) at the card's top-right.
+2. Expand affordance: ⤢ glyph drawn at the bubble's top-right corner whenever `speech`/reader text exists, inside `bubble_rect()`; new `Layout::bubble_expand_rect()` single-sources paint + hit. `TorsoAction::Expand` (button stays painted, stub retired) now ALSO opens the reader.
+3. Reader open (main.rs): save `SavedGeometry { margin_top, margin_left, w, h, tucked: Option<BumpEdge> }`; then `set_layer_size(SURFACE_W, screen_h)` + `margin_top = 0` (full column, bottom-to-top) where `screen_h = self.screen.map(|(_, h)| h)`; if `self.screen` is None the reader fills the CURRENT surface only (honest fallback, no guessing). Reader shows `last_text_output` (fallback: current speech; nothing to show → ignore the tap, bubble says "No text output yet.").
+4. Reader close (glyph tap): restore SavedGeometry exactly; if `tucked` was Some, re-run `clamp_tucked(edge)`; `update_input_region()` both ways (region = full surface while open). Body/feet/bump drag and all other hit targets early-return while the reader is open.
+5. Pinned surface out of scope: no expand glyph on the pinned bubble path; pinned rendering byte-identical.
+
+**Named tests (5):** `reader_takeover_suppresses_figure`, `reader_card_spans_surface_height`, `reader_budget_exceeds_bubble_budget`, `expand_glyph_sits_inside_bubble_rect`, `reader_overflow_is_honest`.
+**Gate after G2: cargo 163 + 0 / 29.**
+**Commit:** `feat(body): laminal ring pivot — Slice G2 — reader (speech bubble expands to a full-height column; torso ⤢ stub goes live)`
+
+### Slice G3 — reader from the dock (tucked parity)
+
+**Pins:**
+1. Tucked peek bubble: same `+N more` honest marker via `budgeted_lines` (budget stays the H5-derived 3 lines; `TUCK_PEEK_BUBBLE_H` unchanged); ⤢ glyph at the peek bubble's top-right, new `tucked_bubble_expand_rect(edge, w, h)` single-sourcing paint + hit.
+2. Tap → the SAME reader (G2 takeover paints identically regardless of tuck state); SavedGeometry captures the tucked edge; collapse returns to the tucked state via `clamp_tucked`.
+3. Works in all four modes: body (G2), head, bar, head+bar — the bar itself has no bubble, so bar-only reaches the reader via the summoned peek bubble (existing summon flow untouched).
+
+**Named tests (4):** `tucked_bubble_overflow_draws_more_marker`, `tucked_expand_glyph_inside_peek_bubble`, `reader_paints_identically_tucked_and_untucked`, `saved_geometry_roundtrip_restores_exactly`.
+**Gate after G3: cargo 167 + 0 / 29.**
+**Commit:** `feat(body): laminal ring pivot — Slice G3 — reader from the dock (tucked peek bubble expands; all dock modes speak at length)`
+
+### Batch rules
+
+- Gates per slice with forced recompile (`touch desktop-body/src/*.rs`): cargo test per counts above, `cargo build --release` 9 known warnings, `npx tsc --noEmit` clean, `npx vitest run` 278/31.
+- Existing tests pass unmodified except law 5's mechanical `reader: None,` additions. Any other conflict = STOP the whole batch and report which pin collided.
+- STOP after G3. Owner walk covers all three at once: long reply → bubble carries it honestly with `+N more` → ⤢ → full-height reader bottom-to-top → collapse restores exactly; repeat from head / bar / both docks; image output still lands in torso; Copy still yields full text; thinking gaze/tips unaffected throughout.

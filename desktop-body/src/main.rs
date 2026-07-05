@@ -733,6 +733,7 @@ fn main() {
         skin: env_skin(),
         dock_show: startup_settings.dock,
         config_dir,
+        reader_saved: None,
     };
     app.init_hermes_surface();
 
@@ -1007,6 +1008,10 @@ enum PressTarget {
     ReceiptRail(usize),
     SurfaceBloom(usize),
     TorsoAction(TorsoAction),
+    /// Expand the speech bubble into the full-height reader.
+    BubbleExpand,
+    /// Collapse the reader back to the saved geometry.
+    ReaderCollapse,
     /// The legs/feet zone — dragging it vertically stretches the body.
     Feet,
     Bump,
@@ -1319,6 +1324,17 @@ struct App {
     config_dir: std::path::PathBuf,
     /// The last full text reply/output — copy and the reader prefer this over the torso card.
     last_text_output: Option<String>,
+    /// Geometry saved while the full-height reader is open.
+    reader_saved: Option<SavedGeometry>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SavedGeometry {
+    margin_top: f64,
+    margin_left: f64,
+    w: u32,
+    h: u32,
+    tucked: Option<presence::Edge>,
 }
 
 /// Map a presence-protocol edge onto the renderer's bump edge.
@@ -1659,6 +1675,14 @@ impl App {
             Vec::new()
         };
         let pinned = self.pinned_layout();
+        let reader = if self.reader_saved.is_some() {
+            self.last_text_output
+                .as_deref()
+                .or(speech.as_deref())
+                .filter(|text| !text.trim().is_empty())
+        } else {
+            None
+        };
         let (Some(pool), Some(layer)) = (self.pool.as_mut(), self.layer.as_ref()) else {
             return;
         };
@@ -1695,6 +1719,7 @@ impl App {
             color: self.color,
             skin: self.skin,
             dock_show: self.dock_show,
+            reader,
         };
 
         let buffer = match pool.create_buffer(w as i32, h as i32, stride, wl_shm::Format::Argb8888) {
@@ -1961,7 +1986,12 @@ impl App {
 
         // Tucked: only the bump catches the pointer — everything else is click-through,
         // so the screen space the buddy stepped aside from is truly freed.
-        let rects = if let Some(edge) = self.tucked {
+        let rects = if self.reader_saved.is_some() {
+            vec![
+                (0, 0, self.width as i32, self.height as i32),
+                render::reader_collapse_rect(self.width, self.height).as_i32(),
+            ]
+        } else if let Some(edge) = self.tucked {
             let bump = edge_to_bump(edge);
             let mut rects: Vec<(i32, i32, i32, i32)> = render::tucked_summon_rects(
                 self.skin,
@@ -2010,6 +2040,7 @@ impl App {
             }
             if self.speech.is_some() {
                 rects.push(self.offset_rect_for_body(layout.bubble_rect()).as_i32());
+                rects.push(self.offset_rect_for_body(layout.bubble_expand_rect()).as_i32());
             }
             if self.chat_open {
                 rects.push(self.offset_rect_for_body(layout.input_region_rect()).as_i32());
@@ -2496,6 +2527,15 @@ impl App {
             self.picker = None;
             self.update_input_region();
         }
+        if self.reader_saved.is_some() {
+            let target = if render::reader_collapse_rect(self.width, self.height).contains(x, y) {
+                PressTarget::ReaderCollapse
+            } else {
+                PressTarget::Outside
+            };
+            self.press = Some(PressState { target, secondary, started_at: Instant::now(), dist: 0.0, grabbed_sent: false, bloom_started: false });
+            return;
+        }
         // While tucked, the only live target is the bump; a click on it summons the
         // buddy back out. The bump is not draggable in v1.
         if let Some(edge) = self.tucked {
@@ -2565,6 +2605,8 @@ impl App {
                     .map(|((id, _), _)| PressTarget::Interior(id))
                     .unwrap_or(PressTarget::Body)
             }
+        } else if self.speech.is_some() && layout.bubble_expand_rect().contains(body_x, y) {
+            PressTarget::BubbleExpand
         } else if self.chat_open && layout.input_region_rect().contains(body_x, y) {
             PressTarget::Input
         } else if let Some(action) = render::torso_action_at(&layout, body_x, y) {
@@ -2773,6 +2815,14 @@ impl App {
             PressTarget::TorsoAction(action) => {
                 self.input_focused = false;
                 self.on_torso_action(action);
+            }
+            PressTarget::BubbleExpand => {
+                self.input_focused = false;
+                self.open_reader();
+            }
+            PressTarget::ReaderCollapse => {
+                self.input_focused = false;
+                self.close_reader();
             }
             PressTarget::Body
             | PressTarget::Feet
@@ -3373,9 +3423,7 @@ impl App {
 
     fn on_torso_action(&mut self, action: TorsoAction) {
         match action {
-            TorsoAction::Expand => {
-                self.speech = Some("Fullscreen image open will land here.".to_string());
-            }
+            TorsoAction::Expand => self.open_reader(),
             TorsoAction::Copy => match self.current_text_output() {
                 Some(text) => match copy_to_clipboard(text) {
                     Ok(()) => self.speech = Some("Copied text output.".to_string()),
@@ -3399,6 +3447,56 @@ impl App {
 
     fn current_text_output(&self) -> Option<&str> {
         copy_source(self.last_text_output.as_deref(), &self.torso_surface)
+    }
+
+    fn reader_source_text(&self) -> Option<&str> {
+        self.last_text_output
+            .as_deref()
+            .or(self.speech.as_deref())
+            .filter(|text| !text.trim().is_empty())
+    }
+
+    fn reader_text(&self) -> Option<&str> {
+        if self.reader_saved.is_none() {
+            return None;
+        }
+        self.reader_source_text()
+    }
+
+    fn open_reader(&mut self) {
+        if self.reader_saved.is_some() {
+            return;
+        }
+        if self.reader_source_text().is_none() {
+            self.speech = Some("No text output yet.".to_string());
+            self.update_input_region();
+            return;
+        }
+        self.reader_saved = Some(SavedGeometry {
+            margin_top: self.margin_top,
+            margin_left: self.margin_left,
+            w: self.width,
+            h: self.height,
+            tucked: self.tucked,
+        });
+        let screen_h = self.screen.map(|(_, h)| h as u32).unwrap_or(self.height);
+        self.set_layer_size(render::SURFACE_W, screen_h);
+        self.margin_top = 0.0;
+        self.reposition();
+        self.update_input_region();
+    }
+
+    fn close_reader(&mut self) {
+        let Some(saved) = self.reader_saved.take() else { return };
+        self.margin_top = saved.margin_top;
+        self.margin_left = saved.margin_left;
+        self.set_layer_size(saved.w, saved.h);
+        if let Some(edge) = saved.tucked {
+            self.tucked = Some(edge);
+            self.clamp_tucked(edge);
+        }
+        self.reposition();
+        self.update_input_region();
     }
 
     // --- tuck / summon -------------------------------------------------------

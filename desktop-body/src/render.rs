@@ -98,6 +98,28 @@ const INPUT_Y: f32 = 196.0;
 fn bubble_line_budget() -> usize {
     ((INPUT_Y - BUBBLE_Y - 42.0) / LINE_H).floor() as usize
 }
+
+/// Lines the full-height reader may show on a surface of `surface_h` pixels.
+fn reader_line_budget(surface_h: u32) -> usize {
+    let pad_top = 30.0 + PANEL_LABEL_PX + 8.0;
+    let pad_bottom = 12.0;
+    ((surface_h as f32 - pad_top - pad_bottom) / LINE_H).floor().max(1.0) as usize
+}
+
+fn expand_glyph_rect(card: Rect) -> Rect {
+    let size = 18.0;
+    Rect {
+        x: card.x + card.w - size - 6.0,
+        y: card.y + 6.0,
+        w: size,
+        h: size,
+    }
+}
+
+/// Collapse control on the reader card (single source for paint + hit).
+pub fn reader_collapse_rect(w: u32, h: u32) -> Rect {
+    expand_glyph_rect(Rect { x: 8.0, y: 8.0, w: w as f32 - 16.0, h: h as f32 - 16.0 })
+}
 const TEXT_PX: f32 = 16.0;
 const LINE_H: f32 = TEXT_PX * 1.3;
 const PANEL_TEXT_PX: f32 = 12.0;
@@ -226,6 +248,11 @@ impl Layout {
     pub fn bubble_rect(&self) -> Rect {
         let h = 30.0 + bubble_line_budget() as f32 * LINE_H + 12.0;
         Rect { x: self.ui_x(BUBBLE_W), y: BUBBLE_Y, w: BUBBLE_W, h }
+    }
+
+    /// The expand affordance at the speech bubble's top-right (single source for paint + hit).
+    pub fn bubble_expand_rect(&self) -> Rect {
+        expand_glyph_rect(self.bubble_rect())
     }
 
     /// Chat input box sized for `lines` lines of text.
@@ -944,6 +971,11 @@ fn tucked_peek_origin(edge: BumpEdge, w: u32, h: u32) -> (f32, f32) {
 }
 
 /// The peek speech bubble rect (surface-local), beside the bump on its on-screen side.
+/// Expand affordance on the tucked peek bubble (single source for paint + hit).
+pub fn tucked_bubble_expand_rect(edge: BumpEdge, w: u32, h: u32) -> Rect {
+    expand_glyph_rect(tucked_bubble_rect(edge, w, h))
+}
+
 pub fn tucked_bubble_rect(edge: BumpEdge, w: u32, h: u32) -> Rect {
     let (x, top) = tucked_peek_origin(edge, w, h);
     Rect { x, y: top, w: TUCK_PEEK_W, h: TUCK_PEEK_BUBBLE_H }
@@ -1451,6 +1483,8 @@ pub struct BodyView<'a> {
     pub skin: Skin,
     /// Tucked appearance preference. From `BB_DOCK`, set once at startup; coerced under ring skin.
     pub dock_show: DockShow,
+    /// When `Some`, the reader takes over the whole surface (onboarding-style takeover).
+    pub reader: Option<&'a str>,
 }
 
 pub fn receipt_rail_visible_for_body_len(body_len: f32) -> bool {
@@ -1491,6 +1525,15 @@ impl Sprite {
         let Some(mut pixmap) = Pixmap::new(w, h) else {
             return;
         };
+
+        // Reader takeover wins over every other mode (onboarding precedent).
+        if let Some(text) = view.reader {
+            if let Some(font) = &self.font {
+                draw_reader(&mut pixmap, font, text, w, h);
+            }
+            blit_premultiplied_bgra(pixmap.data(), canvas);
+            return;
+        }
 
         // Tucked: the minimized bump hugging the edge, plus an optional "peek" (speech bubble,
         // and an input field) beside it when the user has cycled the tucked view open.
@@ -3594,23 +3637,7 @@ fn draw_torso_action(pixmap: &mut Pixmap, layout: &Layout, action: TorsoAction) 
 
     let icon = solid(Color::from_rgba8(255, 255, 255, 225));
     match action {
-        TorsoAction::Expand => {
-            let inset = 5.0;
-            let mut pb = PathBuilder::new();
-            pb.move_to(rect.x + inset, rect.y + rect.h * 0.52);
-            pb.line_to(rect.x + inset, rect.y + inset);
-            pb.line_to(rect.x + rect.w * 0.52, rect.y + inset);
-            pb.move_to(rect.x + rect.w - inset, rect.y + rect.h * 0.48);
-            pb.line_to(rect.x + rect.w - inset, rect.y + rect.h - inset);
-            pb.line_to(rect.x + rect.w * 0.48, rect.y + rect.h - inset);
-            if let Some(path) = pb.finish() {
-                let mut stroke = Stroke::default();
-                stroke.width = 1.35;
-                stroke.line_cap = tiny_skia::LineCap::Round;
-                stroke.line_join = tiny_skia::LineJoin::Round;
-                pixmap.stroke_path(&path, &icon, &stroke, Transform::identity(), None);
-            }
-        }
+        TorsoAction::Expand => draw_expand_glyph(pixmap, rect),
         TorsoAction::Copy => {
             let back = Rect {
                 x: rect.x + 5.0,
@@ -3772,6 +3799,72 @@ fn draw_bubble(pixmap: &mut Pixmap, font: &Font, layout: &Layout, text: &str) {
             [16, 24, 44]
         };
         draw_line(pixmap, font, line, rect.x + pad_x, baseline, TEXT_PX, color);
+        baseline += LINE_H;
+    }
+    if !text.is_empty() {
+        draw_expand_glyph(pixmap, expand_glyph_rect(rect));
+    }
+}
+
+fn draw_expand_glyph(pixmap: &mut Pixmap, rect: Rect) {
+    if rect.w <= 0.0 || rect.h <= 0.0 {
+        return;
+    }
+    draw_round_rect(pixmap, rect, Color::from_rgba8(0, 0, 0, 140));
+    if let Some(path) = round_rect_path(rect, rect.w.min(rect.h) / 2.0) {
+        let mut stroke = Stroke::default();
+        stroke.width = 1.0;
+        pixmap.stroke_path(
+            &path,
+            &solid(Color::from_rgba8(255, 255, 255, 175)),
+            &stroke,
+            Transform::identity(),
+            None,
+        );
+    }
+    let icon = solid(Color::from_rgba8(255, 255, 255, 225));
+    let inset = 5.0;
+    let mut pb = PathBuilder::new();
+    pb.move_to(rect.x + inset, rect.y + rect.h * 0.52);
+    pb.line_to(rect.x + inset, rect.y + inset);
+    pb.line_to(rect.x + rect.w * 0.52, rect.y + inset);
+    pb.move_to(rect.x + rect.w - inset, rect.y + rect.h * 0.48);
+    pb.line_to(rect.x + rect.w - inset, rect.y + rect.h - inset);
+    pb.line_to(rect.x + rect.w * 0.48, rect.y + rect.h - inset);
+    if let Some(path) = pb.finish() {
+        let mut stroke = Stroke::default();
+        stroke.width = 1.35;
+        stroke.line_cap = tiny_skia::LineCap::Round;
+        stroke.line_join = tiny_skia::LineJoin::Round;
+        pixmap.stroke_path(&path, &icon, &stroke, Transform::identity(), None);
+    }
+}
+
+/// Full-surface reader takeover — one card spanning the column, honest overflow marker.
+fn draw_reader(pixmap: &mut Pixmap, font: &Font, text: &str, w: u32, h: u32) {
+    let card = Rect { x: 8.0, y: 8.0, w: w as f32 - 16.0, h: h as f32 - 16.0 };
+    let bg = Color::from_rgba8(247, 251, 255, 245);
+    let border = solid(Color::from_rgba8(0, 0, 0, 175));
+    draw_round_rect(pixmap, card, bg);
+    if let Some(path) = round_rect_path(card, 14.0) {
+        let mut stroke = Stroke::default();
+        stroke.width = 1.0;
+        pixmap.stroke_path(&path, &border, &stroke, Transform::identity(), None);
+    }
+    draw_expand_glyph(pixmap, reader_collapse_rect(w, h));
+    let pad_x = 14.0;
+    let mut baseline = card.y + 30.0;
+    draw_line(pixmap, font, "Latest output", card.x + pad_x, baseline, PANEL_LABEL_PX, [102, 88, 76]);
+    baseline += PANEL_LABEL_PX + 8.0;
+    let budget = reader_line_budget(h);
+    let (lines, hidden) = budgeted_lines(font, text, TEXT_PX, card.w - pad_x * 2.0, budget);
+    for (i, line) in lines.iter().enumerate() {
+        let color = if hidden > 0 && i + 1 == lines.len() {
+            [130, 122, 114]
+        } else {
+            [16, 24, 44]
+        };
+        draw_line(pixmap, font, line, card.x + pad_x, baseline, TEXT_PX, color);
         baseline += LINE_H;
     }
 }
@@ -4664,6 +4757,7 @@ mod tests {
                 color: [255, 107, 107],
                 dock_show: DockShow::Both,
                 skin: Skin::Clay,
+                reader: None,
             };
             sprite.paint(&mut canvas, w, h, &view);
             canvas
@@ -4768,6 +4862,7 @@ mod tests {
                 color: CLAY_DEFAULT,
                 dock_show: DockShow::Both,
                 skin: Skin::Clay,
+                reader: None,
             };
             sprite.paint(&mut canvas, w, h, &view);
             canvas
@@ -4947,6 +5042,7 @@ mod tests {
                 color: CLAY_DEFAULT,
                 dock_show: DockShow::Both,
                 skin,
+                reader: None,
             };
             sprite.paint(&mut canvas, w, h, &view);
             canvas
@@ -5112,6 +5208,7 @@ mod tests {
                 color: CLAY_DEFAULT,
                 dock_show: DockShow::Both,
                 skin: Skin::Clay,
+                reader: None,
             };
             sprite.paint(&mut canvas, w, h, &view);
             canvas
@@ -5387,6 +5484,7 @@ mod tests {
                 color: CLAY_DEFAULT,
                 dock_show: DockShow::Both,
                 skin,
+                reader: None,
             };
             sprite.paint(&mut canvas, w, h, &view);
             canvas
@@ -5444,6 +5542,7 @@ mod tests {
                 color: CLAY_DEFAULT,
                 dock_show,
                 skin: Skin::Clay,
+                reader: None,
             };
             sprite.paint(&mut canvas, w, h, &view);
             canvas
@@ -6066,6 +6165,7 @@ mod tests {
             color: CLAY_DEFAULT,
             dock_show: DockShow::Both,
             skin: Skin::Clay,
+            reader: None,
         };
 
         sprite.paint(&mut canvas, frame.surface_w, frame.surface_h, &view);
@@ -6158,6 +6258,7 @@ mod tests {
             color: CLAY_DEFAULT,
             dock_show: DockShow::Both,
             skin: Skin::Clay,
+            reader: None,
         };
         Sprite::new().paint(&mut canvas, w, h, &view);
         let bob = (t * std::f32::consts::TAU / 3.6).sin() * 3.0;
@@ -6219,5 +6320,98 @@ mod tests {
         let (lines, hidden) = budgeted_lines(&font, "Short reply.", TEXT_PX, BUBBLE_W - 28.0, bubble_line_budget());
         assert_eq!(hidden, 0);
         assert!(!lines.iter().any(|line| line.contains(" more")));
+    }
+
+    #[test]
+    fn reader_takeover_suppresses_figure() {
+        let layout = Layout::initial();
+        let w = SURFACE_W;
+        let h = 400_u32;
+        let sprite = Sprite::new();
+        let text = "A long reply the reader shows in full.";
+        let paint = |reader: Option<&str>| -> Vec<u8> {
+            let mut canvas = vec![0_u8; (w * h * 4) as usize];
+            let view = BodyView {
+                t: 0.0,
+                emotion: Emotion::Neutral,
+                speech: Some(text),
+                torso_output: TorsoOutput::Text(TextCard { title: "", body: "" }),
+                chat_open: false,
+                tucked: None,
+                tucked_show_bubble: false,
+                tucked_show_input: false,
+                input_text: "",
+                input_placeholder: "",
+                input_focused: false,
+                review_pending: false,
+                edit_pending: false,
+                posture_badge: None,
+                surface_bloom: &[],
+                route_health: None,
+                route_flash: false,
+                alert_level: None,
+                activity: false,
+                receipt_rail: &[],
+                interior_rows: &[],
+                settings: &[],
+                onboarding: None,
+                layout,
+                pinned: None,
+                frame: None,
+                color: CLAY_DEFAULT,
+                dock_show: DockShow::Both,
+                skin: Skin::Clay,
+                reader,
+            };
+            sprite.paint(&mut canvas, w, h, &view);
+            canvas
+        };
+        let body = paint(None);
+        let reader = paint(Some(text));
+        assert_ne!(body, reader, "reader open must paint a different surface than the figure");
+        let head_idx = ((HEAD_CY as u32 * w + FIG_CX as u32) * 4) as usize;
+        assert_ne!(
+            &body[head_idx..head_idx + 3],
+            &reader[head_idx..head_idx + 3],
+            "reader takeover must replace the figure head pixels",
+        );
+        assert!(
+            reader[head_idx] > 200 && reader[head_idx + 1] > 240,
+            "reader card must paint bubble background over the head, not clay",
+        );
+    }
+
+    #[test]
+    fn reader_card_spans_surface_height() {
+        let w = SURFACE_W;
+        let h = 720_u32;
+        let card = Rect { x: 8.0, y: 8.0, w: w as f32 - 16.0, h: h as f32 - 16.0 };
+        assert!((card.h - (h as f32 - 16.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn reader_budget_exceeds_bubble_budget() {
+        assert!(reader_line_budget(720) > bubble_line_budget());
+    }
+
+    #[test]
+    fn expand_glyph_sits_inside_bubble_rect() {
+        let layout = Layout::initial();
+        let bubble = layout.bubble_rect();
+        let expand = layout.bubble_expand_rect();
+        assert!(expand.x >= bubble.x);
+        assert!(expand.y >= bubble.y);
+        assert!(expand.x + expand.w <= bubble.x + bubble.w);
+        assert!(expand.y + expand.h <= bubble.y + bubble.h);
+    }
+
+    #[test]
+    fn reader_overflow_is_honest() {
+        let font = load_font().expect("system font available for reader test");
+        let long = (0..400).map(|i| format!("word{i}")).collect::<Vec<_>>().join(" ");
+        let budget = reader_line_budget(720);
+        let (lines, hidden) = budgeted_lines(&font, &long, TEXT_PX, SURFACE_W as f32 - 44.0, budget);
+        assert!(hidden > 0);
+        assert!(lines.last().unwrap().starts_with('+'));
     }
 }

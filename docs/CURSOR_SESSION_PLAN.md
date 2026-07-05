@@ -1891,7 +1891,82 @@ presence.rs + main.rs byte-untouched; `draw_mouth`, `draw_closed_eyes`, `draw_bu
 
 Builder report appended below this brief, committed separately as `docs: builder report — Slice F3c working gaze`. **Commit but DO NOT push** — F3c ships after the owner walk (in flight: pupils scan under the green ring; rest/amber/soul-green: gaze still; sweep amplitude/cadence are tunable at the walk). **STOP after F3c.**
 
-(F3c builder report pending.)
+## Builder report — F3c (Grok Build, 2026-07-05)
+
+**Status:** F3c complete. **Stopped after F3c.** Not pushed.
+
+### Commit
+
+```
+9c42afe
+feat(body): laminal ring pivot — Slice F3c — working gaze (activity sweeps the untucked pupils; deliberate draw_eyes unfreeze, rest-identical at dx=0)
+
+`draw_eyes` gains `pupil_dx: f32` (after `pupil_dy`); pupil center x becomes
+`ex + sign * 2.0 + pupil_dx`. At `pupil_dx = 0.0` geometry is rest-identical.
+Pure `activity_gaze_dx(activity, t)` with GAZE_SWEEP_DX=3.0, GAZE_PERIOD_S=2.6.
+`Sprite::paint` computes `gaze_dx` next to bob/blink; `draw_body_content` threads
+it to `draw_eyes`. Pinned/frame views out of scope (byte-identical). Paint-only;
+main.rs + presence.rs byte-untouched.
+
+Exactly 4 named tests.
+```
+
+### Gate outputs (verbatim, forced recompile via `touch desktop-body/src/*.rs`)
+
+**`cd desktop-body && cargo test`**
+
+```
+     Running unittests src/main.rs (target/debug/deps/bb_desktop_body-...)
+running 150 tests
+test result: ok. 150 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.71s
+
+     Running unittests src/bin/frame_driver.rs (...)
+running 0 tests
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/bin/parse_action_result.rs (...)
+running 29 tests
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+```
+
+Baseline 146 (main); +4 named tests only (150). New tests: gaze_rests_centered_when_idle, gaze_sweep_stays_inside_the_eye_white, activity_sweeps_the_untucked_pupils, soul_ready_tier_never_moves_the_gaze.
+
+**`cd desktop-body && cargo build --release`**
+
+```
+warning: `bb-desktop-body` (bin "bb-desktop-body") generated 9 warnings
+    Finished `release` profile [optimized] target(s) in 2.93s
+```
+
+9 known warnings. Nothing new.
+
+**`npx tsc --noEmit`**
+
+```
+(clean — exit 0, no output)
+```
+
+**`npx vitest run`**
+
+```
+ Test Files  31 passed (31)
+      Tests  278 passed (278)
+   Duration  1.50s
+```
+
+Unchanged.
+
+### Canary greps / verifications
+
+| Canary | Result |
+|--------|--------|
+| main.rs + presence.rs byte-untouched | PASS |
+| `draw_mouth`, `draw_closed_eyes`, `draw_bump`, `draw_bump_halo`, `draw_bump_eyes_awake`, `draw_ring`, `draw_figure`, `draw_frame_face`, `draw_pinned_view`, `draw_frame_view`, pose fns byte-identical | PASS |
+| `draw_eyes` diff = one param + pupil-x expression only | PASS |
+| Zero new color values (geometry constants only) | PASS |
+| bar/tips/halo untouched | PASS |
+| hit/summon/input untouched | PASS |
+| Existing tests byte-unmodified + pass | PASS (150 includes them unchanged) |
 
 
 

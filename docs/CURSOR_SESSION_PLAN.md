@@ -1852,5 +1852,46 @@ presence.rs untouched. `draw_bump`, `draw_closed_eyes`, `draw_eyes`, `draw_ring`
 
 **Owner ruling: PUSH.** F-series ships: F3a (superseded bar eyes, retired by F4), F3b (waking eyes), F4 (identity bar + traffic-light tips + activity wire), walk fixes. Next: F3c (untucked figure eyes) LAST of the expression pass.
 
+---
+
+## Slice F3c — working gaze: activity sweeps the untucked figure's pupils (expression pass, part 3) — brief for Composergrok
+
+**Context.** Everything is pushed (`origin/laminal-ring-pivot` head `48aa1bf`, tree clean) — build ON TOP of head. This is the LAST slice of the expression pass and the one we deferred to a deliberate brief because it touches the canary-frozen `draw_eyes`. The activity story so far: in flight (`BodyView.activity`, the F2 request→result bracket carried on F4's wire), the tucked head opens its eyes (F3b) and the identity bar shows green tips (F4); the untucked figure only gets the green boundary ring — no facial tell, because its eyes are *already open* (the `Emotion` → `Face` channel keeps them open at all times, blink every 4s). So the untucked equivalent of "eyes open" is not open-vs-closed — it is **gaze**: while working, the pupils scan slowly side to side, like reading. At rest, on any soul tier, or on route health: the gaze sits exactly where it sits today.
+
+**The deliberate unfreeze (read before coding).** The figure-behavior canary (laminal-ring-pivot.md §canaries) freezes `draw_eyes` against anthropomorphic behavior *without a named flow*. F3c IS the named flow — the owner-ruled expression pass on the F2 activity bracket (same flow that named F3b's waking eyes). The unfreeze is minimal and audited: `draw_eyes` gains ONE parameter, and at its rest value the geometry is **exactly** the old one. The canary refines from "fn byte-identical" to "**rest frame pixel-identical**" — the lead verifies this at audit by building origin `48aa1bf` and md5-comparing a rest-frame render against your build. If your diff to `draw_eyes` is anything more than the new param and the pupil-x expression, the audit fails.
+
+### Design pins
+
+1. **`draw_eyes` gains `pupil_dx: f32`** (after `pupil_dy`). The ONLY body change: pupil center x becomes `ex + sign * 2.0 + pupil_dx` (the outward bias is preserved; the sweep is added to BOTH eyes — conjugate gaze, real eyes move together). White ellipse, pupil radius, the `eye_open > 0.35` blink guard, colors: all byte-unchanged. At `pupil_dx = 0.0` the fn paints the exact old pixels.
+2. **Pure fn `activity_gaze_dx(activity: bool, t: f32) -> f32`** in render.rs = `if activity { (t * TAU / GAZE_PERIOD_S).sin() * GAZE_SWEEP_DX } else { 0.0 }`. New constants: `GAZE_SWEEP_DX: f32 = 3.0`, `GAZE_PERIOD_S: f32 = 2.6` (deliberately off the bob 3.6s and blink 4.0s cadences so the face never looks phase-locked). Doc comment must state: takes the activity bool ONLY — a soul-emitted Ready tier greens the chrome but NEVER moves the gaze, and route health has no parameter to sneak through (the F4 law, third application).
+3. **Bounds math (why 3.0)**: pupil r 4.5, outward bias 2.0, sweep 3.0 → max pupil-center offset 5.0, farthest ink edge 9.5 < eye-white rx 11.0 (1.5px margin). The pupil never escapes the white at any `t`. Assert the const inequality in a test (pin 2.0 + GAZE_SWEEP_DX + 4.5 < 11.0).
+4. **Threading**: `Sprite::paint` computes `let gaze_dx = activity_gaze_dx(view.activity, view.t);` next to the bob/blink lines (~:1530); `draw_body_content` gains a `pupil_dx: f32` param and passes it to `draw_eyes` (:1648). Both `draw_body_content` call sites (rail branch + else) pass `gaze_dx`. **Pinned view and frame view are OUT OF SCOPE**: `draw_pinned_view`, `draw_frame_view`, `draw_frame_face` byte-identical (parked: pinned/frame gaze, only if the owner asks).
+5. **The emotion channel is untouched.** `eye_open`, `pupil_dy`, and the mouth stay the Emotion's; the sweep composes with any face (e.g. amber-confirm Curious face holds while gaze is still; approve → gaze scans under the same face until the result lands). No new `Emotion` variant, no `set_emotion` calls, no main.rs change.
+6. **Paint-only, render.rs ONLY.** main.rs and presence.rs byte-untouched (`view.activity` already exists — F4's wire). No hit/summon/input geometry.
+
+### Named tests (exactly these 4; fixtures use `Emotion::Neutral` so `pupil_dy = 0`)
+
+- `gaze_rests_centered_when_idle` — `activity_gaze_dx(false, t) == 0.0` for sampled `t` including the sin peaks (0.65, 1.95).
+- `gaze_sweep_stays_inside_the_eye_white` — `|activity_gaze_dx(true, t)| <= GAZE_SWEEP_DX` over sampled `t`, plus the pin-3 const inequality.
+- `activity_sweeps_the_untucked_pupils` — full untucked clay paint path, `t = 0.65` (sin phase 0.25 → dx exactly +3.0; outside the blink window), tier `None`: sample point `Q = (ex + 2.0 + 6.0, ey)` at the RIGHT eye (`ex = FIG_CX + 18.0`, `ey = HEAD_CY - 10.0 + bob`; Q is 6.0 from the centered pupil → white, 3.0 from the swept pupil → ink). Idle render: Q is NOT `EYE_INK` (white). Activity render, same view otherwise: Q == `EYE_INK` exactly (solid pupil over white, no blend tolerance games — F4's lesson). Result-side: activity back to false → Q white again.
+- `soul_ready_tier_never_moves_the_gaze` — activity=false, tier `Some(Ready)`, same `t`/fixture: Q stays white (the tier may paint boundary chrome elsewhere; the gaze does not move), and `activity_gaze_dx(false, 0.65) == 0.0`.
+
+### Gates (forced recompile first: `touch desktop-body/src/*.rs`)
+
+- `cargo test` → baseline **146 + 0 (main) / 29**, growth by these 4 named tests only → expect 150. **All existing tests pass UNMODIFIED — no exceptions** (idle renders are pixel-identical by pin 1, so nothing existing can see this slice). If anything seems to force a test edit, that is a conflict stop: STOP and report.
+- `cargo build --release` → 9 known warnings, nothing new. `npx tsc --noEmit` clean; `npx vitest run` 278/31 (no TS in scope).
+
+### Canaries (lead re-checks all, vs origin `48aa1bf`)
+
+presence.rs + main.rs byte-untouched; `draw_mouth`, `draw_closed_eyes`, `draw_bump`, `draw_bump_halo`, `draw_bump_eyes_awake`, `draw_ring`, `draw_figure`, `draw_frame_face`, `draw_pinned_view`, `draw_frame_view`, pose fns all byte-identical; `draw_eyes` diff = the one param + the pupil-x expression, nothing else; **rest-frame pixel-identity** verified by lead against an origin build; zero new color values (both new constants are geometry); bar/tips/halo untouched; hit/summon/input untouched.
+
+### Commit
+
+`feat(body): laminal ring pivot — Slice F3c — working gaze (activity sweeps the untucked pupils; deliberate draw_eyes unfreeze, rest-identical at dx=0)`
+
+Builder report appended below this brief, committed separately as `docs: builder report — Slice F3c working gaze`. **Commit but DO NOT push** — F3c ships after the owner walk (in flight: pupils scan under the green ring; rest/amber/soul-green: gaze still; sweep amplitude/cadence are tunable at the walk). **STOP after F3c.**
+
+(F3c builder report pending.)
+
 
 

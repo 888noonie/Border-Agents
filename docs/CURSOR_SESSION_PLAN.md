@@ -2302,3 +2302,62 @@ Combined walk PASS ("Nailed it!"): long reply carried honestly in the bubble, fu
 **Backlog for the next sweep (owner request at walk):**
 - **Selectable text + Copy / Copy-all button in the speech bubble** (and by extension the reader): today Copy lives on the torso action row only; the bubble/reader should carry their own copy affordance, and text selection (drag-select a span) wants design — selection state, highlight paint, clipboard of the selected span vs copy-all.
 - Lead-observed at walk (candidate, same sweep): reader shows raw markdown (`**bold**`, `*italic*`, list markers) verbatim — a minimal markdown-aware text pass (bold/italic/lists) would make provider replies read clean.
+
+---
+
+## J-series batch — the output field earns its keep — brief for Composergrok (3 slices: J1, J2, J3)
+
+Build J1 → J2 → J3 in order on top of head `f36256c`. **Interleave commits per slice this time**: feat J1, docs report J1, feat J2, docs report J2, feat J3, docs report J3. Do NOT push. STOP after J3 or immediately on any conflict rule.
+
+**Owner direction (2026-07-05/06):** improve the output field — what a user needs from it: (1) the WHOLE text (the reader still truncates via `+N more`), (2) copy where the text lives, (3) the best formatting we can honestly render, (4) a selectable span. Bubble keeps its compact 7-line form; the reader becomes the full-service surface.
+
+### Ground truth (lead-scouted anchors — verify before building)
+
+- `pointer_frame` main.rs:3844 drops `PointerEventKind::Axis` and `Motion` in the `_ => {}` arm. Motion positions are surface-local — safe while the reader is open because the surface does not move (drag is disabled, G2).
+- `draw_line` render.rs:4284 is a per-glyph fontdue rasterizer loop; `measure` render.rs:4260 is a per-char advance sum (prefix-measurable). Bold = double-strike (second pass at x+0.6), no new font.
+- Reader today: `draw_reader` wraps via `budgeted_lines(…, reader_line_budget(h))` and hides overflow behind `+N more`. `copy_to_clipboard` exists (TorsoAction::Copy). `last_text_output` (G1) holds the raw full text.
+- Green-ruling constraint: NO timers. Transient feedback ("Copied ✓") must be event-bracketed — shown until the next reader event (scroll/select/close), never decayed by clock.
+
+### Law (all three slices)
+
+1. Figure draw fns byte-frozen (lead audits by fn-body md5 sweep vs `f36256c`). presence.rs byte-frozen. No TS changes (vitest 278/31, tsc clean).
+2. F5 activity bracket + G1 `awaiting_reply` clears untouched. `body_activity`, routing fns untouched.
+3. Palette: zero new colour RGBs. New alphas of existing RGBs allowed (BAR_BODY_ALPHA precedent) — selection highlight = the instance colour `view.color` at low alpha.
+4. Allowed mechanical existing-test edits ONLY: new `BodyView` fields add their literal lines (`reader_scroll: 0,` / `reader_selection: None,`) to existing test literals — nothing else. Any other forced test edit = STOP the batch and report the colliding pin.
+5. Release warnings stay 9. Clipboard is sacred: Copy/copy-all/copy-span always yield text the provider actually sent (J2 pin 5).
+
+### Slice J1 — full access: the reader scrolls; copy-all lives on the text
+
+1. `App.reader_scroll: usize` (top line offset; reset to 0 in `open_reader`). New `BodyView.reader_scroll` (law 4). Reader wraps the FULL text (`usize::MAX`), draws the window `[scroll .. scroll+reader_line_budget(h)]`; the `+N more` marker LEAVES the reader (bubble/tucked bubble keep theirs).
+2. Wheel: add an `Axis` arm in `pointer_frame`, live ONLY while the reader is open. Pure fn `scroll_delta_lines(discrete: Option<i32>, absolute: f64) -> i32` (discrete notch = 3 lines; else absolute-derived, min magnitude 1). Clamp scroll to `[0, total_lines - budget]` (saturating).
+3. Footer line (muted ink [130,122,114], inside the card bottom) when total > budget: `lines A–B of N`. After a copy it reads `Copied ✓` until the next scroll/selection/close event (no timer).
+4. Copy-all: copy glyph (⧉-style, drawn with existing strokes/inks) on the reader top-right beside collapse (`reader_copy_rect(w, h)`) and on the bubble beside ⤢ (`Layout::bubble_copy_rect()`; tucked peek bubble likewise via `tucked_bubble_copy_rect`). Tap → `copy_to_clipboard` of the raw full text; bubble path speaks "Copied text output." (existing string); reader path uses the footer per pin 3. All rects single-source paint + hit; press targets `BubbleCopy` / `ReaderCopy`.
+
+**Tests (5):** `reader_scroll_clamps_to_text`, `reader_window_draws_the_scrolled_lines`, `reader_footer_reports_position`, `copy_glyphs_sit_inside_their_cards`, `reader_scroll_resets_on_open`. **Gate: cargo 172+0/29.**
+**Commit:** `feat(body): laminal ring pivot — Slice J1 — full access (reader scrolls the whole reply; copy-all on bubble and reader)`
+
+### Slice J2 — output formatting: markdown-lite, honestly rendered
+
+1. Pure `markdown_lite(text) -> Vec<MdLine>` in render.rs. `MdLine { kind: Body | Heading | Bullet | Numbered(u32), spans: Vec<MdSpan> }`, `MdSpan { text: String, bold: bool }`. Parse per line: leading `#`+ → Heading (markers stripped); leading `- ` / `* ` → Bullet (drawn as `• `); `N. ` → Numbered; inline `**…**` → bold spans; single `*…*` / `` ` `` markers stripped to plain. Everything else verbatim — no tables/links/nesting (out of scope, stay honest).
+2. Reader renders MdLines: bold spans double-strike (+0.6px second pass, same colour); Heading lines whole-line bold; bullets/numbers indent hanging wraps by the marker width. Wrapping is span-aware via the plain projection + char-offset re-tokenization (each wrapped line keeps its bold ranges).
+3. Bubble + tucked bubble render the PLAIN projection (markers stripped, `• ` kept) through the same `markdown_lite` — one parser, two fidelities. `budgeted_lines` budgets operate on the projection.
+4. Scroll indices (J1) refer to WRAPPED MdLines — window/clamp/footer unchanged in meaning.
+5. **Clipboard stays raw:** copy-all and G1 `copy_source` return the original text with markers intact. Named test pins it.
+
+**Tests (5):** `markdown_lite_strips_markers_to_plain`, `markdown_lite_marks_bold_spans`, `markdown_lite_maps_bullets_and_headings`, `bubble_renders_plain_projection`, `copy_preserves_raw_markdown`. **Gate: cargo 177+0/29.**
+**Commit:** `feat(body): laminal ring pivot — Slice J2 — output formatting (markdown-lite: bold, bullets, headings; clipboard stays raw)`
+
+### Slice J3 — selectable text: drag a span, release copies it
+
+1. Selection state `Option<(ReaderPos, ReaderPos)>` where `ReaderPos { line: usize, ch: usize }` (indices into the full wrapped-line list, NOT the window — selection survives scrolling). New `BodyView.reader_selection` carries the normalized range (law 4).
+2. Hit mapping: press inside the reader text area (not on collapse/copy glyphs — those keep precedence) anchors selection; `Motion` arm (surface-local, reader-open only) extends it. Pure fn `hit_char_index(font, line, px, x_offset) -> usize` = prefix-measure search; y → visible row via `LINE_H` + scroll offset.
+3. Highlight painted BEHIND the text: per-line rects over the selected span, `view.color` at alpha ≈ 70 (law 3).
+4. Release with a non-empty span → `copy_to_clipboard` of the selected PLAIN text (projection, since that is what the user saw and swept) + footer `Copied ✓` (J1 bracket). Plain click (no motion) clears the selection. Selection clears on open/close.
+5. Copy-all (J1) still yields the raw full text — the two copies answer different questions; do not merge them.
+
+**Tests (4):** `hit_maps_x_to_char_index`, `selection_highlight_paints_behind_text`, `selection_copy_yields_the_plain_span`, `selection_clears_on_reader_close`. **Gate: cargo 181+0/29.**
+**Commit:** `feat(body): laminal ring pivot — Slice J3 — selectable text (drag-select in the reader; release copies the span)`
+
+### Batch rules
+
+Gates per slice with forced recompile (`touch desktop-body/src/*.rs`): cargo 172/177/181 +0/29, release 9 known warnings, tsc clean, vitest 278/31. Existing tests pass unmodified except law 4's mechanical literals. STOP after J3. Owner walk: long markdown reply → bubble shows clean plain text → reader shows bold/bullets/headings → wheel scrolls the whole reply with the A–B-of-N footer → copy-all from bubble and reader → drag-select a sentence, release, paste it somewhere → collapse restores geometry; repeat a spot-check from a tucked dock.

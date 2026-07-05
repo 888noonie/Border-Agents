@@ -2387,3 +2387,16 @@ feat(body): laminal ring pivot — Slice J2 — output formatting (markdown-lite
 ```
 
 `markdown_lite` / `markdown_plain_projection`; reader renders `WrappedMdLine` with bold double-strike; bubble/tucked use plain projection through `budgeted_lines`. Scroll indices count wrapped MdLines. Clipboard stays raw (`copy_preserves_raw_markdown`). Five named tests. Gates: cargo 177+0/29, release 9 warnings, tsc clean, vitest 278/31. presence.rs byte-untouched.
+
+## Builder report — J3 (Grok Build, 2026-07-06)
+
+**Status:** J3 complete. **Stopped after J3.** Not pushed.
+
+### Commit
+
+```
+8532bcd
+feat(body): laminal ring pivot — Slice J3 — selectable text (drag-select in the reader; release copies the span)
+```
+
+`ReaderPos` + `BodyView.reader_selection`; `Motion` arm extends selection; `hit_char_index` / `reader_hit_pos`; highlight behind text at `view.color` alpha 70; release copies plain span; selection clears on open/close/plain click. Copy-all still raw. Four named tests. Gates: cargo 181+0/29, release 9 warnings, tsc clean, vitest 278/31. presence.rs byte-untouched; F5/G1 routing untouched.

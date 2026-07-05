@@ -2152,3 +2152,13 @@ Unchanged.
 - `npx vitest run`: **278** ✅
 
 **Verdict: PASS, zero required fixes, zero cosmetic fixes.** Second consecutive zero-fix slice. Ready for owner walk: type to the buddy → while it thinks, green tips + open tucked eyes + scanning untucked gaze; reply lands → everything rests; governance bracket unchanged. Known-honest edge (adjudicated in the brief): a dead provider that never replies holds the buddy visibly busy — that is the truth, and timers are banned by the green ruling.
+
+---
+
+## Owner walk — Slice F5 (thinking gaze) — PASS 2026-07-05
+
+Typed to the buddy: green tips + tucked eyes open + untucked gaze scanning while the provider thinks; reply lands → everything rests. Governance bracket unchanged. Owner ruling: **PUSH**. No tuning requested.
+
+**Process change (owner, 2026-07-05): builder prompts now batch THREE slices** (rate economics). Per-slice commits (feat + docs report each), STOP on any existing-test conflict, one combined lead audit + one combined owner walk at the end.
+
+**Walk finding → next batch:** provider text output truncates. Torso text card keeps only the tail of long replies (silent head-cut, no ellipsis, no scroll); untucked bubble caps at 6 lines; torso Expand button is a stub. Owner direction: text output moves to the speech bubble, bubble grows (up to full screen height via an expand affordance), torso freed for future connection controls (decoupled, later slice). → G-series batch briefed below.

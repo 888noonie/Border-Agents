@@ -2361,3 +2361,16 @@ Build J1 → J2 → J3 in order on top of head `f36256c`. **Interleave commits p
 ### Batch rules
 
 Gates per slice with forced recompile (`touch desktop-body/src/*.rs`): cargo 172/177/181 +0/29, release 9 known warnings, tsc clean, vitest 278/31. Existing tests pass unmodified except law 4's mechanical literals. STOP after J3. Owner walk: long markdown reply → bubble shows clean plain text → reader shows bold/bullets/headings → wheel scrolls the whole reply with the A–B-of-N footer → copy-all from bubble and reader → drag-select a sentence, release, paste it somewhere → collapse restores geometry; repeat a spot-check from a tucked dock.
+
+## Builder report — J1 (Grok Build, 2026-07-06)
+
+**Status:** J1 complete. Not pushed.
+
+### Commit
+
+```
+7d29d2b
+feat(body): laminal ring pivot — Slice J1 — full access (reader scrolls the whole reply; copy-all on bubble and reader)
+```
+
+`App.reader_scroll` / `reader_copied`; `BodyView.reader_scroll` / `reader_copied`. Reader wraps full text (`usize::MAX`), scroll window, `lines A–B of N` footer, event-bracketed `Copied ✓`. Wheel `Axis` arm + `scroll_delta_lines`. Copy-all glyphs on bubble/tucked/reader (`BubbleCopy` / `ReaderCopy`). Five named tests + `reader_scroll_resets_on_open` in main. Gates: cargo 172+0/29, release 9 warnings, tsc clean, vitest 278/31. presence.rs byte-untouched.

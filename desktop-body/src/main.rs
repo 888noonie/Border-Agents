@@ -673,7 +673,7 @@ fn main() {
         loop_signal: None,
         screen: None,
         width: render::SURFACE_W,
-        height: render::Layout::new(Facing::Right, startup_settings.body_len, render::BUBBLE_W_DEFAULT)
+        height: render::Layout::new(Facing::Right, startup_settings.body_len, render::BUBBLE_W_DEFAULT, 0.0)
             .surface_h(),
         margin_left: env_i32("BB_MARGIN_LEFT", 48) as f64,
         margin_top: env_i32("BB_MARGIN_TOP", 48) as f64,
@@ -741,6 +741,7 @@ fn main() {
         reader_copied: false,
         reader_selection: None,
         speech_bubble_w: render::BUBBLE_W_DEFAULT,
+        speech_bubble_offset_x: 0.0,
     };
     app.init_hermes_surface();
 
@@ -1025,10 +1026,18 @@ enum PressTarget {
     ReaderCopy,
     /// Drag-select text inside the reader body.
     ReaderText,
-    /// Drag the speech bubble's top edge left→right to widen it.
-    BubbleWidthDrag,
-    /// Drag the reader card's top edge left→right to widen it.
-    ReaderWidthDrag,
+    /// Drag the speech bubble's top strip to slide the column horizontally.
+    BubbleMove,
+    /// Drag the reader card's top strip to slide the column horizontally.
+    ReaderMove,
+    /// Narrow the speech bubble column (− on the left edge).
+    BubbleNarrow,
+    /// Widen the speech bubble column (+ on the right edge).
+    BubbleWiden,
+    /// Narrow the reader column.
+    ReaderNarrow,
+    /// Widen the reader column.
+    ReaderWiden,
     /// The legs/feet zone — dragging it vertically stretches the body.
     Feet,
     Bump,
@@ -1351,6 +1360,8 @@ struct App {
     reader_selection: Option<(render::ReaderPos, render::ReaderPos)>,
     /// User-stretched speech bubble / reader column width.
     speech_bubble_w: f32,
+    /// Horizontal slide of the speech bubble / reader column on-screen.
+    speech_bubble_offset_x: f32,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1439,7 +1450,35 @@ impl App {
     /// The current parameterized surface layout (facing + stretch) — single source
     /// for drawing, hit-testing, and input regions so they can never disagree.
     fn layout(&self) -> render::Layout {
-        render::Layout::new(self.facing, self.body_len, self.speech_bubble_w)
+        render::Layout::new(
+            self.facing,
+            self.body_len,
+            self.speech_bubble_w,
+            self.speech_bubble_offset_x,
+        )
+    }
+
+    fn clamp_speech_column(&mut self) {
+        let base = render::bubble_base_x(self.facing, self.speech_bubble_w);
+        self.speech_bubble_offset_x =
+            render::clamp_bubble_offset_x(base, self.speech_bubble_w, self.speech_bubble_offset_x);
+        self.speech_bubble_w = render::clamp_bubble_w(
+            self.facing,
+            self.speech_bubble_w,
+            self.speech_bubble_offset_x,
+            self.speech_bubble_w,
+        );
+    }
+
+    fn adjust_speech_column_width(&mut self, delta: f32) {
+        self.speech_bubble_w = render::clamp_bubble_w(
+            self.facing,
+            self.speech_bubble_w,
+            self.speech_bubble_offset_x,
+            self.speech_bubble_w + delta,
+        );
+        self.clamp_speech_column();
+        self.update_input_region();
     }
 
     fn pinned_layout(&self) -> Option<render::PinnedLayout> {
@@ -2017,7 +2056,9 @@ impl App {
                 (0, 0, self.width as i32, self.height as i32),
                 render::reader_copy_rect(&layout, self.height).as_i32(),
                 render::reader_collapse_rect(&layout, self.height).as_i32(),
-                render::reader_width_drag_rect(&layout, self.height).as_i32(),
+                render::reader_move_drag_rect(&layout, self.height).as_i32(),
+                render::reader_narrow_rect(&layout, self.height).as_i32(),
+                render::reader_widen_rect(&layout, self.height).as_i32(),
             ]
         } else if let Some(edge) = self.tucked {
             let bump = edge_to_bump(edge);
@@ -2074,7 +2115,9 @@ impl App {
                 rects.push(self.offset_rect_for_body(layout.bubble_rect()).as_i32());
                 rects.push(self.offset_rect_for_body(layout.bubble_copy_rect()).as_i32());
                 rects.push(self.offset_rect_for_body(layout.bubble_expand_rect()).as_i32());
-                rects.push(self.offset_rect_for_body(layout.bubble_width_drag_rect()).as_i32());
+                rects.push(self.offset_rect_for_body(layout.bubble_move_drag_rect()).as_i32());
+                rects.push(self.offset_rect_for_body(layout.bubble_narrow_rect()).as_i32());
+                rects.push(self.offset_rect_for_body(layout.bubble_widen_rect()).as_i32());
             }
             if self.chat_open {
                 rects.push(self.offset_rect_for_body(layout.input_region_rect()).as_i32());
@@ -2567,8 +2610,12 @@ impl App {
                 PressTarget::ReaderCollapse
             } else if render::reader_copy_rect(&layout, self.height).contains(x, y) {
                 PressTarget::ReaderCopy
-            } else if render::reader_width_drag_rect(&layout, self.height).contains(x, y) {
-                PressTarget::ReaderWidthDrag
+            } else if render::reader_widen_rect(&layout, self.height).contains(x, y) {
+                PressTarget::ReaderWiden
+            } else if render::reader_narrow_rect(&layout, self.height).contains(x, y) {
+                PressTarget::ReaderNarrow
+            } else if render::reader_move_drag_rect(&layout, self.height).contains(x, y) {
+                PressTarget::ReaderMove
             } else if render::reader_text_rect(&layout, self.height).contains(x, y) {
                 PressTarget::ReaderText
             } else {
@@ -2663,8 +2710,12 @@ impl App {
             PressTarget::BubbleCopy
         } else if self.speech.is_some() && layout.bubble_expand_rect().contains(body_x, y) {
             PressTarget::BubbleExpand
-        } else if self.speech.is_some() && layout.bubble_width_drag_rect().contains(body_x, y) {
-            PressTarget::BubbleWidthDrag
+        } else if self.speech.is_some() && layout.bubble_widen_rect().contains(body_x, y) {
+            PressTarget::BubbleWiden
+        } else if self.speech.is_some() && layout.bubble_narrow_rect().contains(body_x, y) {
+            PressTarget::BubbleNarrow
+        } else if self.speech.is_some() && layout.bubble_move_drag_rect().contains(body_x, y) {
+            PressTarget::BubbleMove
         } else if self.chat_open && layout.input_region_rect().contains(body_x, y) {
             PressTarget::Input
         } else if let Some(action) = render::torso_action_at(&layout, body_x, y) {
@@ -2713,9 +2764,13 @@ impl App {
             press.grabbed_sent = true;
         }
         let stretching = press.target == PressTarget::Feet;
-        if matches!(press.target, PressTarget::BubbleWidthDrag | PressTarget::ReaderWidthDrag) {
-            self.speech_bubble_w =
-                render::clamp_bubble_w(self.facing, self.body_len, self.speech_bubble_w + dx as f32);
+        if matches!(press.target, PressTarget::BubbleMove | PressTarget::ReaderMove) {
+            let base = render::bubble_base_x(self.facing, self.speech_bubble_w);
+            self.speech_bubble_offset_x = render::clamp_bubble_offset_x(
+                base,
+                self.speech_bubble_w,
+                self.speech_bubble_offset_x + dx as f32,
+            );
             self.update_input_region();
             return;
         }
@@ -2923,8 +2978,16 @@ impl App {
                     }
                 }
             }
-            PressTarget::BubbleWidthDrag | PressTarget::ReaderWidthDrag => {
+            PressTarget::BubbleMove | PressTarget::ReaderMove => {
                 self.input_focused = false;
+            }
+            PressTarget::BubbleNarrow | PressTarget::ReaderNarrow => {
+                self.input_focused = false;
+                self.adjust_speech_column_width(-render::BUBBLE_WIDTH_STEP);
+            }
+            PressTarget::BubbleWiden | PressTarget::ReaderWiden => {
+                self.input_focused = false;
+                self.adjust_speech_column_width(render::BUBBLE_WIDTH_STEP);
             }
             PressTarget::Body
             | PressTarget::Feet

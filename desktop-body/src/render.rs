@@ -92,7 +92,11 @@ pub const BUBBLE_W: f32 = 172.0;
 pub const BUBBLE_W_DEFAULT: f32 = BUBBLE_W;
 pub const BUBBLE_W_MIN: f32 = BUBBLE_W;
 pub const BUBBLE_W_MAX: f32 = 420.0;
-const BUBBLE_WIDTH_DRAG_H: f32 = 15.0;
+const BUBBLE_MOVE_DRAG_H: f32 = 15.0;
+const BUBBLE_WIDTH_BTN_W: f32 = 14.0;
+const BUBBLE_WIDTH_BTN_H: f32 = 28.0;
+const BUBBLE_WIDTH_BTN_GAP: f32 = 3.0;
+pub const BUBBLE_WIDTH_STEP: f32 = 16.0;
 pub const PINNED_BUBBLE_W_MIN: f32 = 188.0;
 pub const PINNED_BUBBLE_W_MAX: f32 = 292.0;
 const BUBBLE_Y: f32 = 8.0;
@@ -191,24 +195,50 @@ pub fn scroll_delta_lines(discrete: Option<i32>, absolute: f64) -> i32 {
     }
 }
 
-pub fn max_bubble_w(facing: Facing, _body_len: f32) -> f32 {
+pub fn bubble_base_x(facing: Facing, bubble_w: f32) -> f32 {
     let figure_half = (TORSO_W / 2.0).max(HEAD_R);
     match facing {
-        Facing::Right => SURFACE_W as f32 - (FIG_CX + figure_half + UI_GAP) - 4.0,
-        Facing::Left => FIG_CX - figure_half - UI_GAP - 4.0,
+        Facing::Right => FIG_CX + figure_half + UI_GAP,
+        Facing::Left => FIG_CX - figure_half - UI_GAP - bubble_w,
     }
 }
 
-pub fn clamp_bubble_w(facing: Facing, body_len: f32, w: f32) -> f32 {
-    w.clamp(BUBBLE_W_MIN, max_bubble_w(facing, body_len).min(BUBBLE_W_MAX))
+pub fn clamp_bubble_offset_x(base_x: f32, bubble_w: f32, offset: f32) -> f32 {
+    let x = base_x + offset;
+    let clamped = x.clamp(4.0, SURFACE_W as f32 - bubble_w - 4.0);
+    clamped - base_x
 }
 
-pub fn bubble_width_drag_rect(bubble: Rect) -> Rect {
+pub fn clamp_bubble_w(facing: Facing, bubble_w: f32, offset_x: f32, w: f32) -> f32 {
+    let base = bubble_base_x(facing, bubble_w);
+    let max_w = (SURFACE_W as f32 - 4.0 - (base + offset_x)).max(BUBBLE_W_MIN);
+    w.clamp(BUBBLE_W_MIN, max_w.min(BUBBLE_W_MAX))
+}
+
+pub fn bubble_move_drag_rect(card: Rect) -> Rect {
     Rect {
-        x: bubble.x,
-        y: bubble.y,
-        w: bubble.w,
-        h: BUBBLE_WIDTH_DRAG_H,
+        x: card.x,
+        y: card.y,
+        w: card.w,
+        h: BUBBLE_MOVE_DRAG_H,
+    }
+}
+
+pub fn bubble_narrow_rect(card: Rect) -> Rect {
+    Rect {
+        x: card.x - BUBBLE_WIDTH_BTN_W - BUBBLE_WIDTH_BTN_GAP,
+        y: card.y + 6.0,
+        w: BUBBLE_WIDTH_BTN_W,
+        h: BUBBLE_WIDTH_BTN_H,
+    }
+}
+
+pub fn bubble_widen_rect(card: Rect) -> Rect {
+    Rect {
+        x: card.x + card.w + BUBBLE_WIDTH_BTN_GAP,
+        y: card.y + 6.0,
+        w: BUBBLE_WIDTH_BTN_W,
+        h: BUBBLE_WIDTH_BTN_H,
     }
 }
 
@@ -222,8 +252,16 @@ pub fn reader_card_rect(layout: &Layout, surface_h: u32) -> Rect {
     }
 }
 
-pub fn reader_width_drag_rect(layout: &Layout, surface_h: u32) -> Rect {
-    bubble_width_drag_rect(reader_card_rect(layout, surface_h))
+pub fn reader_move_drag_rect(layout: &Layout, surface_h: u32) -> Rect {
+    bubble_move_drag_rect(reader_card_rect(layout, surface_h))
+}
+
+pub fn reader_narrow_rect(layout: &Layout, surface_h: u32) -> Rect {
+    bubble_narrow_rect(reader_card_rect(layout, surface_h))
+}
+
+pub fn reader_widen_rect(layout: &Layout, surface_h: u32) -> Rect {
+    bubble_widen_rect(reader_card_rect(layout, surface_h))
 }
 
 pub fn clamp_reader_scroll(scroll: usize, total: usize, budget: usize) -> usize {
@@ -364,21 +402,31 @@ pub struct Layout {
     pub facing: Facing,
     pub body_len: f32,
     pub bubble_w: f32,
+    /// Horizontal slide of the bubble column from its facing-derived anchor.
+    pub bubble_offset_x: f32,
 }
 
 impl Layout {
-    pub fn new(facing: Facing, body_len: f32, bubble_w: f32) -> Layout {
-        Layout { facing, body_len, bubble_w }
+    pub fn new(facing: Facing, body_len: f32, bubble_w: f32, bubble_offset_x: f32) -> Layout {
+        Layout { facing, body_len, bubble_w, bubble_offset_x }
     }
 
     #[cfg(test)]
     pub fn initial() -> Layout {
-        Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT)
+        Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT, 0.0)
     }
 
-    /// The top strip of the speech bubble — drag left→right to widen.
-    pub fn bubble_width_drag_rect(&self) -> Rect {
-        bubble_width_drag_rect(self.bubble_rect())
+    /// The top strip — drag left→right to reposition the column on-screen.
+    pub fn bubble_move_drag_rect(&self) -> Rect {
+        bubble_move_drag_rect(self.bubble_rect())
+    }
+
+    pub fn bubble_narrow_rect(&self) -> Rect {
+        bubble_narrow_rect(self.bubble_rect())
+    }
+
+    pub fn bubble_widen_rect(&self) -> Rect {
+        bubble_widen_rect(self.bubble_rect())
     }
 
     /// Bottom of the torso — where the hips/legs start.
@@ -394,11 +442,7 @@ impl Layout {
     }
 
     fn ui_x(&self, w: f32) -> f32 {
-        let figure_half = (TORSO_W / 2.0).max(HEAD_R);
-        match self.facing {
-            Facing::Right => FIG_CX + figure_half + UI_GAP,
-            Facing::Left => FIG_CX - figure_half - UI_GAP - w,
-        }
+        bubble_base_x(self.facing, w) + self.bubble_offset_x
     }
 
     /// Speech bubble at its maximum extent (drawing shrinks to the text; the
@@ -3996,10 +4040,53 @@ fn draw_bubble(pixmap: &mut Pixmap, font: &Font, layout: &Layout, text: &str) {
         draw_line(pixmap, font, line, rect.x + pad_x, baseline, TEXT_PX, color);
         baseline += LINE_H;
     }
+    draw_width_adj_glyph(pixmap, bubble_narrow_rect(rect), false);
+    draw_width_adj_glyph(pixmap, bubble_widen_rect(rect), true);
     if !text.is_empty() {
         let expand = expand_glyph_rect(rect);
         draw_copy_glyph(pixmap, copy_glyph_beside(expand));
         draw_expand_glyph(pixmap, expand);
+    }
+}
+
+fn draw_width_adj_glyph(pixmap: &mut Pixmap, rect: Rect, widen: bool) {
+    if rect.w <= 0.0 || rect.h <= 0.0 {
+        return;
+    }
+    draw_round_rect(pixmap, rect, Color::from_rgba8(0, 0, 0, 140));
+    if let Some(path) = round_rect_path(rect, rect.w.min(rect.h) / 2.0) {
+        let mut stroke = Stroke::default();
+        stroke.width = 1.0;
+        pixmap.stroke_path(
+            &path,
+            &solid(Color::from_rgba8(255, 255, 255, 175)),
+            &stroke,
+            Transform::identity(),
+            None,
+        );
+    }
+    let icon = solid(Color::from_rgba8(255, 255, 255, 225));
+    let cx = rect.x + rect.w * 0.5;
+    let cy = rect.y + rect.h * 0.5;
+    let mut stroke = Stroke::default();
+    stroke.width = 1.35;
+    stroke.line_cap = tiny_skia::LineCap::Round;
+    if widen {
+        let mut pb = PathBuilder::new();
+        pb.move_to(cx - 4.0, cy);
+        pb.line_to(cx + 4.0, cy);
+        pb.move_to(cx, cy - 4.0);
+        pb.line_to(cx, cy + 4.0);
+        if let Some(path) = pb.finish() {
+            pixmap.stroke_path(&path, &icon, &stroke, Transform::identity(), None);
+        }
+    } else {
+        let mut pb = PathBuilder::new();
+        pb.move_to(cx - 4.0, cy);
+        pb.line_to(cx + 4.0, cy);
+        if let Some(path) = pb.finish() {
+            pixmap.stroke_path(&path, &icon, &stroke, Transform::identity(), None);
+        }
     }
 }
 
@@ -4129,6 +4216,8 @@ fn draw_reader(
         stroke.width = 1.0;
         pixmap.stroke_path(&path, &border, &stroke, Transform::identity(), None);
     }
+    draw_width_adj_glyph(pixmap, reader_narrow_rect(layout, surface_h), false);
+    draw_width_adj_glyph(pixmap, reader_widen_rect(layout, surface_h), true);
     draw_copy_glyph(pixmap, reader_copy_rect(layout, surface_h));
     draw_expand_glyph(pixmap, reader_collapse_rect(layout, surface_h));
     let pad_x = 14.0;
@@ -4995,7 +5084,7 @@ mod tests {
     fn image_card_draws_a_decoded_image_without_panicking() {
         // Drives the real draw path with a decoded image fitted into the output pane.
         let image = decode_image_bytes(include_bytes!("../assets/eiffel-tower.jpg")).unwrap();
-        let layout = Layout::new(Facing::Right, BODY_LEN_MIN, BUBBLE_W_DEFAULT);
+        let layout = Layout::new(Facing::Right, BODY_LEN_MIN, BUBBLE_W_DEFAULT, 0.0);
         let rect = layout.output_panel_rect();
         let mut pixmap = Pixmap::new(SURFACE_W, layout.surface_h()).unwrap();
         draw_image_card(&mut pixmap, rect, &ImageCard { image: Some(&image) });
@@ -5005,8 +5094,8 @@ mod tests {
 
     #[test]
     fn surface_grows_with_body_stretch() {
-        let short = Layout::new(Facing::Right, BODY_LEN_MIN, BUBBLE_W_DEFAULT);
-        let tall = Layout::new(Facing::Right, BODY_LEN_MAX, BUBBLE_W_DEFAULT);
+        let short = Layout::new(Facing::Right, BODY_LEN_MIN, BUBBLE_W_DEFAULT, 0.0);
+        let tall = Layout::new(Facing::Right, BODY_LEN_MAX, BUBBLE_W_DEFAULT, 0.0);
         assert!(tall.surface_h() > short.surface_h());
         // Even fully squashed, the UI column still fits.
         assert!(short.surface_h() >= UI_MIN_H as u32);
@@ -5103,8 +5192,8 @@ mod tests {
 
     #[test]
     fn ui_flips_to_face_inward() {
-        let right = Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT);
-        let left = Layout::new(Facing::Left, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT);
+        let right = Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT, 0.0);
+        let left = Layout::new(Facing::Left, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT, 0.0);
         // Facing right: UI sits right of the figure; facing left: entirely left of it.
         assert!(right.bubble_rect().x > FIG_CX);
         assert!(left.bubble_rect().x + left.bubble_rect().w < FIG_CX);
@@ -5124,7 +5213,7 @@ mod tests {
         assert!(bbox.x <= head.x && bbox.x + bbox.w >= head.x + head.w);
         assert!(bbox.y <= head.y && bbox.y + bbox.h >= head.y + head.h);
         // Torso fits inside, and the bbox reaches past the arms-at-reach flank on each side.
-        let torso = Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT).torso_rect();
+        let torso = Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT, 0.0).torso_rect();
         assert!(bbox.x <= torso.x && bbox.x + bbox.w >= torso.x + torso.w);
         let arm_reach = ARM_UPPER + ARM_FORE;
         assert!(bbox.w >= TORSO_W + arm_reach * 2.0);
@@ -5220,7 +5309,7 @@ mod tests {
     #[test]
     fn perimeter_controls_surround_the_torso_and_own_chat_buttons() {
         for facing in [Facing::Left, Facing::Right] {
-            let l = Layout::new(facing, BODY_LEN_MIN, BUBBLE_W_DEFAULT);
+            let l = Layout::new(facing, BODY_LEN_MIN, BUBBLE_W_DEFAULT, 0.0);
             let review = l.review_button_rect();
             let paste = l.paste_button_rect();
             let edit = l.edit_button_rect();
@@ -5240,7 +5329,7 @@ mod tests {
 
     #[test]
     fn interior_rows_fit_inside_the_torso_panel_and_stack_in_order() {
-        let l = Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT);
+        let l = Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT, 0.0);
         let panel = l.output_panel_rect();
         let rows = l.interior_rows();
         // Seven perimeter controls fold into the interior list.
@@ -5273,7 +5362,7 @@ mod tests {
     fn interior_rows_empty_when_torso_too_short_to_fit_a_row() {
         // A near-zero body length can't legibly fit even one row — fail closed rather than draw
         // a cramped, unreadable list.
-        let l = Layout::new(Facing::Right, BODY_LEN_MIN, BUBBLE_W_DEFAULT);
+        let l = Layout::new(Facing::Right, BODY_LEN_MIN, BUBBLE_W_DEFAULT, 0.0);
         let rows = l.interior_rows();
         // BODY_LEN_MIN is small enough that row_h clamps below the 10px legibility floor.
         assert!(rows.is_empty(), "expected no interior rows at BODY_LEN_MIN, got {}", rows.len());
@@ -5281,7 +5370,7 @@ mod tests {
 
     #[test]
     fn interior_rows_for_fills_the_panel_evenly_and_caps_row_height() {
-        let l = Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT);
+        let l = Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT, 0.0);
         let panel = l.output_panel_rect();
         // 10 rows (the full chat-open set) should still fit a default torso and stay in-panel.
         let rects = l.interior_rows_for(10);
@@ -5298,7 +5387,7 @@ mod tests {
 
     #[test]
     fn interior_rows_for_zero_count_returns_empty() {
-        let l = Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT);
+        let l = Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT, 0.0);
         assert!(l.interior_rows_for(0).is_empty());
     }
 
@@ -5306,7 +5395,7 @@ mod tests {
     fn onboarding_layout_degenerate_when_content_too_short() {
         // onboarding_layout returns empty interactive rects when content.h < 24; use a torso
         // short enough that output_panel_rect().h - 16 < 24 (body_len < ~48).
-        let l = Layout::new(Facing::Right, 40.0, BUBBLE_W_DEFAULT);
+        let l = Layout::new(Facing::Right, 40.0, BUBBLE_W_DEFAULT, 0.0);
         let panel = l.output_panel_rect();
         assert!(panel.h < 32.0, "test fixture must exercise content.h < 24, got panel.h {}", panel.h);
         let layout = l.onboarding_layout(3, 2, true, true);
@@ -5317,7 +5406,7 @@ mod tests {
 
     #[test]
     fn onboarding_layout_fits_inside_torso_and_hit_test_matches_primary() {
-        let l = Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT);
+        let l = Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT, 0.0);
         let panel = l.output_panel_rect();
         let layout = l.onboarding_layout(3, 2, true, true);
         assert!(layout.card.x >= panel.x);
@@ -5343,7 +5432,7 @@ mod tests {
             body_len > BODY_LEN_DEFAULT,
             "connect needs more than default stretch, got {body_len}"
         );
-        let l = Layout::new(Facing::Right, body_len, BUBBLE_W_DEFAULT);
+        let l = Layout::new(Facing::Right, body_len, BUBBLE_W_DEFAULT, 0.0);
         let layout = l.onboarding_layout(4, 2, true, true);
         assert_eq!(layout.options.len(), 4);
         assert_eq!(layout.fields.len(), 2);
@@ -6495,8 +6584,8 @@ mod tests {
 
     #[test]
     fn output_panel_lives_inside_stretchable_torso() {
-        let short = Layout::new(Facing::Right, BODY_LEN_MIN, BUBBLE_W_DEFAULT);
-        let tall = Layout::new(Facing::Right, BODY_LEN_MAX, BUBBLE_W_DEFAULT);
+        let short = Layout::new(Facing::Right, BODY_LEN_MIN, BUBBLE_W_DEFAULT, 0.0);
+        let tall = Layout::new(Facing::Right, BODY_LEN_MAX, BUBBLE_W_DEFAULT, 0.0);
         let torso = tall.torso_rect();
         let panel = tall.output_panel_rect();
 
@@ -6509,7 +6598,7 @@ mod tests {
 
     #[test]
     fn torso_actions_live_inside_output_panel() {
-        let layout = Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT);
+        let layout = Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT, 0.0);
         let panel = layout.output_panel_rect();
         for action in [TorsoAction::Expand, TorsoAction::Copy, TorsoAction::Scroll] {
             let rect = layout.torso_action_rect(action);
@@ -6653,7 +6742,7 @@ mod tests {
         // The whole point of the passport: overflowing persona/provider/preview must NOT spill
         // past the torso column the way the old six-field SessionCard did.
         let font = load_font().expect("system font available for passport layout test");
-        let layout = Layout::new(Facing::Right, BODY_LEN_MIN, BUBBLE_W_DEFAULT);
+        let layout = Layout::new(Facing::Right, BODY_LEN_MIN, BUBBLE_W_DEFAULT, 0.0);
         let panel = layout.output_panel_rect();
         // The drawing column itself is no wider than the 142px torso.
         assert!(panel.w <= TORSO_W, "output panel ({}) must fit TORSO_W ({TORSO_W})", panel.w);

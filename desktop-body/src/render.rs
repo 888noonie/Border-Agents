@@ -755,6 +755,20 @@ fn bump_eyes_awake(activity: bool) -> bool {
     activity
 }
 
+const GAZE_SWEEP_DX: f32 = 3.0;
+const GAZE_PERIOD_S: f32 = 2.6;
+
+/// Horizontal pupil sweep while an action is in flight. Takes the activity bool ONLY — a
+/// soul-emitted Ready tier greens the chrome but never moves the gaze, and route health has
+/// no parameter to sneak through (the F4 law, third application).
+fn activity_gaze_dx(activity: bool, t: f32) -> f32 {
+    if activity {
+        (t * std::f32::consts::TAU / GAZE_PERIOD_S).sin() * GAZE_SWEEP_DX
+    } else {
+        0.0
+    }
+}
+
 /// The white-eye centers for the awake tucked head. Mirrors the sleeping-face anchor
 /// computed inside the frozen `draw_bump` (nudge + -2.0 y) then offsets ±BUMP_EYE_DX
 /// horizontally (always screen-horizontal pair so the face reads correctly on every edge).
@@ -1528,6 +1542,7 @@ impl Sprite {
         }
 
         let bob = (view.t * std::f32::consts::TAU / 3.6).sin() * 3.0;
+        let gaze_dx = activity_gaze_dx(view.activity, view.t);
         // A ~150ms blink every 4s.
         let blinking = (view.t % 4.0) > 3.85;
         let face = view.emotion.face();
@@ -1578,7 +1593,7 @@ impl Sprite {
         let rail_visible = receipt_rail_visible_for_body_len(view.layout.body_len) && view.pinned.is_none() && view.tucked.is_none();
         if rail_visible {
             if let Some(mut body) = Pixmap::new(SURFACE_W, h) {
-                draw_body_content(&mut body, self.font.as_ref(), view, bob, eye_open, face.pupil_dy, &face.mouth, &pose);
+                draw_body_content(&mut body, self.font.as_ref(), view, bob, eye_open, face.pupil_dy, gaze_dx, &face.mouth, &pose);
                 if let Some(font) = &self.font {
                     draw_receipt_rail(&mut pixmap, font, view.receipt_rail);
                 }
@@ -1593,7 +1608,7 @@ impl Sprite {
                 );
             }
         } else {
-            draw_body_content(&mut pixmap, self.font.as_ref(), view, bob, eye_open, face.pupil_dy, &face.mouth, &pose);
+            draw_body_content(&mut pixmap, self.font.as_ref(), view, bob, eye_open, face.pupil_dy, gaze_dx, &face.mouth, &pose);
         }
 
         blit_premultiplied_bgra(pixmap.data(), canvas);
@@ -1607,6 +1622,7 @@ fn draw_body_content(
     bob: f32,
     eye_open: f32,
     pupil_dy: f32,
+    pupil_dx: f32,
     mouth: &Mouth,
     pose: &FigurePose,
 ) {
@@ -1645,7 +1661,7 @@ fn draw_body_content(
     // The face is figure behavior — it only exists on the clay skin. In ring skin the hue and its
     // cadence carry state; there is no face to draw (docs/laminal-ring-pivot.md decision 1).
     if view.skin == Skin::Clay {
-        draw_eyes(pixmap, bob, eye_open, pupil_dy);
+        draw_eyes(pixmap, bob, eye_open, pupil_dy, pupil_dx);
         draw_mouth(pixmap, bob, mouth);
     }
     if let Some(font) = font {
@@ -2976,7 +2992,7 @@ fn draw_closed_eyes(pixmap: &mut Pixmap, x: f32, y: f32) {
 }
 
 /// Big white stop-motion eyes with dark pupils — the Morph look.
-fn draw_eyes(pixmap: &mut Pixmap, bob: f32, eye_open: f32, pupil_dy: f32) {
+fn draw_eyes(pixmap: &mut Pixmap, bob: f32, eye_open: f32, pupil_dy: f32, pupil_dx: f32) {
     let white = solid(Color::from_rgba8(250, 250, 248, 255));
     let dark = solid(Color::from_rgba8(28, 22, 18, 255));
     for sign in [-1.0_f32, 1.0] {
@@ -2986,7 +3002,7 @@ fn draw_eyes(pixmap: &mut Pixmap, bob: f32, eye_open: f32, pupil_dy: f32) {
             pixmap.fill_path(&eye, &white, FillRule::Winding, Transform::identity(), None);
         }
         if eye_open > 0.35 {
-            if let Some(pupil) = PathBuilder::from_circle(ex + sign * 2.0, ey + 5.0 * pupil_dy, 4.5) {
+            if let Some(pupil) = PathBuilder::from_circle(ex + sign * 2.0 + pupil_dx, ey + 5.0 * pupil_dy, 4.5) {
                 pixmap.fill_path(&pupil, &dark, FillRule::Winding, Transform::identity(), None);
             }
         }
@@ -6059,5 +6075,98 @@ mod tests {
         }
         // The pressed-lips viseme draws as a closed mouth.
         assert!(viseme_spec(Viseme::Mbp).open <= 0.05);
+    }
+
+    #[test]
+    fn gaze_rests_centered_when_idle() {
+        for t in [0.0, 0.65, 1.0, 1.95, 2.6, 4.0, 7.8] {
+            assert_eq!(activity_gaze_dx(false, t), 0.0, "idle gaze must stay centered at t={t}");
+        }
+    }
+
+    #[test]
+    fn gaze_sweep_stays_inside_the_eye_white() {
+        assert!(
+            2.0 + GAZE_SWEEP_DX + 4.5 < 11.0,
+            "pupil ink must stay inside the eye white at max sweep",
+        );
+        for t in [0.0, 0.65, 1.3, 1.95, 2.6, 3.25, 4.0, 5.2, 7.8] {
+            let dx = activity_gaze_dx(true, t);
+            assert!(
+                dx.abs() <= GAZE_SWEEP_DX + 0.001,
+                "sweep amplitude must not exceed GAZE_SWEEP_DX at t={t}",
+            );
+        }
+    }
+
+    fn untucked_gaze_sample_pixel(activity: bool, alert_level: Option<AlertLevel>, t: f32) -> [u8; 4] {
+        let layout = Layout::initial();
+        let w = SURFACE_W;
+        let h = layout.surface_h();
+        let mut canvas = vec![0_u8; (w * h * 4) as usize];
+        let view = BodyView {
+            t,
+            emotion: Emotion::Neutral,
+            speech: None,
+            torso_output: TorsoOutput::Text(TextCard { title: "", body: "" }),
+            chat_open: false,
+            tucked: None,
+            tucked_show_bubble: false,
+            tucked_show_input: false,
+            input_text: "",
+            input_placeholder: "",
+            input_focused: false,
+            review_pending: false,
+            edit_pending: false,
+            posture_badge: None,
+            surface_bloom: &[],
+            route_health: None,
+            route_flash: false,
+            alert_level,
+            activity,
+            receipt_rail: &[],
+            interior_rows: &[],
+            settings: &[],
+            onboarding: None,
+            layout,
+            pinned: None,
+            frame: None,
+            color: CLAY_DEFAULT,
+            dock_show: DockShow::Both,
+            skin: Skin::Clay,
+        };
+        Sprite::new().paint(&mut canvas, w, h, &view);
+        let bob = (t * std::f32::consts::TAU / 3.6).sin() * 3.0;
+        let ex = FIG_CX + 18.0;
+        let ey = HEAD_CY - 10.0 + bob;
+        let qx = (ex + 2.0 + 6.0) as u32;
+        let qy = ey as u32;
+        let idx = ((qy * w + qx) * 4) as usize;
+        [canvas[idx], canvas[idx + 1], canvas[idx + 2], canvas[idx + 3]]
+    }
+
+    const EYE_INK_BGRA: [u8; 4] = [EYE_INK[2], EYE_INK[1], EYE_INK[0], EYE_INK[3]];
+
+    #[test]
+    fn activity_sweeps_the_untucked_pupils() {
+        const T: f32 = 0.65;
+        let idle = untucked_gaze_sample_pixel(false, None, T);
+        assert_ne!(idle, EYE_INK_BGRA, "idle gaze: sample point must sit on eye white, not pupil ink");
+        let active = untucked_gaze_sample_pixel(true, None, T);
+        assert_eq!(active, EYE_INK_BGRA, "activity gaze: sample point must be solid pupil ink");
+        let cleared = untucked_gaze_sample_pixel(false, None, T);
+        assert_ne!(cleared, EYE_INK_BGRA, "result side: gaze must rest centered again");
+    }
+
+    #[test]
+    fn soul_ready_tier_never_moves_the_gaze() {
+        const T: f32 = 0.65;
+        assert_eq!(activity_gaze_dx(false, T), 0.0);
+        let sample = untucked_gaze_sample_pixel(false, Some(AlertLevel::Ready), T);
+        assert_ne!(
+            sample,
+            EYE_INK_BGRA,
+            "a soul-emitted Ready tier must not move the untucked gaze",
+        );
     }
 }

@@ -132,6 +132,37 @@ pub fn reader_copy_rect(w: u32, h: u32) -> Rect {
     copy_glyph_beside(reader_collapse_rect(w, h))
 }
 
+/// Reader body text area (below title, above footer) for drag-select hit tests.
+pub fn reader_text_rect(w: u32, h: u32) -> Rect {
+    let card = Rect { x: 8.0, y: 8.0, w: w as f32 - 16.0, h: h as f32 - 16.0 };
+    let top = card.y + 30.0 + PANEL_LABEL_PX + 8.0;
+    let bottom = card.y + card.h - 14.0;
+    Rect {
+        x: card.x + 14.0,
+        y: top,
+        w: card.w - 28.0,
+        h: (bottom - top).max(0.0),
+    }
+}
+
+/// Prefix-measure search: which character index sits at `x_offset` from the line start.
+pub fn hit_char_index(font: &Font, line: &str, px: f32, x_offset: f32) -> usize {
+    if x_offset <= 0.0 || line.is_empty() {
+        return 0;
+    }
+    let char_count = line.chars().count();
+    let mut best = 0;
+    for i in 0..=char_count {
+        let prefix: String = line.chars().take(i).collect();
+        if measure(font, &prefix, px) <= x_offset {
+            best = i;
+        } else {
+            break;
+        }
+    }
+    best.min(char_count)
+}
+
 /// Collapse control on the reader card (single source for paint + hit).
 pub fn reader_collapse_rect(w: u32, h: u32) -> Rect {
     expand_glyph_rect(Rect { x: 8.0, y: 8.0, w: w as f32 - 16.0, h: h as f32 - 16.0 })
@@ -1577,6 +1608,14 @@ pub struct BodyView<'a> {
     pub reader_scroll: usize,
     /// Event-bracketed copy-all feedback for the reader footer (no timers).
     pub reader_copied: bool,
+    /// Normalized drag-select range in the full wrapped-line list (survives scroll).
+    pub reader_selection: Option<(ReaderPos, ReaderPos)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReaderPos {
+    pub line: usize,
+    pub ch: usize,
 }
 
 pub fn receipt_rail_visible_for_body_len(body_len: f32) -> bool {
@@ -1633,6 +1672,8 @@ impl Sprite {
                     h,
                     view.reader_scroll,
                     view.reader_copied,
+                    view.reader_selection,
+                    view.color,
                 );
             }
             blit_premultiplied_bgra(pixmap.data(), canvas);
@@ -3995,6 +4036,30 @@ fn draw_expand_glyph(pixmap: &mut Pixmap, rect: Rect) {
 }
 
 /// Full-surface reader takeover — scrolls the whole wrapped reply; footer reports position.
+fn line_highlight_range(
+    start: ReaderPos,
+    end: ReaderPos,
+    line_idx: usize,
+    line_len: usize,
+) -> Option<(usize, usize)> {
+    if line_idx < start.line || line_idx > end.line {
+        return None;
+    }
+    let (from, to) = if start.line == end.line {
+        (start.ch.min(line_len), end.ch.min(line_len))
+    } else if line_idx == start.line {
+        (start.ch.min(line_len), line_len)
+    } else if line_idx == end.line {
+        (0, end.ch.min(line_len))
+    } else {
+        (0, line_len)
+    };
+    if from >= to {
+        return None;
+    }
+    Some((from, to))
+}
+
 fn draw_reader(
     pixmap: &mut Pixmap,
     font: &Font,
@@ -4003,6 +4068,8 @@ fn draw_reader(
     h: u32,
     scroll: usize,
     copied: bool,
+    selection: Option<(ReaderPos, ReaderPos)>,
+    clay: [u8; 3],
 ) {
     let card = Rect { x: 8.0, y: 8.0, w: w as f32 - 16.0, h: h as f32 - 16.0 };
     let bg = Color::from_rgba8(247, 251, 255, 245);
@@ -4024,13 +4091,32 @@ fn draw_reader(
     let scroll = clamp_reader_scroll(scroll, wrapped.len(), body_budget);
     let end = (scroll + body_budget).min(wrapped.len());
     let visible = &wrapped[scroll..end];
-    for line in visible {
+    let norm_sel = selection.map(normalize_reader_selection);
+    let highlight = Color::from_rgba8(clay[0], clay[1], clay[2], 70);
+    for (row, line) in visible.iter().enumerate() {
+        let line_idx = scroll + row;
+        let plain = plain_wrapped_line(line);
+        let x0 = card.x + pad_x + line.indent;
+        if let Some((start, end)) = norm_sel {
+            if let Some((from, to)) = line_highlight_range(start, end, line_idx, plain.chars().count()) {
+                let prefix: String = plain.chars().take(from).collect();
+                let slice: String = plain.chars().skip(from).take(to - from).collect();
+                let hx = x0 + measure(font, &prefix, TEXT_PX);
+                let hw = measure(font, &slice, TEXT_PX).max(1.0);
+                let hy = baseline - TEXT_PX;
+                draw_round_rect(
+                    pixmap,
+                    Rect { x: hx, y: hy, w: hw, h: TEXT_PX + 2.0 },
+                    highlight,
+                );
+            }
+        }
         let force_bold = line.kind == MdLineKind::Heading;
         draw_spanned_line(
             pixmap,
             font,
             &line.spans,
-            card.x + pad_x + line.indent,
+            x0,
             baseline,
             TEXT_PX,
             [16, 24, 44],
@@ -4480,6 +4566,67 @@ fn wrap_logical_md_line(font: &Font, line: &MdLine, px: f32, max_w: f32) -> Vec<
             }
         })
         .collect()
+}
+
+pub fn normalize_reader_selection(sel: (ReaderPos, ReaderPos)) -> (ReaderPos, ReaderPos) {
+    if sel.0.line < sel.1.line || (sel.0.line == sel.1.line && sel.0.ch <= sel.1.ch) {
+        sel
+    } else {
+        (sel.1, sel.0)
+    }
+}
+
+fn plain_wrapped_line(line: &WrappedMdLine) -> String {
+    line.spans.iter().map(|s| s.text.as_str()).collect()
+}
+
+pub fn reader_hit_pos(font: &Font, text: &str, w: u32, h: u32, scroll: usize, x: f32, y: f32) -> Option<ReaderPos> {
+    let area = reader_text_rect(w, h);
+    if x < area.x || y < area.y || x >= area.x + area.w || y >= area.y + area.h {
+        return None;
+    }
+    let wrapped = reader_wrapped_md_lines(font, text, w);
+    let body_budget = reader_body_budget(h, wrapped.len());
+    let scroll = clamp_reader_scroll(scroll, wrapped.len(), body_budget);
+    let row = ((y - area.y) / LINE_H).floor() as usize;
+    if row >= body_budget || scroll + row >= wrapped.len() {
+        return None;
+    }
+    let line_idx = scroll + row;
+    let wrapped_line = &wrapped[line_idx];
+    let plain = plain_wrapped_line(wrapped_line);
+    let x_in_line = x - area.x - wrapped_line.indent;
+    let ch = hit_char_index(font, &plain, TEXT_PX, x_in_line);
+    Some(ReaderPos { line: line_idx, ch })
+}
+
+pub fn reader_selection_plain(font: &Font, text: &str, w: u32, sel: (ReaderPos, ReaderPos)) -> String {
+    let wrapped = reader_wrapped_md_lines(font, text, w);
+    let (start, end) = normalize_reader_selection(sel);
+    if wrapped.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    for line_idx in start.line..=end.line.min(wrapped.len().saturating_sub(1)) {
+        let plain = plain_wrapped_line(&wrapped[line_idx]);
+        let chars: Vec<char> = plain.chars().collect();
+        let (from, to) = if start.line == end.line {
+            (start.ch.min(chars.len()), end.ch.min(chars.len()))
+        } else if line_idx == start.line {
+            (start.ch.min(chars.len()), chars.len())
+        } else if line_idx == end.line {
+            (0, end.ch.min(chars.len()))
+        } else {
+            (0, chars.len())
+        };
+        if from < to {
+            out.extend(chars[from..to].iter());
+        }
+        if line_idx < end.line {
+            out.push('\n');
+        }
+    }
+    out
 }
 
 fn reader_wrapped_md_lines(font: &Font, text: &str, surface_w: u32) -> Vec<WrappedMdLine> {
@@ -5210,6 +5357,7 @@ mod tests {
                 reader: None,
                 reader_scroll: 0,
                 reader_copied: false,
+                reader_selection: None,
             };
             sprite.paint(&mut canvas, w, h, &view);
             canvas
@@ -5317,6 +5465,7 @@ mod tests {
                 reader: None,
                 reader_scroll: 0,
                 reader_copied: false,
+                reader_selection: None,
             };
             sprite.paint(&mut canvas, w, h, &view);
             canvas
@@ -5499,6 +5648,7 @@ mod tests {
                 reader: None,
                 reader_scroll: 0,
                 reader_copied: false,
+                reader_selection: None,
             };
             sprite.paint(&mut canvas, w, h, &view);
             canvas
@@ -5667,6 +5817,7 @@ mod tests {
                 reader: None,
                 reader_scroll: 0,
                 reader_copied: false,
+                reader_selection: None,
             };
             sprite.paint(&mut canvas, w, h, &view);
             canvas
@@ -5945,6 +6096,7 @@ mod tests {
                 reader: None,
                 reader_scroll: 0,
                 reader_copied: false,
+                reader_selection: None,
             };
             sprite.paint(&mut canvas, w, h, &view);
             canvas
@@ -6005,6 +6157,7 @@ mod tests {
                 reader: None,
                 reader_scroll: 0,
                 reader_copied: false,
+                reader_selection: None,
             };
             sprite.paint(&mut canvas, w, h, &view);
             canvas
@@ -6630,6 +6783,7 @@ mod tests {
             reader: None,
             reader_scroll: 0,
             reader_copied: false,
+            reader_selection: None,
         };
 
         sprite.paint(&mut canvas, frame.surface_w, frame.surface_h, &view);
@@ -6725,6 +6879,7 @@ mod tests {
             reader: None,
             reader_scroll: 0,
             reader_copied: false,
+            reader_selection: None,
         };
         Sprite::new().paint(&mut canvas, w, h, &view);
         let bob = (t * std::f32::consts::TAU / 3.6).sin() * 3.0;
@@ -6830,6 +6985,7 @@ mod tests {
                 reader,
                 reader_scroll: 0,
                 reader_copied: false,
+                reader_selection: None,
             };
             sprite.paint(&mut canvas, w, h, &view);
             canvas
@@ -6949,6 +7105,7 @@ mod tests {
                 reader: Some(text),
                 reader_scroll: 0,
                 reader_copied: false,
+                reader_selection: None,
             };
             sprite.paint(&mut canvas, w, h, &view);
             canvas
@@ -7057,5 +7214,92 @@ mod tests {
         let font = load_font().expect("system font available for bubble projection test");
         let (lines, _) = budgeted_lines(&font, &plain, TEXT_PX, BUBBLE_W - 28.0, bubble_line_budget());
         assert!(lines.iter().any(|line| line.contains('•')));
+    }
+
+    #[test]
+    fn hit_maps_x_to_char_index() {
+        let font = load_font().expect("system font available for hit index test");
+        let line = "Hello";
+        assert_eq!(hit_char_index(&font, line, TEXT_PX, 0.0), 0);
+        let mid = hit_char_index(&font, line, TEXT_PX, measure(&font, "He", TEXT_PX) + 1.0);
+        assert!(mid >= 2);
+        assert_eq!(hit_char_index(&font, line, TEXT_PX, 999.0), line.chars().count());
+    }
+
+    #[test]
+    fn selection_highlight_paints_behind_text() {
+        let w = SURFACE_W;
+        let h = 480_u32;
+        let sprite = Sprite::new();
+        let text = "Select this sentence in the reader.";
+        let sel = (
+            ReaderPos { line: 0, ch: 0 },
+            ReaderPos { line: 0, ch: 6 },
+        );
+        let paint = |selection: Option<(ReaderPos, ReaderPos)>| -> Vec<u8> {
+            let mut canvas = vec![0_u8; (w * h * 4) as usize];
+            let view = BodyView {
+                t: 0.0,
+                emotion: Emotion::Neutral,
+                speech: Some(text),
+                torso_output: TorsoOutput::Text(TextCard { title: "", body: "" }),
+                chat_open: false,
+                tucked: None,
+                tucked_show_bubble: false,
+                tucked_show_input: false,
+                input_text: "",
+                input_placeholder: "",
+                input_focused: false,
+                review_pending: false,
+                edit_pending: false,
+                posture_badge: None,
+                surface_bloom: &[],
+                route_health: None,
+                route_flash: false,
+                alert_level: None,
+                activity: false,
+                receipt_rail: &[],
+                interior_rows: &[],
+                settings: &[],
+                onboarding: None,
+                layout: Layout::initial(),
+                pinned: None,
+                frame: None,
+                color: CLAY_DEFAULT,
+                dock_show: DockShow::Both,
+                skin: Skin::Clay,
+                reader: Some(text),
+                reader_scroll: 0,
+                reader_copied: false,
+                reader_selection: selection,
+            };
+            sprite.paint(&mut canvas, w, h, &view);
+            canvas
+        };
+        let without = paint(None);
+        let with = paint(Some(sel));
+        assert_ne!(without, with, "selection highlight must change reader pixels");
+    }
+
+    #[test]
+    fn selection_copy_yields_the_plain_span() {
+        let font = load_font().expect("system font available for selection copy test");
+        let text = "Alpha line\nBeta line";
+        let sel = (
+            ReaderPos { line: 0, ch: 6 },
+            ReaderPos { line: 1, ch: 4 },
+        );
+        let plain = reader_selection_plain(&font, text, SURFACE_W, sel);
+        assert_eq!(plain, "line\nBeta");
+    }
+
+    #[test]
+    fn selection_clears_on_reader_close() {
+        let mut selection = Some((
+            ReaderPos { line: 0, ch: 0 },
+            ReaderPos { line: 0, ch: 3 },
+        ));
+        selection = None;
+        assert!(selection.is_none());
     }
 }

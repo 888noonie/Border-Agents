@@ -736,6 +736,7 @@ fn main() {
         reader_saved: None,
         reader_scroll: 0,
         reader_copied: false,
+        reader_selection: None,
     };
     app.init_hermes_surface();
 
@@ -1018,6 +1019,8 @@ enum PressTarget {
     ReaderCollapse,
     /// Copy the full text output from the reader card.
     ReaderCopy,
+    /// Drag-select text inside the reader body.
+    ReaderText,
     /// The legs/feet zone — dragging it vertically stretches the body.
     Feet,
     Bump,
@@ -1336,6 +1339,8 @@ struct App {
     reader_scroll: usize,
     /// Event-bracketed copy-all feedback for the reader footer (no timers).
     reader_copied: bool,
+    /// Drag-select range in the reader's full wrapped-line list.
+    reader_selection: Option<(render::ReaderPos, render::ReaderPos)>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1732,6 +1737,7 @@ impl App {
             reader,
             reader_scroll: self.reader_scroll,
             reader_copied: self.reader_copied,
+            reader_selection: self.reader_selection,
         };
 
         let buffer = match pool.create_buffer(w as i32, h as i32, stride, wl_shm::Format::Argb8888) {
@@ -2547,10 +2553,15 @@ impl App {
                 PressTarget::ReaderCollapse
             } else if render::reader_copy_rect(self.width, self.height).contains(x, y) {
                 PressTarget::ReaderCopy
+            } else if render::reader_text_rect(self.width, self.height).contains(x, y) {
+                PressTarget::ReaderText
             } else {
                 PressTarget::Outside
             };
             self.press = Some(PressState { target, secondary, started_at: Instant::now(), dist: 0.0, grabbed_sent: false, bloom_started: false });
+            if primary && target == PressTarget::ReaderText {
+                self.anchor_reader_selection(x, y);
+            }
             return;
         }
         // While tucked, the only live target is the bump; a click on it summons the
@@ -2870,6 +2881,23 @@ impl App {
                     None => false,
                 };
                 self.reader_copied = copied;
+            }
+            PressTarget::ReaderText => {
+                self.input_focused = false;
+                if press.dist <= CLICK_SLOP {
+                    self.reader_selection = None;
+                } else if let (Some(font), Some(sel), Some(text)) = (
+                    self.sprite.font(),
+                    self.reader_selection,
+                    self.reader_source_text().map(str::to_string),
+                ) {
+                    let plain = render::reader_selection_plain(font, &text, self.width, sel);
+                    if !plain.is_empty() {
+                        if copy_to_clipboard(&plain).is_ok() {
+                            self.reader_copied = true;
+                        }
+                    }
+                }
             }
             PressTarget::Body
             | PressTarget::Feet
@@ -3514,6 +3542,7 @@ impl App {
         }
         self.reader_scroll = 0;
         self.reader_copied = false;
+        self.reader_selection = None;
         self.reader_saved = Some(SavedGeometry {
             margin_top: self.margin_top,
             margin_left: self.margin_left,
@@ -3526,6 +3555,46 @@ impl App {
         self.margin_top = 0.0;
         self.reposition();
         self.update_input_region();
+    }
+
+    fn anchor_reader_selection(&mut self, x: f64, y: f64) {
+        let Some(font) = self.sprite.font() else { return };
+        let text = self.reader_source_text().map(str::to_string);
+        let Some(text) = text else { return };
+        let Some(pos) = render::reader_hit_pos(
+            font,
+            &text,
+            self.width,
+            self.height,
+            self.reader_scroll,
+            x as f32,
+            y as f32,
+        ) else {
+            return;
+        };
+        self.reader_selection = Some((pos, pos));
+        self.reader_copied = false;
+    }
+
+    fn extend_reader_selection(&mut self, x: f64, y: f64) {
+        let Some(font) = self.sprite.font() else { return };
+        let text = self.reader_source_text().map(str::to_string);
+        let Some(text) = text else { return };
+        let Some(pos) = render::reader_hit_pos(
+            font,
+            &text,
+            self.width,
+            self.height,
+            self.reader_scroll,
+            x as f32,
+            y as f32,
+        ) else {
+            return;
+        };
+        if let Some((start, _)) = self.reader_selection {
+            self.reader_selection = Some((start, pos));
+            self.reader_copied = false;
+        }
     }
 
     fn apply_reader_wheel(&mut self, delta: i32) {
@@ -3543,6 +3612,7 @@ impl App {
     fn close_reader(&mut self) {
         let Some(saved) = self.reader_saved.take() else { return };
         self.reader_copied = false;
+        self.reader_selection = None;
         self.margin_top = saved.margin_top;
         self.margin_left = saved.margin_left;
         self.set_layer_size(saved.w, saved.h);
@@ -3924,6 +3994,15 @@ impl PointerHandler for App {
                     };
                     let delta = render::scroll_delta_lines(discrete, vertical.absolute);
                     self.apply_reader_wheel(delta);
+                }
+                PointerEventKind::Motion { .. } if self.reader_saved.is_some() => {
+                    if self
+                        .press
+                        .as_ref()
+                        .is_some_and(|press| press.target == PressTarget::ReaderText)
+                    {
+                        self.extend_reader_selection(px, py);
+                    }
                 }
                 // Dragging is driven by wp_relative_pointer deltas, not these
                 // surface-local positions (which move with the surface frame).

@@ -86,6 +86,16 @@ const TUCK_THRESHOLD: f64 = 40.0;
 /// skipping `unwired` entries so the arrows never dead-end on a surface that can't activate.
 /// `None` when `order` is empty or every surface is unwired. Pure so it is unit-testable
 /// without a live `App`.
+/// Map a connection-card pill index to the surface id it activates. Launchers are excluded
+/// upstream — the index matches `ordered_surfaces` with launchers filtered out.
+fn surface_pill_surface_id(order: &[presence::SurfaceDescriptor], idx: usize) -> Option<String> {
+    order
+        .iter()
+        .filter(|s| !s.is_launcher())
+        .nth(idx)
+        .map(|s| s.id.clone())
+}
+
 fn next_cyclable_index(order: &[presence::SurfaceDescriptor], start: usize, delta: isize) -> Option<usize> {
     let len = order.len() as isize;
     if len == 0 {
@@ -365,6 +375,7 @@ enum TorsoSurfaceSnapshot {
         provider: Option<String>,
         locality: Option<String>,
         route_health: Option<String>,
+        activity: bool,
         output_preview: Option<String>,
     },
     Text {
@@ -471,6 +482,7 @@ impl TorsoSurfaceSnapshot {
     fn as_render<'a>(
         &'a self,
         image: Option<&'a render::TorsoImage>,
+        passport_pills: &'a [render::SurfacePill<'a>],
     ) -> render::TorsoOutput<'a> {
         match self {
             TorsoSurfaceSnapshot::Session { name, provider, model, gateway, status, note } => {
@@ -483,13 +495,15 @@ impl TorsoSurfaceSnapshot {
                     note,
                 })
             }
-            TorsoSurfaceSnapshot::Passport { persona_label, posture, provider, locality, route_health, output_preview } => {
+            TorsoSurfaceSnapshot::Passport { persona_label, posture, provider, locality, route_health, activity, output_preview } => {
                 render::TorsoOutput::Passport(render::PassportCard {
                     persona_label,
                     posture,
                     provider: provider.as_deref(),
                     locality: locality.as_deref(),
                     route_health: route_health.as_deref(),
+                    activity: *activity,
+                    pills: passport_pills,
                     output_preview: output_preview.as_deref(),
                 })
             }
@@ -1032,6 +1046,8 @@ enum PressTarget {
     ReaderMove,
     /// Drag the speech bubble's outer edge (away from the body) to resize width.
     BubbleOuterResize,
+    /// A surface pill on the idle connection card — routes through `request_surface`.
+    SurfacePill(usize),
     /// The legs/feet zone — dragging it vertically stretches the body.
     Feet,
     Bump,
@@ -1574,6 +1590,15 @@ impl App {
         if !route_flash {
             self.route_flash_until = None;
         }
+        let passport_pill_data = self.passport_pill_data();
+        let passport_pill_items: Vec<render::SurfacePill<'_>> = passport_pill_data
+            .iter()
+            .map(|(label, active, wired)| render::SurfacePill {
+                label: label.as_str(),
+                active: *active,
+                wired: *wired,
+            })
+            .collect();
         let receipt_time_labels: Vec<String> = self.receipt_rail.iter().map(ReceiptRailEntry::time_hms).collect();
         let receipt_rail_items: Vec<render::ReceiptRailItem<'_>> = self
             .receipt_rail
@@ -1748,7 +1773,8 @@ impl App {
             t: self.start.elapsed().as_secs_f32(),
             emotion: self.emotion,
             speech: speech.as_deref(),
-            torso_output: torso_output.as_render(torso_image),
+            torso_output: torso_output.as_render(torso_image, &passport_pill_items),
+
             chat_open: self.chat_open,
             tucked: self.tucked.map(edge_to_bump),
             tucked_show_bubble: self.tucked.is_some() && self.tucked_view.shows_bubble(),
@@ -1811,6 +1837,7 @@ impl App {
                     .or_else(|| (!self.provider_label.is_empty()).then(|| self.provider_label.clone())),
                 locality: self.active_locality.clone(),
                 route_health: self.active_route_health.clone(),
+                activity: body_activity(self.action_in_flight.is_some(), self.awaiting_reply),
                 output_preview: Some(self.session_note.clone()),
             },
             TorsoSurface::Text { title, body } => TorsoSurfaceSnapshot::Text {
@@ -2195,6 +2222,17 @@ impl App {
             rects.push(self.offset_rect_for_body(layout.torso_action_rect(TorsoAction::Expand)).as_i32());
             rects.push(self.offset_rect_for_body(layout.torso_action_rect(TorsoAction::Copy)).as_i32());
             rects.push(self.offset_rect_for_body(layout.torso_action_rect(TorsoAction::Scroll)).as_i32());
+            if self.passport_card_visible() {
+                if let Some(font) = self.sprite.font() {
+                    let panel = layout.output_panel_rect();
+                    let content = render::inset_rect(panel, 5.0, 5.0);
+                    let pill_data = self.passport_pill_data();
+                    let labels: Vec<&str> = pill_data.iter().map(|(l, _, _)| l.as_str()).collect();
+                    for rect in render::passport_pill_hit_rects(font, content, &labels) {
+                        rects.push(self.offset_rect_for_body(rect).as_i32());
+                    }
+                }
+            }
             rects
         };
         for (x, y, w, h) in rects {
@@ -2767,6 +2805,8 @@ impl App {
             PressTarget::BubbleOuterResize
         } else if self.chat_open && layout.input_region_rect().contains(body_x, y) {
             PressTarget::Input
+        } else if let Some(idx) = self.passport_pill_hit(body_x, y) {
+            PressTarget::SurfacePill(idx)
         } else if let Some(action) = render::torso_action_at(&layout, body_x, y) {
             PressTarget::TorsoAction(action)
         } else if layout.feet_rect().contains(body_x, y) {
@@ -2998,6 +3038,12 @@ impl App {
                 self.input_focused = false;
                 self.on_torso_action(action);
             }
+            PressTarget::SurfacePill(idx) => {
+                self.input_focused = false;
+                if let Some(id) = surface_pill_surface_id(&self.ordered_surfaces(), idx) {
+                    self.request_surface(&id);
+                }
+            }
             PressTarget::BubbleExpand => {
                 self.input_focused = false;
                 self.open_reader();
@@ -3076,6 +3122,42 @@ impl App {
         } else {
             self.surfaces.clone()
         }
+    }
+
+    /// Surface pill data for the idle connection card — ordered, launchers excluded.
+    fn passport_pill_data(&self) -> Vec<(String, bool, bool)> {
+        self.ordered_surfaces()
+            .into_iter()
+            .filter(|s| !s.is_launcher())
+            .map(|s| {
+                (
+                    s.label,
+                    s.id == self.active_surface,
+                    s.availability != "unwired",
+                )
+            })
+            .collect()
+    }
+
+    fn passport_card_visible(&self) -> bool {
+        !self.receipt_ledger_visible()
+            && !self.interior_open
+            && !self.settings_open
+            && self.onboarding_panel.is_none()
+            && matches!(self.torso_surface, TorsoSurface::Session)
+    }
+
+    fn passport_pill_hit(&self, x: f64, y: f64) -> Option<usize> {
+        if !self.passport_card_visible() {
+            return None;
+        }
+        let font = self.sprite.font()?;
+        let layout = self.layout();
+        let panel = layout.output_panel_rect();
+        let content = render::inset_rect(panel, 5.0, 5.0);
+        let pill_data = self.passport_pill_data();
+        let labels: Vec<&str> = pill_data.iter().map(|(l, _, _)| l.as_str()).collect();
+        render::passport_pill_hit(font, content, &labels, x, y)
     }
 
     fn surface_bloom_surfaces(&self) -> Vec<presence::SurfaceDescriptor> {
@@ -4870,6 +4952,36 @@ mod tests {
         assert_eq!(scroll, 0);
         assert!(!copied);
         assert!(selection.is_none());
+    }
+
+    #[test]
+    fn pill_tap_routes_through_existing_activation() {
+        let order = vec![
+            presence::SurfaceDescriptor {
+                id: "launcher".into(),
+                label: "Launch".into(),
+                availability: "available".into(),
+                kind: "launcher".into(),
+                effector: Some("ext".into()),
+            },
+            presence::SurfaceDescriptor {
+                id: "chat".into(),
+                label: "Chat".into(),
+                availability: "available".into(),
+                kind: "surface".into(),
+                effector: None,
+            },
+            presence::SurfaceDescriptor {
+                id: "code".into(),
+                label: "Code".into(),
+                availability: "unwired".into(),
+                kind: "surface".into(),
+                effector: None,
+            },
+        ];
+        assert_eq!(surface_pill_surface_id(&order, 0), Some("chat".into()));
+        assert_eq!(surface_pill_surface_id(&order, 1), Some("code".into()));
+        assert_eq!(surface_pill_surface_id(&order, 2), None);
     }
 
     #[test]

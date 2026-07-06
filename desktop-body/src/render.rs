@@ -1546,6 +1546,14 @@ pub struct ImageCard<'a> {
 /// fit the 142px torso instead of the freeform six-field card that overflowed it. Boring on
 /// purpose: persona + posture, a route chip, a divider, and a one-line output peek. No halo,
 /// ring, or glass — those are later slices. `SessionCard` is retained as a rollback fallback.
+/// One surface pill on the connection card — label, active highlight, wired/dimmed state.
+#[derive(Clone, Copy)]
+pub struct SurfacePill<'a> {
+    pub label: &'a str,
+    pub active: bool,
+    pub wired: bool,
+}
+
 pub struct PassportCard<'a> {
     /// Surface label from `surface_active.label` (e.g. "Private local chat").
     pub persona_label: &'a str,
@@ -1557,6 +1565,10 @@ pub struct PassportCard<'a> {
     pub locality: Option<&'a str>,
     /// Optional soul-derived route health. Absent means no health chrome.
     pub route_health: Option<&'a str>,
+    /// F5 activity bracket — drives the Working status line when true.
+    pub activity: bool,
+    /// Ordered surface pills (launchers excluded); empty when the soul has not hydrated surfaces.
+    pub pills: &'a [SurfacePill<'a>],
     /// First line of the last output, shown as an idle peek (never replaces the full Text/Image cards).
     pub output_preview: Option<&'a str>,
 }
@@ -1903,7 +1915,17 @@ impl Sprite {
             }
             if let Some(font) = &self.font {
                 if view.tucked_show_bubble {
-                    draw_tucked_bubble(&mut pixmap, font, edge, w, h, view.speech.unwrap_or(""));
+                    let (chip_provider, chip_health) = tucked_connection_chip(view);
+                    draw_tucked_bubble(
+                        &mut pixmap,
+                        font,
+                        edge,
+                        w,
+                        h,
+                        view.speech.unwrap_or(""),
+                        chip_provider,
+                        chip_health,
+                    );
                 }
                 if view.tucked_show_input {
                     draw_tucked_input(
@@ -3604,9 +3626,123 @@ fn draw_session_card(pixmap: &mut Pixmap, font: &Font, rect: Rect, card: &Sessio
     }
 }
 
-/// Boring, fixed-row passport ledger sized for the 142px torso. Rows: persona + posture tag,
-/// route chip (provider · locality dot), divider, one-line output peek. No halo/ring/glass —
-/// the only job here is that the torso stops overflowing.
+const SURFACE_PILL_H: f32 = 18.0;
+const SURFACE_PILL_GAP: f32 = 4.0;
+const SURFACE_PILL_PAD_X: f32 = 8.0;
+
+/// Single-source layout for connection-card surface pills. Returns pill rects (origin 0,0) and
+/// how many labels did not fit (caller draws an honest `+N` when hidden > 0).
+pub fn surface_pill_rects(font: &Font, avail_w: f32, labels: &[&str]) -> (Vec<Rect>, usize) {
+    if labels.is_empty() || avail_w <= 0.0 {
+        return (Vec::new(), 0);
+    }
+    let mut rects = Vec::new();
+    let mut x = 0.0;
+    let mut shown = 0usize;
+    for (i, label) in labels.iter().enumerate() {
+        let pill_w = (measure(font, label, 9.0) + SURFACE_PILL_PAD_X * 2.0).max(24.0);
+        let remaining = labels.len() - i;
+        let overflow_w = if remaining > 1 {
+            let tag = format!("+{}", remaining - 1);
+            measure(font, &tag, 9.0) + SURFACE_PILL_PAD_X * 2.0
+        } else {
+            0.0
+        };
+        let need = pill_w + if remaining > 1 { SURFACE_PILL_GAP + overflow_w } else { 0.0 };
+        if !rects.is_empty() && x + need > avail_w {
+            break;
+        }
+        if rects.is_empty() && pill_w > avail_w {
+            break;
+        }
+        if x + pill_w > avail_w {
+            break;
+        }
+        rects.push(Rect { x, y: 0.0, w: pill_w, h: SURFACE_PILL_H });
+        x += pill_w + SURFACE_PILL_GAP;
+        shown += 1;
+    }
+    (rects, labels.len().saturating_sub(shown))
+}
+
+/// Y baseline of the route row inside a passport card content rect.
+pub fn passport_route_baseline(content: Rect) -> f32 {
+    content.y + 8.0 + 11.0 + 14.0
+}
+
+/// Pill-row origin inside a passport card content rect (below the route row).
+pub fn passport_pill_row_origin(content: Rect) -> (f32, f32) {
+    let route_baseline = passport_route_baseline(content);
+    (content.x + 8.0, route_baseline + 8.0)
+}
+
+/// Positioned pill rects for hit-test and input-region registration (single-source with paint).
+pub fn passport_pill_hit_rects(font: &Font, content: Rect, labels: &[&str]) -> Vec<Rect> {
+    let (origin_x, origin_y) = passport_pill_row_origin(content);
+    let avail_w = (content.w - 16.0).max(0.0);
+    let (rel, _) = surface_pill_rects(font, avail_w, labels);
+    rel.into_iter()
+        .map(|r| Rect {
+            x: origin_x + r.x,
+            y: origin_y + r.y,
+            w: r.w,
+            h: r.h,
+        })
+        .collect()
+}
+
+/// Hit-test a press against the pill row; index matches `labels` order (launchers excluded upstream).
+pub fn passport_pill_hit(font: &Font, content: Rect, labels: &[&str], px: f64, py: f64) -> Option<usize> {
+    passport_pill_hit_rects(font, content, labels)
+        .into_iter()
+        .enumerate()
+        .find_map(|(idx, rect)| rect.contains(px, py).then_some(idx))
+}
+
+fn draw_surface_pill(pixmap: &mut Pixmap, font: &Font, rect: Rect, label: &str, active: bool, wired: bool) {
+    let bg = if active {
+        Color::from_rgba8(255, 255, 255, 186)
+    } else if !wired {
+        Color::from_rgba8(232, 235, 240, 214)
+    } else {
+        Color::from_rgba8(248, 250, 252, 236)
+    };
+    fill_round_rect(pixmap, rect, 6.0, &solid(bg));
+    if let Some(path) = round_rect_path(rect, 6.0) {
+        let mut stroke = Stroke::default();
+        stroke.width = if active { 1.5 } else { 1.0 };
+        let edge = if active { 140 } else if !wired { 96 } else { 118 };
+        pixmap.stroke_path(
+            &path,
+            &solid(Color::from_rgba8(0, 0, 0, edge)),
+            &stroke,
+            Transform::identity(),
+            None,
+        );
+    }
+    let fg = if active {
+        [22, 30, 42]
+    } else if !wired {
+        [92, 100, 114]
+    } else {
+        [22, 30, 42]
+    };
+    let fitted = fit_line(font, label, 9.0, rect.w - SURFACE_PILL_PAD_X * 2.0);
+    let tw = measure(font, &fitted, 9.0);
+    let baseline = rect.y + 14.0;
+    draw_line(
+        pixmap,
+        font,
+        &fitted,
+        rect.x + (rect.w - tw) / 2.0,
+        baseline,
+        9.0,
+        fg,
+    );
+}
+
+/// Boring, fixed-row connection card sized for the 142px torso. Rows: persona + posture tag,
+/// route chip (provider · locality · health dot), optional surface pills, divider, status peek.
 fn draw_passport_card(pixmap: &mut Pixmap, font: &Font, rect: Rect, card: &PassportCard) {
     let pad = 8.0;
     let x = rect.x + pad;
@@ -3631,7 +3767,7 @@ fn draw_passport_card(pixmap: &mut Pixmap, font: &Font, rect: Rect, card: &Passp
     let persona = fit_line(font, card.persona_label, 11.0, persona_w);
     draw_line(pixmap, font, &persona, x, row0_baseline, 11.0, [38, 34, 32]);
 
-    // Row 1 — route chip: provider name, then a locality dot (green=local, blue=cloud).
+    // Row 1 — route chip: provider or honest empty, locality dot, health dot.
     let row1_baseline = row0_baseline + 14.0;
     if card.route_health == Some("degraded") {
         fill_round_rect(
@@ -3641,26 +3777,64 @@ fn draw_passport_card(pixmap: &mut Pixmap, font: &Font, rect: Rect, card: &Passp
             &solid(Color::from_rgba8(218, 147, 45, 42)),
         );
     }
+    let mut trail_x;
     if let Some(provider) = card.provider {
-        let prov = fit_line(font, provider, 10.0, (text_w - 12.0).max(0.0));
+        let reserve = 18.0
+            + card.locality.is_some().then_some(10.0).unwrap_or(0.0)
+            + card.route_health.is_some().then_some(10.0).unwrap_or(0.0);
+        let prov = fit_line(font, provider, 10.0, (text_w - reserve).max(0.0));
         draw_line(pixmap, font, &prov, x, row1_baseline, 10.0, [63, 56, 52]);
-        if let Some(loc) = card.locality {
-            let dot_x = x + measure(font, &prov, 10.0) + 7.0;
-            let dot_y = row1_baseline - 3.0;
-            if let Some(path) = ellipse_path(dot_x, dot_y, 3.0, 3.0) {
-                pixmap.fill_path(
-                    &path,
-                    &solid(locality_dot_color(loc)),
-                    FillRule::Winding,
-                    Transform::identity(),
-                    None,
-                );
+        trail_x = x + measure(font, &prov, 10.0);
+    } else {
+        let no_route = "No route yet";
+        draw_line(pixmap, font, no_route, x, row1_baseline, 10.0, [130, 122, 114]);
+        trail_x = x + measure(font, no_route, 10.0);
+    }
+    if let Some(loc) = card.locality {
+        let dot_x = trail_x + 7.0;
+        let dot_y = row1_baseline - 3.0;
+        if let Some(path) = ellipse_path(dot_x, dot_y, 3.0, 3.0) {
+            pixmap.fill_path(
+                &path,
+                &solid(locality_dot_color(loc)),
+                FillRule::Winding,
+                Transform::identity(),
+                None,
+            );
+        }
+        trail_x = dot_x + 6.0;
+    }
+    if let Some(health) = card.route_health {
+        draw_route_health_dot(pixmap, trail_x + 3.0, row1_baseline - 3.0, health);
+    }
+
+    // Row 2 — surface pills (launchers excluded upstream; no row when empty).
+    let mut div_y = row1_baseline + 6.0;
+    if !card.pills.is_empty() {
+        let pill_labels: Vec<&str> = card.pills.iter().map(|p| p.label).collect();
+        let (origin_x, origin_y) = passport_pill_row_origin(rect);
+        let (rel_rects, hidden) = surface_pill_rects(font, text_w, &pill_labels);
+        for (rect_rel, pill) in rel_rects.iter().zip(card.pills.iter()) {
+            let pill_rect = Rect {
+                x: origin_x + rect_rel.x,
+                y: origin_y + rect_rel.y,
+                w: rect_rel.w,
+                h: rect_rel.h,
+            };
+            draw_surface_pill(pixmap, font, pill_rect, pill.label, pill.active, pill.wired);
+        }
+        if hidden > 0 {
+            let tag = format!("+{hidden}");
+            let tw = measure(font, &tag, 9.0);
+            let ox = origin_x + rel_rects.last().map(|r| r.x + r.w + SURFACE_PILL_GAP).unwrap_or(0.0);
+            if ox + tw <= origin_x + text_w {
+                draw_line(pixmap, font, &tag, ox, origin_y + 13.0, 9.0, [130, 122, 114]);
             }
         }
+        div_y = origin_y + SURFACE_PILL_H + 4.0;
     }
 
     // Divider.
-    let div_y = row1_baseline + 6.0;
     fill_round_rect(
         pixmap,
         Rect { x, y: div_y, w: text_w, h: 1.0 },
@@ -3668,17 +3842,15 @@ fn draw_passport_card(pixmap: &mut Pixmap, font: &Font, rect: Rect, card: &Passp
         &solid(Color::from_rgba8(0, 0, 0, 38)),
     );
 
-    // Output area — one-line idle peek; never replaces the full Text/Image output cards.
+    // Status / output peek — Working while activity bracket is open.
     let body_top = div_y + 6.0;
     let avail_h = (bottom - body_top).max(0.0);
     if avail_h < PANEL_TEXT_PX {
         return;
     }
     let max_lines = (avail_h / PANEL_LINE_H).floor().max(1.0) as usize;
-    let body = card
-        .output_preview
-        .unwrap_or("Idle — text, image, and file output land here.");
-    let lines = wrap(font, body, PANEL_TEXT_PX, text_w, max_lines);
+    let body = connection_status_line(card.activity, card.provider, card.output_preview);
+    let lines = wrap(font, &body, PANEL_TEXT_PX, text_w, max_lines);
     let mut baseline = body_top + PANEL_TEXT_PX;
     for line in &lines {
         draw_line(pixmap, font, line, x, baseline, PANEL_TEXT_PX, [88, 74, 64]);
@@ -3830,6 +4002,41 @@ fn locality_dot_color(locality: &str) -> Color {
     match locality {
         "local" => Color::from_rgba8(58, 170, 96, 255), // green = on-device
         _ => Color::from_rgba8(58, 122, 200, 255),      // blue = cloud
+    }
+}
+
+/// Provider + health for the tucked peek chip — mirrors the connection card's route row.
+pub fn tucked_connection_chip<'a>(view: &BodyView<'a>) -> (Option<&'a str>, Option<&'a str>) {
+    match &view.torso_output {
+        TorsoOutput::Passport(card) => (card.provider, card.route_health),
+        _ => (None, view.route_health),
+    }
+}
+
+/// Route-row health disc — palette pixel via Source blend (F4 precedent).
+fn draw_route_health_dot(pixmap: &mut Pixmap, cx: f32, cy: f32, health: &str) {
+    let Some([r, g, b, a]) = route_health_ring_rgba(health) else {
+        return;
+    };
+    if let Some(path) = ellipse_path(cx, cy, 3.0, 3.0) {
+        let mut paint = solid(Color::from_rgba8(r, g, b, a));
+        paint.blend_mode = tiny_skia::BlendMode::Source;
+        pixmap.fill_path(&path, &paint, FillRule::Winding, Transform::identity(), None);
+    }
+}
+
+/// Connection-card status: Working while the F5 activity bracket is open, else the session note.
+pub fn connection_status_line(activity: bool, provider: Option<&str>, preview: Option<&str>) -> String {
+    if activity {
+        match provider {
+            Some(p) => format!("Working — talking to {p}…"),
+            None => "Working…".to_string(),
+        }
+    } else {
+        preview
+            .filter(|s| !s.is_empty())
+            .unwrap_or("Idle — text, image, and file output land here.")
+            .to_string()
     }
 }
 
@@ -4436,10 +4643,21 @@ fn draw_input(
 
 /// The tucked peek bubble: a fixed-size rounded card carrying the latest speech, wrapped and
 /// truncated to fit (no dynamic growth, so the drawn box matches `tucked_bubble_rect` exactly).
-fn draw_tucked_bubble(pixmap: &mut Pixmap, font: &Font, edge: BumpEdge, w: u32, h: u32, text: &str) {
+/// A one-line connection chip (provider + health dot) rides inside the bubble when route truth exists.
+#[allow(clippy::too_many_arguments)]
+fn draw_tucked_bubble(
+    pixmap: &mut Pixmap,
+    font: &Font,
+    edge: BumpEdge,
+    w: u32,
+    h: u32,
+    text: &str,
+    route_provider: Option<&str>,
+    route_health: Option<&str>,
+) {
     let rect = tucked_bubble_rect(edge, w, h);
     let pad_x = 12.0;
-    let pad_top = 18.0;
+    let mut pad_top = 18.0;
     let bg = Color::from_rgba8(247, 251, 255, 245);
     let border = solid(Color::from_rgba8(0, 0, 0, 175));
     draw_round_rect(pixmap, rect, bg);
@@ -4447,6 +4665,20 @@ fn draw_tucked_bubble(pixmap: &mut Pixmap, font: &Font, edge: BumpEdge, w: u32, 
         let mut stroke = Stroke::default();
         stroke.width = 1.0;
         pixmap.stroke_path(&path, &border, &stroke, Transform::identity(), None);
+    }
+    let show_chip = route_provider.is_some() || route_health.is_some();
+    if show_chip {
+        let chip_y = rect.y + 8.0;
+        let mut trail_x = rect.x + pad_x;
+        if let Some(provider) = route_provider {
+            let fitted = fit_line(font, provider, 8.5, rect.w - pad_x * 2.0 - 12.0);
+            draw_line(pixmap, font, &fitted, trail_x, chip_y + 9.0, 8.5, [63, 56, 52]);
+            trail_x += measure(font, &fitted, 8.5) + 6.0;
+        }
+        if let Some(health) = route_health {
+            draw_route_health_dot(pixmap, trail_x + 3.0, chip_y + 6.0, health);
+        }
+        pad_top = 28.0;
     }
     let max_lines = (((rect.h - pad_top - 6.0) / LINE_H).floor() as i32).max(1) as usize;
     let (lines, hidden) = if text.is_empty() {
@@ -4530,7 +4762,7 @@ fn draw_round_rect(pixmap: &mut Pixmap, rect: Rect, color: Color) {
     fill_round_rect(pixmap, rect, r, &solid(color));
 }
 
-fn inset_rect(rect: Rect, dx: f32, dy: f32) -> Rect {
+pub fn inset_rect(rect: Rect, dx: f32, dy: f32) -> Rect {
     let w = (rect.w - dx * 2.0).max(0.0);
     let h = (rect.h - dy * 2.0).max(0.0);
     Rect { x: rect.x + dx, y: rect.y + dy, w, h }
@@ -6897,6 +7129,8 @@ mod tests {
             provider: Some("Some Very Long Provider Gateway Label That Should Truncate"),
             locality: Some("local"),
             route_health: Some("degraded"),
+            activity: false,
+            pills: &[],
             output_preview: Some(
                 "A long idle preview line that should wrap and clip inside the panel, never spilling past the torso edge.",
             ),
@@ -6919,6 +7153,415 @@ mod tests {
             }
         }
         assert!(drew_something, "passport should have drawn its rows");
+    }
+
+    fn sample_passport_card(card: &PassportCard) -> (Pixmap, Rect, Font) {
+        let font = load_font().expect("system font available for passport test");
+        let layout = Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT);
+        let content = inset_rect(layout.output_panel_rect(), 5.0, 5.0);
+        let mut pixmap = Pixmap::new(SURFACE_W, layout.surface_h()).unwrap();
+        draw_passport_card(&mut pixmap, &font, content, card);
+        (pixmap, content, font)
+    }
+
+    fn route_health_dot_center(content: Rect, font: &Font, card: &PassportCard) -> (i32, i32) {
+        let x = content.x + 8.0;
+        let row1 = passport_route_baseline(content);
+        let mut trail_x = x;
+        if let Some(provider) = card.provider {
+            let prov = fit_line(font, provider, 10.0, content.w - 32.0);
+            trail_x = x + measure(font, &prov, 10.0);
+        } else {
+            trail_x = x + measure(font, "No route yet", 10.0);
+        }
+        if card.locality.is_some() {
+            trail_x += 13.0;
+        }
+        let cx = (trail_x + 3.0).round() as i32;
+        let cy = (row1 - 3.0).round() as i32;
+        (cx, cy)
+    }
+
+    #[test]
+    fn connection_card_health_dot_matches_route_hue() {
+        for health in ["ready", "degraded", "unavailable"] {
+            let expected = route_health_ring_rgba(health).expect("closed health set");
+            let card = PassportCard {
+                persona_label: "Forge",
+                posture: "work",
+                provider: Some("local-ollama"),
+                locality: Some("local"),
+                route_health: Some(health),
+                activity: false,
+                pills: &[],
+                output_preview: Some("idle"),
+            };
+            let (pixmap, content, font) = sample_passport_card(&card);
+            let (cx, cy) = route_health_dot_center(content, &font, &card);
+            let p = pixmap.pixel(cx as u32, cy as u32).expect("dot centre in bounds");
+            let sampled = demultiply_rgba([p.red(), p.green(), p.blue(), p.alpha()]);
+            assert!(
+                rgba_close(sampled, expected, 2),
+                "health {health}: dot {sampled:?} != palette {expected:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn connection_card_no_route_reads_honest() {
+        let base = PassportCard {
+            persona_label: "Forge",
+            posture: "work",
+            provider: None,
+            locality: None,
+            route_health: None,
+            activity: false,
+            pills: &[],
+            output_preview: Some("idle note"),
+        };
+        let with_route = PassportCard {
+            provider: Some("ollama"),
+            ..base
+        };
+        let (none_px, _, _) = sample_passport_card(&base);
+        let (some_px, _, _) = sample_passport_card(&with_route);
+        assert_ne!(none_px.data(), some_px.data(), "None vs Some provider must paint differently");
+        let row_y = passport_route_baseline(inset_rect(
+            Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT).output_panel_rect(),
+            5.0,
+            5.0,
+        )) as i32;
+        let font = load_font().expect("font");
+        let text_x = (inset_rect(
+            Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT).output_panel_rect(),
+            5.0,
+            5.0,
+        )
+        .x
+            + 8.0) as i32;
+        let mut saw_ink = false;
+        for dx in 0..80 {
+            let idx = ((row_y * none_px.width() as i32 + text_x + dx) * 4) as usize;
+            if none_px.data()[idx + 3] > 0 {
+                saw_ink = true;
+                break;
+            }
+        }
+        assert!(saw_ink, "No route yet row must not be blank");
+        let no_route_w = measure(&font, "No route yet", 10.0);
+        assert!(no_route_w > 20.0);
+    }
+
+    #[test]
+    fn connection_status_line_brackets_activity() {
+        assert_eq!(
+            connection_status_line(true, Some("ollama"), Some("note")),
+            "Working — talking to ollama…",
+        );
+        assert_eq!(connection_status_line(true, None, Some("note")), "Working…");
+        assert_eq!(connection_status_line(false, Some("ollama"), Some("note")), "note");
+        assert_eq!(
+            connection_status_line(false, None, None),
+            "Idle — text, image, and file output land here.",
+        );
+    }
+
+    #[test]
+    fn connection_card_activity_swaps_preview_for_working() {
+        let idle = PassportCard {
+            persona_label: "Forge",
+            posture: "work",
+            provider: Some("ollama"),
+            locality: None,
+            route_health: None,
+            activity: false,
+            pills: &[],
+            output_preview: Some("Session note preview"),
+        };
+        let working = PassportCard {
+            activity: true,
+            ..idle
+        };
+        let (idle_px, _, _) = sample_passport_card(&idle);
+        let (work_px, _, _) = sample_passport_card(&working);
+        assert_ne!(idle_px.data(), work_px.data(), "activity must swap the status line");
+    }
+
+    #[test]
+    fn connection_card_fits_torso_rect() {
+        let font = load_font().expect("font");
+        let layout = Layout::new(Facing::Right, BODY_LEN_MIN, BUBBLE_W_DEFAULT);
+        let panel = layout.output_panel_rect();
+        let content = inset_rect(panel, 5.0, 5.0);
+        let pills = [
+            SurfacePill { label: "chat", active: true, wired: true },
+            SurfacePill { label: "code", active: false, wired: true },
+        ];
+        let card = PassportCard {
+            persona_label: "A Long Persona Name For Min Stretch",
+            posture: "private",
+            provider: Some("provider"),
+            locality: Some("cloud"),
+            route_health: Some("ready"),
+            activity: false,
+            pills: &pills,
+            output_preview: Some("Preview line"),
+        };
+        let mut pixmap = Pixmap::new(SURFACE_W, layout.surface_h()).unwrap();
+        draw_passport_card(&mut pixmap, &font, content, &card);
+        let right = (content.x + content.w).ceil() as i32;
+        let bottom = (content.y + content.h).ceil() as i32;
+        let data = pixmap.data();
+        let w = pixmap.width() as i32;
+        for y in content.y as i32..bottom {
+            for x in 0..w {
+                let idx = ((y * w + x) * 4) as usize;
+                if data[idx + 3] > 0 {
+                    assert!(x <= right + 1, "ink at x={x} exceeds panel");
+                    assert!(y <= bottom + 1, "ink at y={y} exceeds panel");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn pill_row_registered_in_input_region() {
+        let font = load_font().expect("font");
+        let layout = Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT);
+        let content = inset_rect(layout.output_panel_rect(), 5.0, 5.0);
+        let labels = ["chat", "code"];
+        let rects = passport_pill_hit_rects(&font, content, &labels);
+        assert!(!rects.is_empty(), "pill row must produce hit rects for input-region registration");
+        let panel = layout.output_panel_rect();
+        for rect in &rects {
+            assert!(rect.x >= panel.x);
+            assert!(rect.y >= panel.y);
+            assert!(rect.x + rect.w <= panel.x + panel.w + 1.0);
+            assert!(rect.y + rect.h <= panel.y + panel.h + 1.0);
+        }
+    }
+
+    #[test]
+    fn surface_pills_single_source_paint_and_hit() {
+        let font = load_font().expect("font");
+        let layout = Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT);
+        let content = inset_rect(layout.output_panel_rect(), 5.0, 5.0);
+        let labels = ["chat", "code"];
+        let rects = passport_pill_hit_rects(&font, content, &labels);
+        assert_eq!(rects.len(), 2);
+        for (i, rect) in rects.iter().enumerate() {
+            let cx = rect.x + rect.w / 2.0;
+            let cy = rect.y + rect.h / 2.0;
+            assert_eq!(passport_pill_hit(&font, content, &labels, cx as f64, cy as f64), Some(i));
+        }
+    }
+
+    fn passport_fixture<'a>(pills: &'a [SurfacePill<'a>]) -> PassportCard<'a> {
+        PassportCard {
+            persona_label: "F",
+            posture: "work",
+            provider: Some("p"),
+            locality: None,
+            route_health: None,
+            activity: false,
+            pills,
+            output_preview: None,
+        }
+    }
+
+    #[test]
+    fn unwired_pill_dims_not_hides() {
+        let font = load_font().expect("font");
+        let layout = Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT);
+        let content = inset_rect(layout.output_panel_rect(), 5.0, 5.0);
+        let wired = [SurfacePill { label: "chat", active: false, wired: true }];
+        let both = [
+            SurfacePill { label: "chat", active: false, wired: true },
+            SurfacePill { label: "soon", active: false, wired: false },
+        ];
+        let (wired_px, _, _) = sample_passport_card(&passport_fixture(&wired));
+        let (both_px, _, _) = sample_passport_card(&passport_fixture(&both));
+        let rects = passport_pill_hit_rects(&font, content, &["chat", "soon"]);
+        assert_eq!(rects.len(), 2, "both pills painted");
+        assert_ne!(wired_px.data(), both_px.data(), "wired vs unwired must differ");
+    }
+
+    #[test]
+    fn active_pill_follows_surface_active() {
+        let pills_a = [SurfacePill { label: "chat", active: true, wired: true }];
+        let pills_b = [SurfacePill { label: "chat", active: false, wired: true }];
+        let (px_a, _, _) = sample_passport_card(&passport_fixture(&pills_a));
+        let (px_b, _, _) = sample_passport_card(&passport_fixture(&pills_b));
+        assert_ne!(px_a.data(), px_b.data(), "active pill highlight must change pixels");
+    }
+
+    #[test]
+    fn tucked_peek_chip_mirrors_route_truth() {
+        let font = load_font().expect("font");
+        let edge = BumpEdge::Right;
+        let w = SURFACE_W;
+        let h = 200u32;
+        let mut pixmap = Pixmap::new(w, h).unwrap();
+        draw_tucked_bubble(
+            &mut pixmap,
+            &font,
+            edge,
+            w,
+            h,
+            "Hello",
+            Some("ollama"),
+            Some("ready"),
+        );
+        let rect = tucked_bubble_rect(edge, w, h);
+        let chip_cx = (rect.x + 14.0) as u32;
+        let chip_cy = (rect.y + 14.0) as u32;
+        let p = pixmap.pixel(chip_cx, chip_cy).expect("chip ink");
+        assert!(p.alpha() > 0, "provider label must paint");
+        let expected = route_health_ring_rgba("ready").unwrap();
+        let dot_cx = (rect.x + 12.0 + measure(&font, "ollama", 8.5) + 9.0) as u32;
+        let dot_cy = (rect.y + 14.0) as u32;
+        let dot = pixmap.pixel(dot_cx, dot_cy).expect("health dot");
+        let sampled = demultiply_rgba([dot.red(), dot.green(), dot.blue(), dot.alpha()]);
+        assert!(rgba_close(sampled, expected, 4), "chip dot {sampled:?} != {expected:?}");
+    }
+
+    #[test]
+    fn tucked_bar_language_untouched() {
+        let layout = Layout::initial();
+        let w = SURFACE_W;
+        let h = layout.surface_h();
+        let sprite = Sprite::new();
+        let edge = BumpEdge::Left;
+        let paint = |route_health: Option<&str>| -> Vec<u8> {
+            let mut canvas = vec![0_u8; (w * h * 4) as usize];
+            let card = PassportCard {
+                persona_label: "F",
+                posture: "work",
+                provider: Some("p"),
+                locality: Some("local"),
+                route_health,
+                activity: false,
+                pills: &[],
+                output_preview: None,
+            };
+            let view = BodyView {
+                t: 0.0,
+                emotion: Emotion::Neutral,
+                speech: Some("hi"),
+                torso_output: TorsoOutput::Passport(card),
+                chat_open: false,
+                tucked: Some(edge),
+                tucked_show_bubble: true,
+                tucked_show_input: false,
+                input_text: "",
+                input_placeholder: "",
+                input_focused: false,
+                review_pending: false,
+                edit_pending: false,
+                posture_badge: None,
+                surface_bloom: &[],
+                route_health,
+                route_flash: false,
+                alert_level: None,
+                activity: false,
+                receipt_rail: &[],
+                receipt_scroll: 0,
+                interior_rows: &[],
+                settings: &[],
+                onboarding: None,
+                layout,
+                pinned: None,
+                frame: None,
+                color: CLAY_DEFAULT,
+                skin: Skin::Clay,
+                dock_show: DockShow::Bar,
+                reader: None,
+                reader_scroll: 0,
+                reader_copied: false,
+                reader_selection: None,
+            };
+            sprite.paint(&mut canvas, w, h, &view);
+            canvas
+        };
+        let (cx, cy) = bump_center(edge, w, h);
+        let px = (BAR_THICKNESS / 2.0) as u32;
+        let py = cy as u32;
+        let idx = ((py * w + px) * 4) as usize;
+        assert_eq!(
+            &paint(Some("ready"))[idx..idx + 4],
+            &paint(Some("degraded"))[idx..idx + 4],
+            "bar pixels must not change with route health",
+        );
+    }
+
+    #[test]
+    fn pills_hit_correctly_in_both_dock() {
+        let font = load_font().expect("font");
+        for facing in [Facing::Right, Facing::Left] {
+            let layout = Layout::new(facing, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT);
+            let content = inset_rect(layout.output_panel_rect(), 5.0, 5.0);
+            let labels = ["alpha", "beta"];
+            let rects = passport_pill_hit_rects(&font, content, &labels);
+            for (i, rect) in rects.iter().enumerate() {
+                let hit = passport_pill_hit(
+                    &font,
+                    content,
+                    &labels,
+                    (rect.x + 2.0) as f64,
+                    (rect.y + 2.0) as f64,
+                );
+                assert_eq!(hit, Some(i), "facing {facing:?} pill {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn min_stretch_collapses_pills_honestly() {
+        let font = load_font().expect("font");
+        let layout = Layout::new(Facing::Right, BODY_LEN_MIN, BUBBLE_W_DEFAULT);
+        let content = inset_rect(layout.output_panel_rect(), 5.0, 5.0);
+        let labels: Vec<&str> = (0..8).map(|i| {
+            // leak the temporary — use static labels instead
+            match i {
+                0 => "one",
+                1 => "two",
+                2 => "three",
+                3 => "four",
+                4 => "five",
+                5 => "six",
+                6 => "seven",
+                _ => "eight",
+            }
+        }).collect();
+        let (rel, hidden) = surface_pill_rects(&font, content.w - 16.0, &labels);
+        assert!(hidden > 0, "min stretch must collapse to +N");
+        assert!(rel.len() < labels.len());
+        let pills: Vec<SurfacePill> = labels
+            .iter()
+            .map(|l| SurfacePill { label: l, active: false, wired: true })
+            .collect();
+        let card = PassportCard {
+            persona_label: "F",
+            posture: "work",
+            provider: Some("p"),
+            locality: None,
+            route_health: None,
+            activity: false,
+            pills: &pills,
+            output_preview: None,
+        };
+        let mut pixmap = Pixmap::new(SURFACE_W, layout.surface_h()).unwrap();
+        draw_passport_card(&mut pixmap, &font, content, &card);
+        let (origin_x, origin_y) = passport_pill_row_origin(content);
+        let mut saw_plus = false;
+        for dx in 0..30 {
+            let x = (origin_x + rel.last().map(|r| r.x + r.w + 4.0).unwrap_or(0.0) + dx as f32) as u32;
+            let y = (origin_y + 10.0) as u32;
+            if pixmap.pixel(x, y).is_some_and(|p| p.alpha() > 0) {
+                saw_plus = true;
+            }
+        }
+        assert!(saw_plus, "+N overflow marker must paint at min stretch");
     }
 
     #[test]

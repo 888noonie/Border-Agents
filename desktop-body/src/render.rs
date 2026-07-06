@@ -96,6 +96,8 @@ pub const BUBBLE_W: f32 = 172.0;
 pub const BUBBLE_W_DEFAULT: f32 = BUBBLE_W;
 pub const BUBBLE_W_MIN: f32 = BUBBLE_W;
 pub const BUBBLE_W_MAX: f32 = 420.0;
+/// Horizontal space reclaimed from the retired side receipt rail — given to the speech column.
+pub const EXPANDED_SURFACE_EXTRA: u32 = 160;
 /// Drag strip on the bubble/reader edge away from the body (reorients with facing).
 const BUBBLE_OUTER_RESIZE_W: f32 = 10.0;
 pub const PINNED_BUBBLE_W_MIN: f32 = 188.0;
@@ -204,20 +206,31 @@ pub fn bubble_base_x(facing: Facing, bubble_w: f32) -> f32 {
     }
 }
 
-pub fn clamp_bubble_w(facing: Facing, w: f32) -> f32 {
-    let w = w.clamp(BUBBLE_W_MIN, BUBBLE_W_MAX);
+pub fn surface_w_for_body_len(body_len: f32) -> f32 {
+    if receipt_ledger_visible_for_body_len(body_len) {
+        SURFACE_W as f32 + EXPANDED_SURFACE_EXTRA as f32
+    } else {
+        SURFACE_W as f32
+    }
+}
+
+pub fn bubble_max_w(facing: Facing, surface_w: f32) -> f32 {
     match facing {
         Facing::Right => {
-            let base = bubble_base_x(facing, w);
-            let max_w = (SURFACE_W as f32 - 4.0 - base).max(BUBBLE_W_MIN);
-            w.clamp(BUBBLE_W_MIN, max_w)
+            let base = bubble_base_x(facing, BUBBLE_W_MIN);
+            (surface_w - 4.0 - base).max(BUBBLE_W_MIN)
         }
         Facing::Left => {
             let figure_half = (TORSO_W / 2.0).max(HEAD_R);
-            let max_w = (FIG_CX - figure_half - UI_GAP - 4.0).max(BUBBLE_W_MIN);
-            w.clamp(BUBBLE_W_MIN, max_w.min(BUBBLE_W_MAX))
+            (FIG_CX - figure_half - UI_GAP - 4.0).max(BUBBLE_W_MIN)
         }
     }
+    .min(BUBBLE_W_MAX)
+}
+
+pub fn clamp_bubble_w(facing: Facing, w: f32, surface_w: f32) -> f32 {
+    let max_w = bubble_max_w(facing, surface_w);
+    w.clamp(BUBBLE_W_MIN, max_w)
 }
 
 /// Pointer delta along the outer resize strip, converted to a width change.
@@ -5289,14 +5302,30 @@ mod tests {
 
     #[test]
     fn figure_and_receipt_ledger_fit_within_surface_at_max_stretch() {
-        let layout = Layout::new(Facing::Right, BODY_LEN_MAX, BUBBLE_W_DEFAULT);
+        let sw = surface_w_for_body_len(BODY_LEN_MAX);
+        let w = bubble_max_w(Facing::Right, sw);
+        let layout = Layout::new(Facing::Right, BODY_LEN_MAX, w);
         let bbox = figure_bbox(BODY_LEN_MAX);
         assert!(receipt_ledger_visible_for_body_len(BODY_LEN_MAX));
         assert!(bbox.x >= 0.0 && bbox.x + bbox.w <= SURFACE_W as f32,
-            "figure bbox must fit inside SURFACE_W");
+            "figure bbox must fit inside the core SURFACE_W band");
         let panel = layout.output_panel_rect();
         assert!(panel.x >= bbox.x && panel.x + panel.w <= bbox.x + bbox.w,
             "receipt ledger panel must live inside the stretchable torso");
+        assert!(
+            layout.bubble_rect().w > BUBBLE_W_DEFAULT + 100.0,
+            "full stretch must widen the speech column into the reclaimed rail width"
+        );
+        assert!(layout.bubble_rect().x + layout.bubble_rect().w <= sw - 4.0);
+    }
+
+    #[test]
+    fn expanded_mode_reclaims_retired_rail_width_for_speech() {
+        let sw = surface_w_for_body_len(BODY_LEN_MAX);
+        assert_eq!(sw, SURFACE_W as f32 + EXPANDED_SURFACE_EXTRA as f32);
+        let max_w = bubble_max_w(Facing::Right, sw);
+        assert!((max_w - 349.0).abs() < 1.0, "facing right at full stretch: expected ~349px");
+        assert!(bubble_max_w(Facing::Right, SURFACE_W as f32) < max_w);
     }
 
     #[test]

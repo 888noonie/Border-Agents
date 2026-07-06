@@ -744,6 +744,7 @@ fn main() {
         speech_bubble_w: render::BUBBLE_W_DEFAULT,
     };
     app.init_hermes_surface();
+    app.sync_speech_column_width();
 
     // Let outputs (and their xdg-output logical size) arrive before we create the
     // surface. Two roundtrips: the first binds wl_output, the second delivers the
@@ -1445,9 +1446,28 @@ impl App {
         render::Layout::new(self.facing, self.body_len, self.speech_bubble_w)
     }
 
+    fn speech_surface_w(&self) -> f32 {
+        render::surface_w_for_body_len(self.body_len)
+    }
+
+    /// Match the speech column width to the stretch tier: full stretch claims the
+    /// reclaimed rail width; shorter bodies return to the compact default.
+    fn sync_speech_column_width(&mut self) {
+        let sw = self.speech_surface_w();
+        let target = if render::receipt_ledger_visible_for_body_len(self.body_len) {
+            render::bubble_max_w(self.facing, sw)
+        } else {
+            render::BUBBLE_W_DEFAULT
+        };
+        self.speech_bubble_w = render::clamp_bubble_w(self.facing, target, sw);
+    }
+
     fn adjust_speech_column_width(&mut self, delta: f32) {
-        self.speech_bubble_w =
-            render::clamp_bubble_w(self.facing, self.speech_bubble_w + delta);
+        self.speech_bubble_w = render::clamp_bubble_w(
+            self.facing,
+            self.speech_bubble_w + delta,
+            self.speech_surface_w(),
+        );
         self.update_input_region();
     }
 
@@ -1502,7 +1522,7 @@ impl App {
     }
 
     fn requested_surface_w(&self) -> u32 {
-        render::SURFACE_W
+        render::surface_w_for_body_len(self.body_len) as u32
     }
 
     fn body_hit_x(&self, x: f64) -> f64 {
@@ -1988,6 +2008,15 @@ impl App {
         let new_facing = if head_x > sw / 2.0 { Facing::Left } else { Facing::Right };
         if new_facing != self.facing {
             self.facing = new_facing;
+            if render::receipt_ledger_visible_for_body_len(self.body_len) {
+                self.sync_speech_column_width();
+            } else {
+                self.speech_bubble_w = render::clamp_bubble_w(
+                    self.facing,
+                    self.speech_bubble_w,
+                    self.speech_surface_w(),
+                );
+            }
             self.update_input_region();
         }
     }
@@ -2770,7 +2799,18 @@ impl App {
         if (len - self.body_len).abs() < 0.5 {
             return;
         }
+        let was_expanded = render::receipt_ledger_visible_for_body_len(self.body_len);
         self.body_len = len;
+        let now_expanded = render::receipt_ledger_visible_for_body_len(self.body_len);
+        if was_expanded != now_expanded {
+            self.sync_speech_column_width();
+        } else if now_expanded {
+            self.speech_bubble_w = render::clamp_bubble_w(
+                self.facing,
+                self.speech_bubble_w,
+                self.speech_surface_w(),
+            );
+        }
         self.clamp_receipt_scroll();
         if let Some(layer) = self.layer.as_ref() {
             layer.set_size(self.requested_surface_w(), self.layout().surface_h());

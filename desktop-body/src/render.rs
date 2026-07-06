@@ -29,7 +29,11 @@ use crate::presence::AlertLevel;
 pub const SURFACE_W: u32 = 560;
 pub const PINNED_SURFACE_W: u32 = 420;
 pub const PINNED_SURFACE_H: u32 = 176;
-pub const RECEIPT_RAIL_W: u32 = 160;
+/// Legacy name — receipts now paint inside the torso panel at full stretch, not a side column.
+const RECEIPT_LEDGER_ROW_H: f32 = 26.0;
+const RECEIPT_LEDGER_ROW_GAP: f32 = 4.0;
+const RECEIPT_LEDGER_PAD: f32 = 5.0;
+const RECEIPT_LEDGER_ACTION_W: f32 = 26.0;
 const FRAME_SIDE_PAD: f32 = 92.0;
 const FRAME_TOP_PAD: f32 = 118.0;
 const FRAME_BOTTOM_PAD: f32 = 72.0;
@@ -316,9 +320,7 @@ const SURFACE_BLOOM_SIDE_GAP: f32 = 12.0;
 /// The dial blooms into two vertical columns flanking the torso, up to five pills a side.
 const SURFACE_BLOOM_PER_SIDE: usize = 5;
 const SURFACE_BLOOM_MAX_ITEMS: usize = SURFACE_BLOOM_PER_SIDE * 2;
-const RECEIPT_RAIL_PAD: f32 = 8.0;
-const RECEIPT_RAIL_CARD_H: f32 = 28.0;
-const RECEIPT_RAIL_CARD_GAP: f32 = 5.0;
+
 
 /// Default clay colour — Morph terracotta. Override per-buddy with `BB_COLOR`.
 pub const CLAY_DEFAULT: [u8; 3] = [201, 109, 60];
@@ -408,6 +410,28 @@ impl Layout {
     /// Outer edge away from the body — drag to resize column width.
     pub fn bubble_outer_resize_rect(&self) -> Rect {
         bubble_outer_resize_rect(self.bubble_rect(), self.facing)
+    }
+
+    /// Receipt ledger list area inside the torso output panel (excludes action buttons).
+    pub fn receipt_ledger_content_rect(&self) -> Rect {
+        let panel = self.output_panel_rect();
+        Rect {
+            x: panel.x + RECEIPT_LEDGER_PAD,
+            y: panel.y + RECEIPT_LEDGER_PAD,
+            w: (panel.w - RECEIPT_LEDGER_PAD * 2.0 - RECEIPT_LEDGER_ACTION_W).max(0.0),
+            h: (panel.h - RECEIPT_LEDGER_PAD * 2.0).max(0.0),
+        }
+    }
+
+    /// One visible receipt row at `visible_idx` (0 = top of the scrolled window).
+    pub fn receipt_ledger_row_rect(&self, visible_idx: usize) -> Rect {
+        let content = self.receipt_ledger_content_rect();
+        Rect {
+            x: content.x,
+            y: content.y + visible_idx as f32 * (RECEIPT_LEDGER_ROW_H + RECEIPT_LEDGER_ROW_GAP),
+            w: content.w,
+            h: RECEIPT_LEDGER_ROW_H,
+        }
     }
 
     /// Bottom of the torso — where the hips/legs start.
@@ -1654,8 +1678,10 @@ pub struct BodyView<'a> {
     /// Whether an action is in flight (body's view of its own request bracket). Used to present
     /// activity green for tips/halo/eyes without polluting the raw soul tier.
     pub activity: bool,
-    /// Expanded-mode receipt rail items, newest first. Empty still draws the rail panel.
+    /// Expanded-mode receipt ledger items (torso panel), newest first.
     pub receipt_rail: &'a [ReceiptRailItem<'a>],
+    /// Top row offset into `receipt_rail` while the ledger is visible.
+    pub receipt_scroll: usize,
     /// The interior view: perimeter controls folded into a labeled list inside the torso,
     /// toggled by the Torso scroll action. When non-empty, the torso output is hidden and a
     /// press inside the torso hits a row instead of the body-drag handle. Each item carries
@@ -1692,24 +1718,45 @@ pub struct ReaderPos {
     pub ch: usize,
 }
 
-pub fn receipt_rail_visible_for_body_len(body_len: f32) -> bool {
+pub fn receipt_ledger_visible_for_body_len(body_len: f32) -> bool {
     body_len >= BODY_LEN_MAX
 }
 
-pub fn receipt_rail_card_index(x: f64, y: f64, count: usize) -> Option<usize> {
-    if x < 0.0 || x > RECEIPT_RAIL_W as f64 {
-        return None;
-    }
-    (0..count).find(|idx| receipt_rail_card_rect(*idx).contains(x, y))
+pub fn clamp_receipt_scroll(scroll: usize, total: usize, budget: usize) -> usize {
+    scroll.min(total.saturating_sub(budget.max(1)))
 }
 
-fn receipt_rail_card_rect(idx: usize) -> Rect {
-    Rect {
-        x: RECEIPT_RAIL_PAD,
-        y: RECEIPT_RAIL_PAD + idx as f32 * (RECEIPT_RAIL_CARD_H + RECEIPT_RAIL_CARD_GAP),
-        w: RECEIPT_RAIL_W as f32 - RECEIPT_RAIL_PAD * 2.0,
-        h: RECEIPT_RAIL_CARD_H,
+pub fn receipt_ledger_row_budget(layout: &Layout) -> usize {
+    let content = layout.receipt_ledger_content_rect();
+    if content.h <= 0.0 {
+        return 0;
     }
+    ((content.h + RECEIPT_LEDGER_ROW_GAP) / (RECEIPT_LEDGER_ROW_H + RECEIPT_LEDGER_ROW_GAP))
+        .floor() as usize
+}
+
+pub fn receipt_ledger_card_index(
+    layout: &Layout,
+    scroll: usize,
+    x: f64,
+    y: f64,
+    count: usize,
+) -> Option<usize> {
+    let panel = layout.output_panel_rect();
+    if !panel.contains(x, y) {
+        return None;
+    }
+    let budget = receipt_ledger_row_budget(layout);
+    for vis in 0..budget {
+        let idx = scroll + vis;
+        if idx >= count {
+            break;
+        }
+        if layout.receipt_ledger_row_rect(vis).contains(x, y) {
+            return Some(idx);
+        }
+    }
+    None
 }
 
 pub struct Sprite {
@@ -1856,26 +1903,7 @@ impl Sprite {
             return;
         }
 
-        let rail_visible = receipt_rail_visible_for_body_len(view.layout.body_len) && view.pinned.is_none() && view.tucked.is_none();
-        if rail_visible {
-            if let Some(mut body) = Pixmap::new(SURFACE_W, h) {
-                draw_body_content(&mut body, self.font.as_ref(), view, bob, eye_open, face.pupil_dy, gaze_dx, &face.mouth, &pose);
-                if let Some(font) = &self.font {
-                    draw_receipt_rail(&mut pixmap, font, view.receipt_rail);
-                }
-                let paint = PixmapPaint::default();
-                pixmap.draw_pixmap(
-                    0,
-                    0,
-                    body.as_ref(),
-                    &paint,
-                    Transform::from_translate(RECEIPT_RAIL_W as f32, 0.0),
-                    None,
-                );
-            }
-        } else {
-            draw_body_content(&mut pixmap, self.font.as_ref(), view, bob, eye_open, face.pupil_dy, gaze_dx, &face.mouth, &pose);
-        }
+        draw_body_content(&mut pixmap, self.font.as_ref(), view, bob, eye_open, face.pupil_dy, gaze_dx, &face.mouth, &pose);
 
         blit_premultiplied_bgra(pixmap.data(), canvas);
     }
@@ -1915,6 +1943,14 @@ fn draw_body_content(
             draw_onboarding_view(pixmap, font, &view.layout, panel, view.color);
         } else if !view.settings.is_empty() {
             draw_settings_view(pixmap, font, &view.layout, view.settings, view.color);
+        } else if receipt_ledger_visible_for_body_len(view.layout.body_len) {
+            draw_torso_receipt_ledger(
+                pixmap,
+                font,
+                &view.layout,
+                view.receipt_rail,
+                view.receipt_scroll,
+            );
         } else if view.interior_rows.is_empty() {
             draw_torso_output(pixmap, font, &view.layout, &view.torso_output);
         } else {
@@ -3607,47 +3643,94 @@ fn receipt_detail_line(font: &Font, item: &ReceiptRailItem, max_w: f32) -> Strin
     }
 }
 
-fn draw_receipt_rail(pixmap: &mut Pixmap, font: &Font, items: &[ReceiptRailItem]) {
-    fill_round_rect(
-        pixmap,
-        Rect { x: 0.0, y: 0.0, w: RECEIPT_RAIL_W as f32, h: pixmap.height() as f32 },
-        0.0,
-        &solid(Color::from_rgba8(36, 42, 48, 220)),
-    );
-    fill_round_rect(
-        pixmap,
-        Rect { x: RECEIPT_RAIL_W as f32 - 1.0, y: 0.0, w: 1.0, h: pixmap.height() as f32 },
-        0.0,
-        &solid(Color::from_rgba8(255, 255, 255, 32)),
-    );
-
-    for (idx, item) in items.iter().enumerate() {
-        let rect = receipt_rail_card_rect(idx);
-        if rect.y + rect.h > pixmap.height() as f32 - RECEIPT_RAIL_PAD {
-            break;
-        }
-        if item.selected {
-            // Accent ring behind the card: a clicked entry expands its detail in the speech
-            // bubble (off-rail), so the rail itself needs a visible anchor for the click.
-            let ring = Rect { x: rect.x - 2.0, y: rect.y - 2.0, w: rect.w + 4.0, h: rect.h + 4.0 };
-            fill_round_rect(pixmap, ring, 8.0, &solid(Color::from_rgba8(58, 122, 200, 255)));
-        }
-        // Selected cards are opaque so the accent reads as a clean border, not a tint.
-        let card_alpha = if item.selected { 255 } else { 224 };
-        fill_round_rect(pixmap, rect, 6.0, &solid(Color::from_rgba8(248, 250, 252, card_alpha)));
-        let glyph_color = receipt_glyph_color(item.glyph);
-        draw_line(pixmap, font, item.glyph, rect.x + 5.0, rect.y + 18.0, 11.0, glyph_color);
-
-        let effector_x = rect.x + 22.0;
-        let top = fit_line(font, item.effector, 8.5, 72.0);
-        draw_line(pixmap, font, &top, effector_x, rect.y + 11.0, 8.5, [35, 39, 43]);
-
-        let detail = receipt_detail_line(font, item, 72.0);
-        let detail = fit_line(font, &detail, 8.0, 72.0);
-        draw_line(pixmap, font, &detail, effector_x, rect.y + 22.0, 8.0, [83, 91, 99]);
-
-        draw_line(pixmap, font, item.time, rect.x + rect.w - 43.0, rect.y + 18.0, 8.0, [83, 91, 99]);
+fn draw_receipt_ledger_card(pixmap: &mut Pixmap, font: &Font, rect: Rect, item: &ReceiptRailItem) {
+    if rect.w <= 0.0 || rect.h <= 0.0 {
+        return;
     }
+    if item.selected {
+        let ring = Rect { x: rect.x - 2.0, y: rect.y - 2.0, w: rect.w + 4.0, h: rect.h + 4.0 };
+        fill_round_rect(pixmap, ring, 6.0, &solid(Color::from_rgba8(58, 122, 200, 255)));
+    }
+    let card_alpha = if item.selected { 255 } else { 224 };
+    fill_round_rect(pixmap, rect, 5.0, &solid(Color::from_rgba8(248, 250, 252, card_alpha)));
+    let glyph_color = receipt_glyph_color(item.glyph);
+    draw_line(pixmap, font, item.glyph, rect.x + 4.0, rect.y + 17.0, 10.0, glyph_color);
+
+    let effector_x = rect.x + 20.0;
+    let detail_budget = (rect.w - 46.0).max(24.0);
+    let top = fit_line(font, item.effector, 8.0, detail_budget);
+    draw_line(pixmap, font, &top, effector_x, rect.y + 10.0, 8.0, [35, 39, 43]);
+
+    let detail = receipt_detail_line(font, item, detail_budget);
+    let detail = fit_line(font, &detail, 7.5, detail_budget);
+    draw_line(pixmap, font, &detail, effector_x, rect.y + 20.0, 7.5, [83, 91, 99]);
+
+    draw_line(pixmap, font, item.time, rect.x + rect.w - 40.0, rect.y + 17.0, 7.5, [83, 91, 99]);
+}
+
+/// Expanded-mode governance ledger — lives in the stretchable torso panel.
+fn draw_torso_receipt_ledger(
+    pixmap: &mut Pixmap,
+    font: &Font,
+    layout: &Layout,
+    items: &[ReceiptRailItem],
+    scroll: usize,
+) {
+    let panel = layout.output_panel_rect();
+    if panel.w <= 0.0 || panel.h <= 0.0 {
+        return;
+    }
+
+    let bg = Color::from_rgba8(36, 42, 48, 220);
+    let rim = solid(Color::from_rgba8(0, 0, 0, 153));
+    draw_round_rect(pixmap, panel, bg);
+    if let Some(path) = round_rect_path(panel, 8.0) {
+        let mut stroke = Stroke::default();
+        stroke.width = 1.0;
+        pixmap.stroke_path(&path, &rim, &stroke, Transform::identity(), None);
+    }
+
+    let budget = receipt_ledger_row_budget(layout);
+    let scroll = clamp_receipt_scroll(scroll, items.len(), budget);
+    if items.is_empty() {
+        let content = layout.receipt_ledger_content_rect();
+        draw_line(
+            pixmap,
+            font,
+            "No receipts yet",
+            content.x,
+            content.y + 14.0,
+            PANEL_LABEL_PX,
+            [180, 188, 196],
+        );
+    } else {
+        for vis in 0..budget {
+            let idx = scroll + vis;
+            if idx >= items.len() {
+                break;
+            }
+            draw_receipt_ledger_card(pixmap, font, layout.receipt_ledger_row_rect(vis), &items[idx]);
+        }
+        if items.len() > budget {
+            let a = scroll + 1;
+            let b = (scroll + budget).min(items.len());
+            let footer = format!("{a}–{b} of {}", items.len());
+            let content = layout.receipt_ledger_content_rect();
+            draw_line(
+                pixmap,
+                font,
+                &footer,
+                content.x,
+                panel.y + panel.h - 14.0,
+                8.0,
+                [140, 148, 156],
+            );
+        }
+    }
+
+    draw_torso_action(pixmap, layout, TorsoAction::Expand);
+    draw_torso_action(pixmap, layout, TorsoAction::Copy);
+    draw_torso_action(pixmap, layout, TorsoAction::Scroll);
 }
 
 fn receipt_glyph_color(glyph: &str) -> [u8; 3] {
@@ -5062,17 +5145,25 @@ mod tests {
     }
 
     #[test]
-    fn receipt_rail_is_expanded_mode_only() {
-        assert!(!receipt_rail_visible_for_body_len(BODY_LEN_MAX - 0.1));
-        assert!(receipt_rail_visible_for_body_len(BODY_LEN_MAX));
+    fn receipt_ledger_is_expanded_mode_only() {
+        assert!(!receipt_ledger_visible_for_body_len(BODY_LEN_MAX - 0.1));
+        assert!(receipt_ledger_visible_for_body_len(BODY_LEN_MAX));
     }
 
     #[test]
-    fn receipt_rail_hit_maps_cards_only_inside_rail() {
-        assert_eq!(receipt_rail_card_index(12.0, 12.0, 2), Some(0));
-        assert_eq!(receipt_rail_card_index(12.0, 45.0, 2), Some(1));
-        assert_eq!(receipt_rail_card_index(RECEIPT_RAIL_W as f64 + 1.0, 12.0, 2), None);
-        assert_eq!(receipt_rail_card_index(12.0, 90.0, 2), None);
+    fn receipt_ledger_hit_maps_cards_inside_torso_panel() {
+        let layout = Layout::new(Facing::Right, BODY_LEN_MAX, BUBBLE_W_DEFAULT);
+        let first = layout.receipt_ledger_row_rect(0);
+        assert_eq!(
+            receipt_ledger_card_index(&layout, 0, (first.x + 4.0) as f64, (first.y + 4.0) as f64, 2),
+            Some(0)
+        );
+        let second = layout.receipt_ledger_row_rect(1);
+        assert_eq!(
+            receipt_ledger_card_index(&layout, 0, (second.x + 4.0) as f64, (second.y + 4.0) as f64, 2),
+            Some(1)
+        );
+        assert_eq!(receipt_ledger_card_index(&layout, 0, 0.0, 0.0, 2), None);
     }
 
     #[test]
@@ -5126,20 +5217,25 @@ mod tests {
             time: "11:00:01",
             selected,
         };
-        // Two cards: index 0 selected, index 1 not. The ring sits in the 2px margin to the
-        // left of the card (rect.x = RECEIPT_RAIL_PAD = 8, ring from x=6), so sample there.
-        let mut pixmap = Pixmap::new(RECEIPT_RAIL_W, 120).expect("pixmap");
-        draw_receipt_rail(&mut pixmap, &font, &[card(true), card(false)]);
+        let layout = Layout::new(Facing::Right, BODY_LEN_MAX, BUBBLE_W_DEFAULT);
+        let mut pixmap = Pixmap::new(SURFACE_W, layout.surface_h()).expect("pixmap");
+        draw_torso_receipt_ledger(&mut pixmap, &font, &layout, &[card(true), card(false)], 0);
 
+        let first = layout.receipt_ledger_row_rect(0);
         let accent = |px: u32, py: u32| {
             let p = pixmap.pixel(px, py).expect("pixel in bounds");
             // Accent is (58,122,200) opaque — blue-dominant. The rail bg (36,42,48) is dark.
             p.blue() as i32 > p.red() as i32 + 40 && p.blue() > 140
         };
-        // Card 0 spans y∈[8,36]; its ring border is at x≈7, y≈22.
-        assert!(accent(7, 22), "selected card 0 must show the accent ring in its left margin");
-        // Card 1 spans y∈[41,69]; same left-margin x but NO ring → rail background, not accent.
-        assert!(!accent(7, 55), "unselected card 1 must not show an accent ring");
+        assert!(
+            accent((first.x - 1.0) as u32, (first.y + 8.0) as u32),
+            "selected card 0 must show the accent ring in its left margin"
+        );
+        let second = layout.receipt_ledger_row_rect(1);
+        assert!(
+            !accent((second.x - 1.0) as u32, (second.y + 8.0) as u32),
+            "unselected card 1 must not show an accent ring"
+        );
     }
 
     #[test]
@@ -5192,18 +5288,15 @@ mod tests {
     }
 
     #[test]
-    fn figure_and_receipt_rail_fit_within_requested_surface_at_max_stretch() {
-        // The summon-from-tuck clip bug: when the body is fully expanded the receipt rail is
-        // visible, so the surface must be SURFACE_W + RECEIPT_RAIL_W wide. The figure bbox
-        // lives in the SURFACE_W half (offset by RECEIPT_RAIL_W when the rail is drawn), so
-        // it must fit inside SURFACE_W — otherwise summoning from a tuck clips the rail or
-        // the figure. This pins both invariants together.
+    fn figure_and_receipt_ledger_fit_within_surface_at_max_stretch() {
+        let layout = Layout::new(Facing::Right, BODY_LEN_MAX, BUBBLE_W_DEFAULT);
         let bbox = figure_bbox(BODY_LEN_MAX);
-        assert!(receipt_rail_visible_for_body_len(BODY_LEN_MAX));
+        assert!(receipt_ledger_visible_for_body_len(BODY_LEN_MAX));
         assert!(bbox.x >= 0.0 && bbox.x + bbox.w <= SURFACE_W as f32,
-            "figure bbox must fit in the SURFACE_W half so the rail never clips it");
-        assert_eq!(SURFACE_W + RECEIPT_RAIL_W, 560 + 160,
-            "requested surface width at max stretch is SURFACE_W + RECEIPT_RAIL_W");
+            "figure bbox must fit inside SURFACE_W");
+        let panel = layout.output_panel_rect();
+        assert!(panel.x >= bbox.x && panel.x + panel.w <= bbox.x + bbox.w,
+            "receipt ledger panel must live inside the stretchable torso");
     }
 
     #[test]
@@ -5449,6 +5542,7 @@ mod tests {
                 alert_level: None,
                 activity: false,
                 receipt_rail: &[],
+                receipt_scroll: 0,
                 interior_rows: interior,
                 settings: &[],
                 onboarding: None,
@@ -5557,6 +5651,7 @@ mod tests {
                 alert_level: None,
                 activity: false,
                 receipt_rail: &[],
+                receipt_scroll: 0,
                 interior_rows: &interior,
                 settings: &[],
                 onboarding: None,
@@ -5740,6 +5835,7 @@ mod tests {
                 alert_level: Some(AlertLevel::Confirm),
                 activity: false,
                 receipt_rail: &[],
+                receipt_scroll: 0,
                 interior_rows: &[],
                 settings: &[],
                 onboarding: None,
@@ -5909,6 +6005,7 @@ mod tests {
                 alert_level: None,
                 activity: false,
                 receipt_rail: &[],
+                receipt_scroll: 0,
                 interior_rows: &[],
                 settings: &[],
                 onboarding: None,
@@ -6188,6 +6285,7 @@ mod tests {
                 alert_level: Some(AlertLevel::Confirm),
                 activity: false,
                 receipt_rail: &[],
+                receipt_scroll: 0,
                 interior_rows: &[],
                 settings: &[],
                 onboarding: None,
@@ -6249,6 +6347,7 @@ mod tests {
                 alert_level: None,
                 activity: false,
                 receipt_rail: &[],
+                receipt_scroll: 0,
                 interior_rows: &[],
                 settings: &[],
                 onboarding: None,
@@ -6875,6 +6974,7 @@ mod tests {
             alert_level: None,
             activity: false,
             receipt_rail: &[],
+            receipt_scroll: 0,
             interior_rows: &[],
             settings: &[],
             onboarding: None,
@@ -6971,6 +7071,7 @@ mod tests {
             alert_level,
             activity,
             receipt_rail: &[],
+            receipt_scroll: 0,
             interior_rows: &[],
             settings: &[],
             onboarding: None,
@@ -7077,6 +7178,7 @@ mod tests {
                 alert_level: None,
                 activity: false,
                 receipt_rail: &[],
+                receipt_scroll: 0,
                 interior_rows: &[],
                 settings: &[],
                 onboarding: None,
@@ -7200,6 +7302,7 @@ mod tests {
                 alert_level: None,
                 activity: false,
                 receipt_rail: &[],
+                receipt_scroll: 0,
                 interior_rows: &[],
                 settings: &[],
                 onboarding: None,
@@ -7262,6 +7365,7 @@ mod tests {
                 alert_level: None,
                 activity: false,
                 receipt_rail: &[],
+                receipt_scroll: 0,
                 interior_rows: &[],
                 settings: &[],
                 onboarding: None,
@@ -7406,6 +7510,7 @@ mod tests {
                 alert_level: None,
                 activity: false,
                 receipt_rail: &[],
+                receipt_scroll: 0,
                 interior_rows: &[],
                 settings: &[],
                 onboarding: None,
@@ -7475,6 +7580,7 @@ mod tests {
                 alert_level: None,
                 activity: false,
                 receipt_rail: &[],
+                receipt_scroll: 0,
                 interior_rows: &[],
                 settings: &[],
                 onboarding: None,

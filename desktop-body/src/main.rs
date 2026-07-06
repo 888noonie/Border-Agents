@@ -710,6 +710,7 @@ fn main() {
         input_focused: false,
         pending_effector: None,
         receipt_rail: VecDeque::new(),
+        receipt_scroll: 0,
         receipt_selected: None,
         active_surface: "session".to_string(),
         surfaces: Vec::new(),
@@ -1281,7 +1282,9 @@ struct App {
     /// Last 20 action_result cues, newest first. This is display state only; the full
     /// ActionReceipt stays soul-side.
     receipt_rail: VecDeque<ReceiptRailEntry>,
-    /// Index (into `receipt_rail`) of the entry the user last clicked, so the rail can draw a
+    /// Top row offset into `receipt_rail` while the expanded torso ledger is visible.
+    receipt_scroll: usize,
+    /// Index (into `receipt_rail`) of the entry the user last clicked, so the ledger can draw a
     /// selected-state ring. `None` = nothing selected. Kept pinned to the same logical entry
     /// as the rail grows (new entries push to the front, shifting indices).
     receipt_selected: Option<usize>,
@@ -1489,34 +1492,32 @@ impl App {
         (self.requested_surface_w() as f64, self.layout().surface_h() as f64)
     }
 
-    fn receipt_rail_visible(&self) -> bool {
+    fn receipt_ledger_visible(&self) -> bool {
         self.tucked.is_none()
             && self.pinned_layout().is_none()
-            && render::receipt_rail_visible_for_body_len(self.body_len)
+            && !self.settings_open
+            && !self.interior_open
+            && self.onboarding_panel.is_none()
+            && render::receipt_ledger_visible_for_body_len(self.body_len)
     }
 
     fn requested_surface_w(&self) -> u32 {
-        if self.receipt_rail_visible() {
-            render::SURFACE_W + render::RECEIPT_RAIL_W
-        } else {
-            render::SURFACE_W
-        }
+        render::SURFACE_W
     }
 
     fn body_hit_x(&self, x: f64) -> f64 {
-        if self.receipt_rail_visible() {
-            x - render::RECEIPT_RAIL_W as f64
-        } else {
-            x
-        }
+        x
     }
 
     fn offset_rect_for_body(&self, rect: render::Rect) -> render::Rect {
-        if self.receipt_rail_visible() {
-            render::Rect { x: rect.x + render::RECEIPT_RAIL_W as f32, ..rect }
-        } else {
-            rect
-        }
+        rect
+    }
+
+    fn clamp_receipt_scroll(&mut self) {
+        let layout = self.layout();
+        let budget = render::receipt_ledger_row_budget(&layout);
+        self.receipt_scroll =
+            render::clamp_receipt_scroll(self.receipt_scroll, self.receipt_rail.len(), budget);
     }
 
     fn point_in_tucked_summon(&self, edge: presence::Edge, x: f64, y: f64) -> bool {
@@ -1741,6 +1742,7 @@ impl App {
             alert_level: self.active_alert_level,
             activity: body_activity(self.action_in_flight.is_some(), self.awaiting_reply),
             receipt_rail: &receipt_rail_items,
+            receipt_scroll: self.receipt_scroll,
             interior_rows: if onboarding_view.is_some() { &[] } else { &interior_rows },
             settings: if onboarding_view.is_some() { &[] } else { &settings_rows },
             onboarding: onboarding_view.as_ref(),
@@ -2064,9 +2066,6 @@ impl App {
             // Head = move/dock handle; feet = stretch handle. The torso stays
             // mostly click-through — only the small torso action points catch input.
             let mut rects = Vec::new();
-            if self.receipt_rail_visible() {
-                rects.push((0, 0, render::RECEIPT_RAIL_W as i32, self.height as i32));
-            }
             rects.push(self.offset_rect_for_body(render::head_rect()).as_i32());
             rects.push(self.offset_rect_for_body(layout.feet_rect()).as_i32());
             // The external perimeter ring is retired — its controls live inside the torso as
@@ -2105,6 +2104,21 @@ impl App {
             if self.onboarding_panel.is_some() {
                 for rect in self.onboarding_panel_rects(&layout) {
                     rects.push(self.offset_rect_for_body(rect).as_i32());
+                }
+            }
+            if self.receipt_ledger_visible() {
+                let budget = render::receipt_ledger_row_budget(&layout);
+                let scroll = render::clamp_receipt_scroll(
+                    self.receipt_scroll,
+                    self.receipt_rail.len(),
+                    budget,
+                );
+                for vis in 0..budget {
+                    let idx = scroll + vis;
+                    if idx >= self.receipt_rail.len() {
+                        break;
+                    }
+                    rects.push(self.offset_rect_for_body(layout.receipt_ledger_row_rect(vis)).as_i32());
                 }
             }
             rects.push(self.offset_rect_for_body(layout.torso_action_rect(TorsoAction::Expand)).as_i32());
@@ -2212,6 +2226,8 @@ impl App {
                     .receipt_selected
                     .map(|i| i + 1)
                     .filter(|&i| i < self.receipt_rail.len());
+                self.receipt_scroll = 0;
+                self.clamp_receipt_scroll();
                 // A soul-authorized commandeer can carry a body-side follow-through: `pin` engages
                 // pinned presentation on the chosen window (the body follows; it never decides). A
                 // block clears the in-flight intent; needs_confirmation keeps it for the confirm.
@@ -2545,17 +2561,6 @@ impl App {
     fn on_press(&mut self, x: f64, y: f64, button: u32) {
         let secondary = button == BTN_RIGHT;
         let primary = button == BTN_LEFT;
-        if self.receipt_rail_visible() && x < render::RECEIPT_RAIL_W as f64 {
-            let target = if primary {
-                render::receipt_rail_card_index(x, y, self.receipt_rail.len())
-                    .map(PressTarget::ReceiptRail)
-                    .unwrap_or(PressTarget::Outside)
-            } else {
-                PressTarget::Outside
-            };
-            self.press = Some(PressState { target, secondary, started_at: Instant::now(), dist: 0.0, grabbed_sent: false, bloom_started: false });
-            return;
-        }
         let body_x = self.body_hit_x(x);
         let bloom_hit = self.surface_bloom_open.then(|| self.surface_bloom_hit_index(body_x, y)).flatten();
         if let Some(idx) = bloom_hit {
@@ -2645,6 +2650,22 @@ impl App {
             self.settings_row_at(body_x, y)
                 .map(PressTarget::SettingsRow)
                 .unwrap_or(PressTarget::Body)
+        } else if self.receipt_ledger_visible()
+            && render::torso_action_at(&layout, body_x, y).is_none()
+        {
+            if let Some(idx) = render::receipt_ledger_card_index(
+                &layout,
+                self.receipt_scroll,
+                body_x,
+                y,
+                self.receipt_rail.len(),
+            ) {
+                PressTarget::ReceiptRail(idx)
+            } else if layout.output_panel_rect().contains(body_x, y) {
+                PressTarget::Body
+            } else {
+                PressTarget::Outside
+            }
         } else if self.interior_open
             && layout.output_panel_rect().contains(body_x, y)
             && render::torso_action_at(&layout, body_x, y).is_none()
@@ -2750,6 +2771,7 @@ impl App {
             return;
         }
         self.body_len = len;
+        self.clamp_receipt_scroll();
         if let Some(layer) = self.layer.as_ref() {
             layer.set_size(self.requested_surface_w(), self.layout().surface_h());
             layer.commit();
@@ -3539,13 +3561,24 @@ impl App {
                 None => self.speech = Some("No text output to copy.".to_string()),
             },
             TorsoAction::Scroll => {
-                // Toggle the interior view — the perimeter controls fold into a labeled list
-                // inside the torso. Reset the speech bubble so it doesn't overlap the list. Also
-                // leaves the settings panel, since it shares the torso.
-                self.settings_open = false;
-                self.interior_open = !self.interior_open;
-                if self.interior_open {
-                    self.speech = None;
+                if self.receipt_ledger_visible() {
+                    let layout = self.layout();
+                    let budget = render::receipt_ledger_row_budget(&layout);
+                    let max_scroll = self.receipt_rail.len().saturating_sub(budget.max(1));
+                    self.receipt_scroll = if max_scroll == 0 {
+                        0
+                    } else {
+                        (self.receipt_scroll + 1) % (max_scroll + 1)
+                    };
+                } else {
+                    // Toggle the interior view — the perimeter controls fold into a labeled list
+                    // inside the torso. Reset the speech bubble so it doesn't overlap the list.
+                    // Also leaves the settings panel, since it shares the torso.
+                    self.settings_open = false;
+                    self.interior_open = !self.interior_open;
+                    if self.interior_open {
+                        self.speech = None;
+                    }
                 }
             }
         }

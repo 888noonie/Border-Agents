@@ -2417,3 +2417,15 @@ All 14 pinned test names present. Honesty sweep found **three F4-class fakes** (
 Process notes: builder added a third BodyView field `reader_copied` beyond the two allowed mechanical literals — same mechanical class, adjudicated acceptable (flag next time). Interleaved per-slice commits honored (6/6).
 
 Gates re-run post-fix with forced recompile: cargo **181+0/29**, release **9 warnings**, tsc clean, vitest **278/31**. Awaiting owner walk; push after.
+
+## Lead audit — post-walk live session (Fable, 2026-07-06)
+
+**Verdict: PASS, zero fixes. Push authorized.**
+
+Scope: 10 commits landed during/after the owner walk (`8ceeb8c..d952259`) by the live builder session — walk polish (scroll inversion, bubble width drag, tucked gaze sweep), speech-column top-strip move + side resize, receipt rail retired into a torso receipt ledger, full-stretch width reclaim, and the reader horizontal-drag series with edge squash.
+
+Method: same batch standard vs `688c6e6`. md5 sweep — 15 fns changed, 16 pure fns added, 4 removed (`draw_receipt_rail` family, replaced wholesale by the torso ledger). Removed-line sweep: 4 deleted tests all have honest replacements (`receipt_ledger_*`, `figure_and_receipt_ledger_fit_within_surface_at_max_stretch`, `reader_card_spans_surface`) plus 6 new drag/squash tests asserting concrete geometry. presence.rs frozen, zero TS, `awaiting_reply` clears untouched (zero diff hits). Palette law held: both candidate RGB triples pre-exist at `688c6e6`; the rest are black/white alphas.
+
+Adjudicated deviations (all owner-directed walk rulings, not builder drift): `draw_bump_eyes_awake` changed (tucked gaze sweep — F3c pattern extended to the bump); `scroll_delta_lines` direction inverted; receipt rail → torso ledger (receipts remain visible — law 6 visibility preserved, confirmed on the owner's walk screenshot). `reader_drag_layout` reviewed line-by-line: pure, min-width clamped both walls, unsquashes toward `pref_w` when room returns; call site applies it verbatim (main.rs:2062). 3 test-profile unused-var warnings pre-exist at `688c6e6` (verified by checkout), not a regression.
+
+Gates with forced recompile: cargo **187+0/29** (was 181: −4 rail, +10), release **9 warnings**, tsc clean, vitest **278/31**. Owner walk PASS (in-session; squash behavior confirmed live). Pushing.

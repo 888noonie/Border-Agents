@@ -2429,3 +2429,63 @@ Method: same batch standard vs `688c6e6`. md5 sweep — 15 fns changed, 16 pure 
 Adjudicated deviations (all owner-directed walk rulings, not builder drift): `draw_bump_eyes_awake` changed (tucked gaze sweep — F3c pattern extended to the bump); `scroll_delta_lines` direction inverted; receipt rail → torso ledger (receipts remain visible — law 6 visibility preserved, confirmed on the owner's walk screenshot). `reader_drag_layout` reviewed line-by-line: pure, min-width clamped both walls, unsquashes toward `pref_w` when room returns; call site applies it verbatim (main.rs:2062). 3 test-profile unused-var warnings pre-exist at `688c6e6` (verified by checkout), not a regression.
 
 Gates with forced recompile: cargo **187+0/29** (was 181: −4 rail, +10), release **9 warnings**, tsc clean, vitest **278/31**. Owner walk PASS (in-session; squash behavior confirmed live). Pushing.
+
+---
+
+## K-series batch — the torso becomes the connection panel — brief for Composergrok (3 slices: K1, K2, K3)
+
+Build K1 → K2 → K3 in order on top of head `cda8be1` (everything pushed, tree clean). **Interleave commits per slice**: feat K1, docs report K1, feat K2, docs report K2, feat K3, docs report K3. Do NOT push. STOP after K3 or immediately on any conflict rule.
+
+**Owner direction (ratified 2026-07-06):** the G-series freed the torso for connection controls (walk ruling 2026-07-05: "torso freed for future connection controls — decoupled, later slice"). This batch delivers it. The idle torso becomes the buddy's connection panel — who am I linked to, how healthy is the link, which surfaces can I reach — and the surface list becomes tappable, acting through the soul (law 7). Drift-canary check up front: this is a named user flow ("see and change what my buddy is connected to"), not a governance display.
+
+### Ground truth (lead-scouted anchors — verify before building)
+
+- The idle torso already wears the passport card: `snapshot_torso_output` (main.rs:~1800) maps `TorsoSurface::Session` → `TorsoSurfaceSnapshot::Passport { persona_label, posture, provider (active_provider → provider_label fallback), locality, route_health, output_preview: session_note }`; drawn by `draw_passport_card` (render.rs:3610) — posture tag, provider + locality-dot row with the degraded amber wash, one-line preview. K1 upgrades THIS card in place; it does not add a new torso surface.
+- Live route truth is stamped by the `surface_active` handler (main.rs:~2325–2345): `active_locality`, `active_route_health`, `active_provider`, plus `route_flash_until` on a local→cloud downgrade. Nothing new arrives on the wire in this batch.
+- Activity: the F5 pure fn `body_activity(action_in_flight, awaiting_reply)` (call site main.rs:1654). K1 reuses the fn for the card's status; the set/clear sites are frozen.
+- Surfaces: `ordered_surfaces()` (main.rs:3064) is the hydrate-pushed full ordered list (slice 2a). The activation guard + emission ALREADY EXIST at main.rs:~3180–3192 — unwired → `"{label}: not wired yet"` speech and NO emission; wired → `presence::surface_request_json` + `"Requesting surface: {surface}"`. K2 routes pill taps through this existing fn, never reimplements it. Launchers are skipped for activation (the `rotate_surfaces_for_bloom` skip, main.rs:97–106).
+- Hues are single-sourced: `route_health_ring_rgba` (render.rs:2364), `locality_dot_color` (render.rs:3829), `ring_hue_rgba` (render.rs:2226). Zero new RGB triples in this batch.
+- Input regions: torso hit rects register in `update_input_region` via `offset_rect_for_body` (main.rs:~2195). R4 lesson stands: every new hit target MUST be input-region-registered or clicks pass through the overlay — named test in K2.
+
+### Law (all three slices)
+
+1. Figure draw fns byte-frozen (lead audits by fn-body md5 sweep vs `cda8be1`). presence.rs byte-frozen (zero wire changes — `surface_request` exists). Zero TS changes (tsc clean, vitest 278/31).
+2. F5/G1 `awaiting_reply` set/clear sites untouched; `body_activity` fn body untouched; reader/bubble/J-series fns untouched; tucked bar hue language untouched (bar = identity + alert tips, F4 ruling).
+3. Palette: zero new colour RGBs. Reuse `route_health_ring_rgba` / `locality_dot_color` / existing inks; new alphas of existing RGBs allowed.
+4. Mechanical existing-test edits ONLY for the named new fields: `TorsoSurfaceSnapshot::Passport` / `PassportCard` gain `activity` (K1) and the pill data (K2) — add those literal lines to existing test constructors, nothing else. Any other forced test edit = STOP the batch and report the colliding pin.
+5. Release warnings stay 9. NO timers (green ruling): all feedback event-bracketed. The pre-existing `route_flash_until` timer is grandfathered — do not touch it, do not copy the pattern.
+6. Law 6: the torso receipt ledger stays visible exactly as shipped — the connection card must not displace or occlude it at any stretch.
+
+### Slice K1 — the connection card tells the live truth
+
+1. `draw_passport_card` grows into the connection card (same fn, same rect; no rename needed). Route row gains a health dot after the locality dot: 6px disc filled with `route_health_ring_rgba(health)` when Some, painted `BlendMode::Source` so the dot pixel equals the palette exactly (F4 precedent). The degraded amber row-wash stays.
+2. Honest empty state: `provider` None → the route row reads `No route yet` in muted ink [130,122,114]. Never a blank row.
+3. Status: `PassportCard`/`Passport` snapshot gain `activity: bool`, filled at the snapshot site with the F5 fn (`body_activity(...)` — reuse, don't inline). Pure fn `connection_status_line(activity: bool, provider: Option<&str>) -> String`: activity → `Working — talking to {provider}…` (provider absent → `Working…`), else the session-note preview as today. The card draws its output through this fn. Event-bracketed by construction (activity IS the F5 bracket).
+4. No new `BodyView` fields; the snapshot already flows through (law 4 covers the card literals).
+
+**Tests (5):** `connection_card_health_dot_matches_route_hue` (dot centre pixel == `route_health_ring_rgba` exactly, per health value), `connection_card_no_route_reads_honest` (None vs Some paint differ; no blank row), `connection_status_line_brackets_activity` (pure-fn pin, all four arms), `connection_card_activity_swaps_preview_for_working` (pixel: activity true vs false differ), `connection_card_fits_torso_rect` (all rows inside `output_panel_rect` at min stretch — no overflow, no mid-glyph clip via `fit_line`). **Gate: cargo 192+0/29.**
+**Commit:** `feat(body): laminal ring pivot — Slice K1 — connection card (live route truth: health dot, honest no-route, working status)`
+
+### Slice K2 — surfaces act from the card
+
+1. Surface pill row on the card, below the route row, above the preview (ledger untouched, law 6): `ordered_surfaces()` order, launchers excluded (the existing activation-skip class), measure-fit with an honest `+N` overflow marker when they don't all fit. Each pill: rounded rect, label fitted at 9px; ACTIVE surface pill highlighted (existing white@186 treatment); unwired pills DIMMED not hidden (slice 2a law).
+2. Pure layout fn `surface_pill_rects(font, avail_w, labels) -> Vec<Rect>` single-sources paint + hit-test (J pattern). Pill data (label, active, wired) rides `PassportCard` (law 4 literal).
+3. New `PressTarget::SurfacePill(usize)`; the hit maps through the same pure fn; dispatch calls the EXISTING activation fn (main.rs:~3180) — unwired taps get the existing "not wired yet" speech and emit NOTHING; wired taps emit `surface_request` and speak the existing "Requesting surface" line. No new copy, no new wire.
+4. The pill row rect registers in `update_input_region` (R4 lesson — named test).
+5. When `surface_active` lands, the active pill follows `active_surface` (already stamped) — no new state.
+
+**Tests (5):** `surface_pills_single_source_paint_and_hit`, `unwired_pill_dims_not_hides` (both painted; wired vs unwired differ), `pill_tap_routes_through_existing_activation` (hit index → surface id honors ordered_surfaces + launcher skip), `pill_row_registered_in_input_region`, `active_pill_follows_surface_active` (paint differs when active_surface changes). **Gate: cargo 197+0/29.**
+**Commit:** `feat(body): laminal ring pivot — Slice K2 — surface pills (the connection card acts: tap requests a surface through the soul)`
+
+### Slice K3 — the connection reaches every mode
+
+1. Tucked peek: the peek bubble gains a one-line connection chip (provider + health dot, same single-source helpers) — a tucked user reads link health without untucking. The chip lives INSIDE the peek bubble; the bar/bump hue language is untouched (law 2).
+2. Dock parity: card + pills render and hit correctly in every BB_DOCK mode incl. Both (head-over-bar paint order preserved); pill hit rects offset via the `offset_rect_for_body` pattern.
+3. Degenerate guards: at minimum stretch pills collapse to the `+N` marker; the route row never clips mid-glyph (`fit_line`); zero-surface hydrate → no pill row, no empty chrome.
+
+**Tests (4):** `tucked_peek_chip_mirrors_route_truth` (chip dot pixel == route hue; provider present), `tucked_bar_language_untouched` (bar pixels identical with/without route state), `pills_hit_correctly_in_both_dock` (offset hit-test), `min_stretch_collapses_pills_honestly` (+N marker, no clip, ledger intact). **Gate: cargo 201+0/29.**
+**Commit:** `feat(body): laminal ring pivot — Slice K3 — connection everywhere (tucked peek chip; dock parity; degenerate guards)`
+
+### Batch rules
+
+Gates per slice with forced recompile (`touch desktop-body/src/*.rs`): cargo 192/197/201 +0/29, release 9 known warnings, tsc clean, vitest 278/31. Existing tests pass unmodified except law 4's named mechanical literals. STOP after K3. Owner walk: idle torso reads persona + route (provider · locality · health dot) with the receipt ledger intact → type to the buddy → status reads Working… while the reply flies, clears when it lands → tap a wired surface pill → "Requesting surface" → `surface_active` lands, active pill moves, route row updates (watch the local→cloud flash) → tap an unwired pill → "not wired yet", nothing emitted → tuck → peek chip shows provider + health dot → spot-check pills in Both dock at min stretch (+N marker).

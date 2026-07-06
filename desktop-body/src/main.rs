@@ -725,6 +725,7 @@ fn main() {
         pending_effector: None,
         receipt_rail: VecDeque::new(),
         receipt_scroll: 0,
+        show_receipt_ledger: render::receipt_ledger_visible_for_body_len(startup_settings.body_len),
         receipt_selected: None,
         active_surface: "session".to_string(),
         surfaces: Vec::new(),
@@ -733,10 +734,9 @@ fn main() {
         available_targets: Vec::new(),
         settings_open: false,
         onboarding_panel: None,
-        // The interior control list is the primary surface for perimeter controls now — the
-        // external ring is gone, so the labeled in-torso list shows by default. Torso scroll
-        // toggles it away to reveal the torso output panel.
-        interior_open: true,
+        // Connection/output panel is the default torso view; torso scroll cycles interior and,
+        // at max stretch, the receipt ledger.
+        interior_open: false,
         active_posture: "work".to_string(),
         active_provider: None,
         active_locality: None,
@@ -1253,6 +1253,8 @@ struct App {
     /// panel, toggled by the Torso scroll action. While open, the torso output is hidden and a
     /// press inside the torso hits a labeled row instead of the body-drag handle.
     interior_open: bool,
+    /// Receipt ledger visibility at max stretch — torso scroll cycles away and back (law 6).
+    show_receipt_ledger: bool,
     configured: bool,
     press: Option<PressState>,
     drag: bool,
@@ -1532,7 +1534,8 @@ impl App {
     }
 
     fn receipt_ledger_visible(&self) -> bool {
-        self.tucked.is_none()
+        self.show_receipt_ledger
+            && self.tucked.is_none()
             && self.pinned_layout().is_none()
             && !self.settings_open
             && !self.interior_open
@@ -1792,6 +1795,7 @@ impl App {
             activity: body_activity(self.action_in_flight.is_some(), self.awaiting_reply),
             receipt_rail: &receipt_rail_items,
             receipt_scroll: self.receipt_scroll,
+            show_receipt_ledger: self.show_receipt_ledger,
             interior_rows: if onboarding_view.is_some() { &[] } else { &interior_rows },
             settings: if onboarding_view.is_some() { &[] } else { &settings_rows },
             onboarding: onboarding_view.as_ref(),
@@ -2892,6 +2896,11 @@ impl App {
         let now_expanded = render::receipt_ledger_visible_for_body_len(self.body_len);
         if was_expanded != now_expanded {
             self.sync_speech_column_width();
+            if now_expanded {
+                self.show_receipt_ledger = true;
+            } else {
+                self.show_receipt_ledger = false;
+            }
         } else if now_expanded {
             self.speech_bubble_w = render::clamp_bubble_w(
                 self.facing,
@@ -3658,8 +3667,7 @@ impl App {
             self.input_focused = false;
             self.speech = Some("Settings".to_string());
         } else {
-            // Back to the interior control list (the body's default torso view).
-            self.interior_open = true;
+            self.interior_open = false;
         }
         self.update_input_region();
     }
@@ -3738,21 +3746,20 @@ impl App {
                 None => self.speech = Some("No text output to copy.".to_string()),
             },
             TorsoAction::Scroll => {
-                if self.receipt_ledger_visible() {
-                    let layout = self.layout();
-                    let budget = render::receipt_ledger_row_budget(&layout);
-                    let max_scroll = self.receipt_rail.len().saturating_sub(budget.max(1));
-                    self.receipt_scroll = if max_scroll == 0 {
-                        0
-                    } else {
-                        (self.receipt_scroll + 1) % (max_scroll + 1)
-                    };
-                } else {
-                    // Toggle the interior view — the perimeter controls fold into a labeled list
-                    // inside the torso. Reset the speech bubble so it doesn't overlap the list.
-                    // Also leaves the settings panel, since it shares the torso.
+                if self.onboarding_panel.is_none() {
                     self.settings_open = false;
-                    self.interior_open = !self.interior_open;
+                    let layout = self.layout();
+                    let next = render::advance_torso_scroll(render::TorsoScrollState {
+                        at_max_stretch: render::receipt_ledger_visible_for_body_len(self.body_len),
+                        interior_open: self.interior_open,
+                        show_receipt_ledger: self.show_receipt_ledger,
+                        receipt_scroll: self.receipt_scroll,
+                        receipt_count: self.receipt_rail.len(),
+                        receipt_budget: render::receipt_ledger_row_budget(&layout),
+                    });
+                    self.interior_open = next.interior_open;
+                    self.show_receipt_ledger = next.show_receipt_ledger;
+                    self.receipt_scroll = next.receipt_scroll;
                     if self.interior_open {
                         self.speech = None;
                     }

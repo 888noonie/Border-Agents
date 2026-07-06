@@ -1762,6 +1762,8 @@ pub struct BodyView<'a> {
     pub receipt_rail: &'a [ReceiptRailItem<'a>],
     /// Top row offset into `receipt_rail` while the ledger is visible.
     pub receipt_scroll: usize,
+    /// User-toggled receipt ledger at max stretch (torso scroll cycles away and back).
+    pub show_receipt_ledger: bool,
     /// The interior view: perimeter controls folded into a labeled list inside the torso,
     /// toggled by the Torso scroll action. When non-empty, the torso output is hidden and a
     /// press inside the torso hits a row instead of the body-drag handle. Each item carries
@@ -1800,6 +1802,65 @@ pub struct ReaderPos {
 
 pub fn receipt_ledger_visible_for_body_len(body_len: f32) -> bool {
     body_len >= BODY_LEN_MAX
+}
+
+/// Torso scroll state machine input — pure so receipt paging and view cycling are unit-testable.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TorsoScrollState {
+    pub at_max_stretch: bool,
+    pub interior_open: bool,
+    pub show_receipt_ledger: bool,
+    pub receipt_scroll: usize,
+    pub receipt_count: usize,
+    pub receipt_budget: usize,
+}
+
+/// Result of one Torso scroll tap: the next panel + receipt page offset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TorsoScrollResult {
+    pub interior_open: bool,
+    pub show_receipt_ledger: bool,
+    pub receipt_scroll: usize,
+}
+
+/// Advance the torso scroll action. At max stretch the cycle is output → interior → receipt
+/// (paging receipts when they overflow) → output. Below max stretch it toggles output ↔ interior.
+pub fn advance_torso_scroll(state: TorsoScrollState) -> TorsoScrollResult {
+    let in_receipt = state.at_max_stretch && state.show_receipt_ledger && !state.interior_open;
+    if in_receipt {
+        let max_scroll = state.receipt_count.saturating_sub(state.receipt_budget.max(1));
+        if max_scroll > 0 && state.receipt_scroll < max_scroll {
+            return TorsoScrollResult {
+                interior_open: false,
+                show_receipt_ledger: true,
+                receipt_scroll: state.receipt_scroll + 1,
+            };
+        }
+        return TorsoScrollResult {
+            interior_open: false,
+            show_receipt_ledger: false,
+            receipt_scroll: 0,
+        };
+    }
+    if state.interior_open {
+        if state.at_max_stretch {
+            return TorsoScrollResult {
+                interior_open: false,
+                show_receipt_ledger: true,
+                receipt_scroll: 0,
+            };
+        }
+        return TorsoScrollResult {
+            interior_open: false,
+            show_receipt_ledger: false,
+            receipt_scroll: 0,
+        };
+    }
+    TorsoScrollResult {
+        interior_open: true,
+        show_receipt_ledger: false,
+        receipt_scroll: 0,
+    }
 }
 
 pub fn clamp_receipt_scroll(scroll: usize, total: usize, budget: usize) -> usize {
@@ -2033,7 +2094,7 @@ fn draw_body_content(
             draw_onboarding_view(pixmap, font, &view.layout, panel, view.color);
         } else if !view.settings.is_empty() {
             draw_settings_view(pixmap, font, &view.layout, view.settings, view.color);
-        } else if receipt_ledger_visible_for_body_len(view.layout.body_len) {
+        } else if receipt_ledger_visible_for_body_len(view.layout.body_len) && view.show_receipt_ledger {
             draw_torso_receipt_ledger(
                 pixmap,
                 font,
@@ -2843,6 +2904,7 @@ fn draw_interior_view(
         let text = truncate_to_width(font, row.text, text_px, max_w);
         draw_line(pixmap, font, &text, text_x, baseline, text_px, ink);
     }
+    draw_torso_actions(pixmap, layout);
 }
 
 /// The body-local settings panel: the same recessed torso card as the interior view, but each row
@@ -2913,6 +2975,7 @@ fn draw_settings_view(
             draw_line(pixmap, font, &value, right_limit - vw, baseline, text_px, dim_ink);
         }
     }
+    draw_torso_actions(pixmap, layout);
 }
 
 /// The wizard onboarding panel: soul-pushed section rendered inside the torso card. The body draws
@@ -3086,6 +3149,7 @@ fn draw_onboarding_view(
             shade(color, 0.28),
         );
     }
+    draw_torso_actions(pixmap, layout);
 }
 
 /// Lay the bloom pills out as two vertical columns flanking the torso — the dial renders
@@ -3532,9 +3596,7 @@ fn draw_torso_output(
         TorsoOutput::FileStub(card) => draw_media_stub(pixmap, font, content, card, false),
     }
 
-    draw_torso_action(pixmap, layout, TorsoAction::Expand);
-    draw_torso_action(pixmap, layout, TorsoAction::Copy);
-    draw_torso_action(pixmap, layout, TorsoAction::Scroll);
+    draw_torso_actions(pixmap, layout);
 }
 
 fn draw_session_card(pixmap: &mut Pixmap, font: &Font, rect: Rect, card: &SessionCard) {
@@ -3968,9 +4030,13 @@ fn draw_torso_receipt_ledger(
         }
     }
 
-    draw_torso_action(pixmap, layout, TorsoAction::Expand);
-    draw_torso_action(pixmap, layout, TorsoAction::Copy);
-    draw_torso_action(pixmap, layout, TorsoAction::Scroll);
+    draw_torso_actions(pixmap, layout);
+}
+
+fn draw_torso_actions(pixmap: &mut Pixmap, layout: &Layout) {
+    for action in [TorsoAction::Expand, TorsoAction::Copy, TorsoAction::Scroll] {
+        draw_torso_action(pixmap, layout, action);
+    }
 }
 
 fn receipt_glyph_color(glyph: &str) -> [u8; 3] {
@@ -5858,6 +5924,7 @@ mod tests {
                 activity: false,
                 receipt_rail: &[],
                 receipt_scroll: 0,
+                show_receipt_ledger: false,
                 interior_rows: interior,
                 settings: &[],
                 onboarding: None,
@@ -5967,6 +6034,7 @@ mod tests {
                 activity: false,
                 receipt_rail: &[],
                 receipt_scroll: 0,
+                show_receipt_ledger: false,
                 interior_rows: &interior,
                 settings: &[],
                 onboarding: None,
@@ -6151,6 +6219,7 @@ mod tests {
                 activity: false,
                 receipt_rail: &[],
                 receipt_scroll: 0,
+                show_receipt_ledger: false,
                 interior_rows: &[],
                 settings: &[],
                 onboarding: None,
@@ -6321,6 +6390,7 @@ mod tests {
                 activity: false,
                 receipt_rail: &[],
                 receipt_scroll: 0,
+                show_receipt_ledger: false,
                 interior_rows: &[],
                 settings: &[],
                 onboarding: None,
@@ -6601,6 +6671,7 @@ mod tests {
                 activity: false,
                 receipt_rail: &[],
                 receipt_scroll: 0,
+                show_receipt_ledger: false,
                 interior_rows: &[],
                 settings: &[],
                 onboarding: None,
@@ -6663,6 +6734,7 @@ mod tests {
                 activity: false,
                 receipt_rail: &[],
                 receipt_scroll: 0,
+                show_receipt_ledger: false,
                 interior_rows: &[],
                 settings: &[],
                 onboarding: None,
@@ -6968,6 +7040,85 @@ mod tests {
         assert!(panel.x + panel.w < torso.x + torso.w);
         assert!(panel.y + panel.h < torso.y + torso.h);
         assert!(tall.output_panel_rect().h > short.output_panel_rect().h);
+    }
+
+    #[test]
+    fn torso_scroll_cycles_out_of_receipt_view() {
+        let budget = 3usize;
+        let state = TorsoScrollState {
+            at_max_stretch: true,
+            interior_open: false,
+            show_receipt_ledger: true,
+            receipt_scroll: 0,
+            receipt_count: 2,
+            receipt_budget: budget,
+        };
+        let out = advance_torso_scroll(state);
+        assert!(!out.show_receipt_ledger, "single-page receipt ledger must yield to output on scroll");
+        assert!(!out.interior_open);
+        assert_eq!(out.receipt_scroll, 0);
+    }
+
+    #[test]
+    fn torso_scroll_pages_receipts_before_cycling_views() {
+        let budget = 2usize;
+        let mut state = TorsoScrollState {
+            at_max_stretch: true,
+            interior_open: false,
+            show_receipt_ledger: true,
+            receipt_scroll: 0,
+            receipt_count: 5,
+            receipt_budget: budget,
+        };
+        let max_scroll = state.receipt_count.saturating_sub(budget.max(1));
+        while state.receipt_scroll < max_scroll {
+            let next = advance_torso_scroll(state);
+            assert!(next.show_receipt_ledger);
+            assert_eq!(next.receipt_scroll, state.receipt_scroll + 1);
+            state.receipt_scroll = next.receipt_scroll;
+        }
+        let exit = advance_torso_scroll(state);
+        assert!(!exit.show_receipt_ledger);
+    }
+
+    #[test]
+    fn torso_scroll_toggles_interior_below_max_stretch() {
+        let idle = TorsoScrollState {
+            at_max_stretch: false,
+            interior_open: false,
+            show_receipt_ledger: false,
+            receipt_scroll: 0,
+            receipt_count: 0,
+            receipt_budget: 1,
+        };
+        let open = advance_torso_scroll(idle);
+        assert!(open.interior_open);
+        let closed = advance_torso_scroll(TorsoScrollState {
+            interior_open: open.interior_open,
+            ..idle
+        });
+        assert!(!closed.interior_open);
+    }
+
+    #[test]
+    fn interior_view_draws_torso_scroll_actions() {
+        let font = load_font().expect("font");
+        let layout = Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT);
+        let rows = [InteriorRow {
+            id: PerimeterId::Quick0,
+            glyph: "1",
+            text: "chat",
+            dim: false,
+        }];
+        let mut pixmap = Pixmap::new(SURFACE_W, layout.surface_h()).unwrap();
+        draw_interior_view(&mut pixmap, &font, &layout, &rows, CLAY_DEFAULT);
+        let scroll = layout.torso_action_rect(TorsoAction::Scroll);
+        let cx = (scroll.x + scroll.w / 2.0) as u32;
+        let cy = (scroll.y + scroll.h / 2.0) as u32;
+        assert!(
+            pixmap.pixel(cx, cy).is_some_and(|p| p.alpha() > 0),
+            "scroll affordance must paint on the interior view",
+        );
     }
 
     #[test]
@@ -7466,6 +7617,7 @@ mod tests {
                 activity: false,
                 receipt_rail: &[],
                 receipt_scroll: 0,
+                show_receipt_ledger: false,
                 interior_rows: &[],
                 settings: &[],
                 onboarding: None,
@@ -7701,6 +7853,7 @@ mod tests {
             activity: false,
             receipt_rail: &[],
             receipt_scroll: 0,
+            show_receipt_ledger: false,
             interior_rows: &[],
             settings: &[],
             onboarding: None,
@@ -7798,6 +7951,7 @@ mod tests {
             activity,
             receipt_rail: &[],
             receipt_scroll: 0,
+            show_receipt_ledger: false,
             interior_rows: &[],
             settings: &[],
             onboarding: None,
@@ -7905,6 +8059,7 @@ mod tests {
                 activity: false,
                 receipt_rail: &[],
                 receipt_scroll: 0,
+                show_receipt_ledger: false,
                 interior_rows: &[],
                 settings: &[],
                 onboarding: None,
@@ -8099,6 +8254,7 @@ mod tests {
                 activity: false,
                 receipt_rail: &[],
                 receipt_scroll: 0,
+                show_receipt_ledger: false,
                 interior_rows: &[],
                 settings: &[],
                 onboarding: None,
@@ -8162,6 +8318,7 @@ mod tests {
                 activity: false,
                 receipt_rail: &[],
                 receipt_scroll: 0,
+                show_receipt_ledger: false,
                 interior_rows: &[],
                 settings: &[],
                 onboarding: None,
@@ -8307,6 +8464,7 @@ mod tests {
                 activity: false,
                 receipt_rail: &[],
                 receipt_scroll: 0,
+                show_receipt_ledger: false,
                 interior_rows: &[],
                 settings: &[],
                 onboarding: None,
@@ -8377,6 +8535,7 @@ mod tests {
                 activity: false,
                 receipt_rail: &[],
                 receipt_scroll: 0,
+                show_receipt_ledger: false,
                 interior_rows: &[],
                 settings: &[],
                 onboarding: None,

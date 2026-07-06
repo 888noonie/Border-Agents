@@ -2516,4 +2516,17 @@ feat(body): laminal ring pivot — Slice K2 — surface pills (the connection ca
 
 `SurfacePill` + `surface_pill_rects` single-source paint/hit; pill row on card; `PressTarget::SurfacePill` → existing `request_surface` (unwired speech, wired `surface_request_json`). Input-region registration via `passport_pill_hit_rects` in `update_input_region`. Five named tests. Gates: cargo 197+0/29.
 
+## Builder report — K3 (Grok Build, 2026-07-06)
+
+**Status:** K3 complete. **Stopped after K3.** Not pushed.
+
+### Commit
+
+```
+821f75f
+feat(body): laminal ring pivot — Slice K3 — connection everywhere (tucked peek chip; dock parity; degenerate guards)
+```
+
+`tucked_connection_chip` + peek-bubble chip (provider + health dot, bar hue untouched); `pills_hit_correctly_in_both_dock` (Facing L/R); `min_stretch_collapses_pills_honestly` (+N, ledger path untouched). Four named tests. Gates: cargo **201+0/29**, release **9 warnings**, tsc clean, vitest **278/31**. presence.rs byte-untouched; F5/G1 `awaiting_reply` clears untouched.
+
 

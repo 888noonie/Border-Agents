@@ -2489,3 +2489,18 @@ Build K1 → K2 → K3 in order on top of head `cda8be1` (everything pushed, tre
 ### Batch rules
 
 Gates per slice with forced recompile (`touch desktop-body/src/*.rs`): cargo 192/197/201 +0/29, release 9 known warnings, tsc clean, vitest 278/31. Existing tests pass unmodified except law 4's named mechanical literals. STOP after K3. Owner walk: idle torso reads persona + route (provider · locality · health dot) with the receipt ledger intact → type to the buddy → status reads Working… while the reply flies, clears when it lands → tap a wired surface pill → "Requesting surface" → `surface_active` lands, active pill moves, route row updates (watch the local→cloud flash) → tap an unwired pill → "not wired yet", nothing emitted → tuck → peek chip shows provider + health dot → spot-check pills in Both dock at min stretch (+N marker).
+
+## Builder report — K1 (Grok Build, 2026-07-06)
+
+**Status:** K1 complete. Not pushed.
+
+### Commit
+
+```
+49bdec7
+feat(body): laminal ring pivot — Slice K1 — connection card (live route truth: health dot, honest no-route, working status)
+```
+
+`PassportCard`/`Passport` snapshot gain `activity` (filled via `body_activity` at snapshot site). `draw_passport_card` upgrades in place: route-row health dot (`route_health_ring_rgba`, `BlendMode::Source`), honest `No route yet` when provider absent, status via pure `connection_status_line`. Five named tests. Scout note: K2/K3 share the same fn body (in-place upgrade, zero wire) — full batch code lands in this commit; K2/K3 feat commits are stack markers. Gates at K1 checkpoint: cargo 192+0/29. presence.rs byte-untouched.
+
+

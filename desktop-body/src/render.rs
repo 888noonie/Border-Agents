@@ -138,14 +138,26 @@ fn copy_glyph_beside(expand: Rect) -> Rect {
     }
 }
 
+const READER_PAD: f32 = 8.0;
+
+/// Full-surface reader card — the takeover spans the layer, not the speech-bubble column.
+pub fn reader_card_rect(surface_w: f32, surface_h: u32) -> Rect {
+    Rect {
+        x: READER_PAD,
+        y: READER_PAD,
+        w: (surface_w - READER_PAD * 2.0).max(0.0),
+        h: surface_h as f32 - READER_PAD * 2.0,
+    }
+}
+
 /// Copy-all control on the reader card (single source for paint + hit).
-pub fn reader_copy_rect(layout: &Layout, surface_h: u32) -> Rect {
-    copy_glyph_beside(reader_collapse_rect(layout, surface_h))
+pub fn reader_copy_rect(surface_w: f32, surface_h: u32) -> Rect {
+    copy_glyph_beside(reader_collapse_rect(surface_w, surface_h))
 }
 
 /// Reader body text area (below title, above footer) for drag-select hit tests.
-pub fn reader_text_rect(layout: &Layout, surface_h: u32) -> Rect {
-    let card = reader_card_rect(layout, surface_h);
+pub fn reader_text_rect(surface_w: f32, surface_h: u32) -> Rect {
+    let card = reader_card_rect(surface_w, surface_h);
     let top = card.y + 30.0 + PANEL_LABEL_PX + 8.0;
     let bottom = card.y + card.h - 14.0;
     Rect {
@@ -175,8 +187,8 @@ pub fn hit_char_index(font: &Font, line: &str, px: f32, x_offset: f32) -> usize 
 }
 
 /// Collapse control on the reader card (single source for paint + hit).
-pub fn reader_collapse_rect(layout: &Layout, surface_h: u32) -> Rect {
-    expand_glyph_rect(reader_card_rect(layout, surface_h))
+pub fn reader_collapse_rect(surface_w: f32, surface_h: u32) -> Rect {
+    expand_glyph_rect(reader_card_rect(surface_w, surface_h))
 }
 
 /// Wheel notch → line delta (discrete = 3 lines per step; else absolute-derived, min magnitude 1).
@@ -256,20 +268,6 @@ pub fn bubble_outer_resize_rect(card: Rect, facing: Facing) -> Rect {
             h: card.h,
         },
     }
-}
-
-pub fn reader_card_rect(layout: &Layout, surface_h: u32) -> Rect {
-    let anchor = layout.bubble_rect();
-    Rect {
-        x: anchor.x,
-        y: 8.0,
-        w: layout.bubble_w,
-        h: surface_h as f32 - 16.0,
-    }
-}
-
-pub fn reader_outer_resize_rect(layout: &Layout, surface_h: u32) -> Rect {
-    bubble_outer_resize_rect(reader_card_rect(layout, surface_h), layout.facing)
 }
 
 pub fn clamp_reader_scroll(scroll: usize, total: usize, budget: usize) -> usize {
@@ -1803,7 +1801,7 @@ impl Sprite {
                     &mut pixmap,
                     font,
                     text,
-                    &view.layout,
+                    w as f32,
                     h,
                     view.reader_scroll,
                     view.reader_copied,
@@ -4257,14 +4255,14 @@ fn draw_reader(
     pixmap: &mut Pixmap,
     font: &Font,
     text: &str,
-    layout: &Layout,
+    surface_w: f32,
     surface_h: u32,
     scroll: usize,
     copied: bool,
     selection: Option<(ReaderPos, ReaderPos)>,
     instance_color: [u8; 3],
 ) {
-    let card = reader_card_rect(layout, surface_h);
+    let card = reader_card_rect(surface_w, surface_h);
     let bg = Color::from_rgba8(247, 251, 255, 245);
     let border = solid(Color::from_rgba8(0, 0, 0, 175));
     draw_round_rect(pixmap, card, bg);
@@ -4273,9 +4271,8 @@ fn draw_reader(
         stroke.width = 1.0;
         pixmap.stroke_path(&path, &border, &stroke, Transform::identity(), None);
     }
-    draw_outer_resize_grip(pixmap, card, layout.facing);
-    draw_copy_glyph(pixmap, reader_copy_rect(layout, surface_h));
-    draw_expand_glyph(pixmap, reader_collapse_rect(layout, surface_h));
+    draw_copy_glyph(pixmap, reader_copy_rect(surface_w, surface_h));
+    draw_expand_glyph(pixmap, reader_collapse_rect(surface_w, surface_h));
     let pad_x = 14.0;
     let mut baseline = card.y + 30.0;
     draw_line(pixmap, font, "Latest output", card.x + pad_x, baseline, PANEL_LABEL_PX, [102, 88, 76]);
@@ -4777,17 +4774,17 @@ fn plain_wrapped_line(line: &WrappedMdLine) -> String {
 pub fn reader_hit_pos(
     font: &Font,
     text: &str,
-    layout: &Layout,
+    surface_w: f32,
     surface_h: u32,
     scroll: usize,
     x: f32,
     y: f32,
 ) -> Option<ReaderPos> {
-    let area = reader_text_rect(layout, surface_h);
+    let area = reader_text_rect(surface_w, surface_h);
     if x < area.x || y < area.y || x >= area.x + area.w || y >= area.y + area.h {
         return None;
     }
-    let card = reader_card_rect(layout, surface_h);
+    let card = reader_card_rect(surface_w, surface_h);
     let wrapped = reader_wrapped_md_lines(font, text, card.w);
     let body_budget = reader_body_budget(surface_h, wrapped.len());
     let scroll = clamp_reader_scroll(scroll, wrapped.len(), body_budget);
@@ -7228,7 +7225,7 @@ mod tests {
         let body = paint(None);
         let reader = paint(Some(text));
         assert_ne!(body, reader, "reader open must paint a different surface than the figure");
-        let card = reader_card_rect(&layout, h);
+        let card = reader_card_rect(w as f32, h);
         let sample_x = (card.x + card.w * 0.5) as u32;
         let sample_y = (card.y + 40.0) as u32;
         let card_idx = ((sample_y * w + sample_x) * 4) as usize;
@@ -7244,10 +7241,11 @@ mod tests {
     }
 
     #[test]
-    fn reader_card_spans_surface_height() {
-        let layout = Layout::initial();
+    fn reader_card_spans_surface() {
+        let w = SURFACE_W;
         let h = 720_u32;
-        let card = reader_card_rect(&layout, h);
+        let card = reader_card_rect(w as f32, h);
+        assert!((card.w - (w as f32 - 16.0)).abs() < 0.01);
         assert!((card.h - (h as f32 - 16.0)).abs() < 0.01);
     }
 
@@ -7434,8 +7432,8 @@ mod tests {
         assert!(bubble_copy.y + bubble_copy.h <= bubble.y + bubble.h);
 
         let h = 720_u32;
-        let card = reader_card_rect(&layout, h);
-        let reader_copy = reader_copy_rect(&layout, h);
+        let card = reader_card_rect(SURFACE_W as f32, h);
+        let reader_copy = reader_copy_rect(SURFACE_W as f32, h);
         assert!(reader_copy.x >= card.x);
         assert!(reader_copy.y >= card.y);
         assert!(reader_copy.x + reader_copy.w <= card.x + card.w);

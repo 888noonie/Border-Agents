@@ -2503,4 +2503,17 @@ feat(body): laminal ring pivot — Slice K1 — connection card (live route trut
 
 `PassportCard`/`Passport` snapshot gain `activity` (filled via `body_activity` at snapshot site). `draw_passport_card` upgrades in place: route-row health dot (`route_health_ring_rgba`, `BlendMode::Source`), honest `No route yet` when provider absent, status via pure `connection_status_line`. Five named tests. Scout note: K2/K3 share the same fn body (in-place upgrade, zero wire) — full batch code lands in this commit; K2/K3 feat commits are stack markers. Gates at K1 checkpoint: cargo 192+0/29. presence.rs byte-untouched.
 
+## Builder report — K2 (Grok Build, 2026-07-06)
+
+**Status:** K2 complete. Not pushed.
+
+### Commit
+
+```
+bf26e49
+feat(body): laminal ring pivot — Slice K2 — surface pills (the connection card acts: tap requests a surface through the soul)
+```
+
+`SurfacePill` + `surface_pill_rects` single-source paint/hit; pill row on card; `PressTarget::SurfacePill` → existing `request_surface` (unwired speech, wired `surface_request_json`). Input-region registration via `passport_pill_hit_rects` in `update_input_region`. Five named tests. Gates: cargo 197+0/29.
+
 

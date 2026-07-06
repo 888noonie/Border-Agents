@@ -196,22 +196,37 @@ pub fn reader_collapse_rect(surface_w: f32, surface_h: u32) -> Rect {
 }
 
 /// After a horizontal drag (or refit), slide the reader and squash its width against screen edges.
-/// The natural width is restored whenever there is room; only the edge being pushed into compresses.
+/// Right push: pin the right edge and compress as `left` moves. Left push: pin `left` at 0 and
+/// compress `current_w`; dragging back restores toward `pref_w` whenever there is room.
 pub fn reader_drag_layout(
     margin_left: f64,
+    current_w: f64,
     pref_w: f64,
     dx: f64,
     sw: f64,
 ) -> (f64, f64) {
     let min_w = f64::from(READER_W_MIN);
     let pref_w = pref_w.max(min_w);
+    let current_w = current_w.max(min_w);
 
     if !sw.is_finite() || sw > 1e9 {
-        return ((margin_left + dx).max(0.0), pref_w);
+        let proposed_left = margin_left + dx;
+        if proposed_left < 0.0 {
+            return (0.0, (current_w + proposed_left).max(min_w));
+        }
+        return (proposed_left.max(0.0), pref_w);
+    }
+
+    let proposed_left = margin_left + dx;
+
+    // Push into the left wall — pin x=0 and eat the over-drag out of width.
+    if proposed_left < 0.0 {
+        let w = (current_w + proposed_left).max(min_w).min(sw);
+        return (0.0, w);
     }
 
     let max_left = (sw - min_w).max(0.0);
-    let mut left = (margin_left + dx).clamp(0.0, max_left);
+    let left = proposed_left.min(max_left);
     let available = (sw - left).max(0.0);
     let w = if available < min_w {
         available
@@ -7295,33 +7310,46 @@ mod tests {
     fn reader_drag_squashes_against_right_edge() {
         let pref = 720.0;
         let sw = 1920.0;
-        let (left, w) = reader_drag_layout(500.0, pref, 100.0, sw);
+        let (left, w) = reader_drag_layout(500.0, pref, pref, 100.0, sw);
         assert!((left - 600.0).abs() < 0.5);
         assert!((w - pref).abs() < 0.5);
-        let (left, w) = reader_drag_layout(1200.0, pref, 400.0, sw);
+        let (left, w) = reader_drag_layout(1200.0, pref, pref, 400.0, sw);
         assert!((left - 1600.0).abs() < 0.5);
         assert!((w - (sw - 1600.0)).abs() < 0.5);
         assert!(left + w <= sw + 0.5);
     }
 
     #[test]
-    fn reader_drag_stops_at_left_edge_and_unsquashes_when_pulling_back() {
+    fn reader_drag_squashes_against_left_edge() {
         let pref = 720.0;
         let sw = 1920.0;
-        let (left, w) = reader_drag_layout(0.0, pref, -40.0, sw);
+        let (left, w) = reader_drag_layout(0.0, pref, pref, -40.0, sw);
         assert_eq!(left, 0.0);
+        assert!((w - (pref - 40.0)).abs() < 0.5);
+
+        let (left, w) = reader_drag_layout(100.0, pref, pref, -250.0, sw);
+        assert_eq!(left, 0.0);
+        assert!((w - (pref - 150.0)).abs() < 0.5);
+    }
+
+    #[test]
+    fn reader_drag_unsquashes_when_pulling_back_from_either_edge() {
+        let pref = 720.0;
+        let sw = 1920.0;
+        let (left, w) = reader_drag_layout(0.0, 680.0, pref, 60.0, sw);
+        assert!((left - 60.0).abs() < 0.5);
         assert!((w - pref).abs() < 0.5);
 
-        let (left, w) = reader_drag_layout(1500.0, pref, 0.0, sw);
+        let (left, w) = reader_drag_layout(1500.0, sw - 1500.0, pref, 0.0, sw);
         assert!((w - (sw - 1500.0)).abs() < 0.5);
-        let (left, w) = reader_drag_layout(left, pref, -200.0, sw);
+        let (left, w) = reader_drag_layout(left, w, pref, -200.0, sw);
         assert!((left - 1300.0).abs() < 0.5);
         assert!(w > sw - 1500.0);
     }
 
     #[test]
     fn reader_drag_never_uses_negative_left_margin() {
-        let (left, _) = reader_drag_layout(-500.0, 720.0, 0.0, 1920.0);
+        let (left, _) = reader_drag_layout(-500.0, 720.0, 720.0, 0.0, 1920.0);
         assert_eq!(left, 0.0);
     }
 

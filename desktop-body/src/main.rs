@@ -2059,7 +2059,7 @@ impl App {
         }
         let (sw, _) = self.screen.unwrap_or((f64::MAX, f64::MAX));
         let pref = self.reader_pref_w as f64;
-        let (left, w) = render::reader_drag_layout(self.margin_left, pref, dx, sw);
+        let (left, w) = render::reader_drag_layout(self.margin_left, self.width as f64, pref, dx, sw);
         let w_u = w.round().max(1.0) as u32;
         let size_changed = w_u != self.width;
         self.margin_left = left;

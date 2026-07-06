@@ -233,6 +233,18 @@ fn clamp_figure_margins(
     (margin_left.clamp(min_left, max_left), margin_top.clamp(min_top, max_top))
 }
 
+/// Pure margin clamp for the full-height reader panel: keep the whole layer on-screen.
+/// Unlike the figure clamp, negative left margins are not used — compositors clip the
+/// right edge but often let the surface draw past the left when `margin_left` is negative.
+fn clamp_reader_margin_left(margin_left: f64, panel_w: f64, sw: f64) -> f64 {
+    if !sw.is_finite() || sw > 1e9 {
+        return margin_left.max(0.0);
+    }
+    let min_left = 0.0;
+    let max_left = (sw - panel_w).max(0.0);
+    margin_left.clamp(min_left, max_left)
+}
+
 /// Pure tuck-edge selector: returns the nearest screen edge whose gap to the figure bbox is
 /// below `threshold`, or `None`. Symmetric across all four edges because it measures to the
 /// figure bbox (which the drag clamp keeps on-screen), not the head — so the right/top/bottom
@@ -2044,14 +2056,10 @@ impl App {
         self.margin_top = top;
     }
 
-    /// Keep at least a sliver of the reader panel on-screen while sliding it horizontally.
+    /// Keep the full reader panel inside the screen while sliding it horizontally.
     fn clamp_reader_margins(&mut self) {
         let (sw, _) = self.screen.unwrap_or((f64::MAX, f64::MAX));
-        let keep = render::DRAG_KEEP_VISIBLE as f64;
-        let w = self.width as f64;
-        let min_left = keep - w;
-        let max_left = (sw - keep).max(min_left);
-        self.margin_left = self.margin_left.clamp(min_left, max_left);
+        self.margin_left = clamp_reader_margin_left(self.margin_left, self.width as f64, sw);
     }
 
     /// Input region = only the parts that should catch the pointer; everywhere else
@@ -4650,6 +4658,38 @@ mod tests {
         assert_eq!(top, sh - keep - fig.y as f64);
         let (_, top) = clamp_figure_margins(0.0, -5000.0, fig, (sw, sh), keep);
         assert_eq!(top, keep - (fig.y + fig.h) as f64);
+    }
+
+    #[test]
+    fn reader_clamp_keeps_the_full_panel_on_screen() {
+        let w = 720.0;
+        let sw = 1920.0;
+
+        assert_eq!(clamp_reader_margin_left(-200.0, w, sw), 0.0);
+        assert_eq!(clamp_reader_margin_left(0.0, w, sw), 0.0);
+        assert_eq!(clamp_reader_margin_left(500.0, w, sw), 500.0);
+        assert_eq!(clamp_reader_margin_left(10_000.0, w, sw), sw - w);
+
+        let left = clamp_reader_margin_left(10_000.0, w, sw);
+        assert!(left >= 0.0);
+        assert!(left + w <= sw + 0.5);
+    }
+
+    #[test]
+    fn reader_clamp_never_uses_negative_left_margin() {
+        let left = clamp_reader_margin_left(-5000.0, 560.0, 1920.0);
+        assert_eq!(left, 0.0);
+    }
+
+    #[test]
+    fn reader_clamp_degrades_when_screen_is_narrower_than_panel() {
+        assert_eq!(clamp_reader_margin_left(400.0, 720.0, 640.0), 0.0);
+    }
+
+    #[test]
+    fn reader_clamp_without_screen_bounds_only_blocks_negative_left() {
+        assert_eq!(clamp_reader_margin_left(-12.0, 720.0, f64::MAX), 0.0);
+        assert_eq!(clamp_reader_margin_left(48.0, 720.0, f64::MAX), 48.0);
     }
 
     #[test]

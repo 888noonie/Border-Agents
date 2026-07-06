@@ -620,6 +620,15 @@ fn reader_reset_state() -> (usize, bool, Option<(render::ReaderPos, render::Read
     (0, false, None)
 }
 
+/// Height of the reader takeover surface: the full screen when known, else the current
+/// surface height (honest fallback). Single-sourced because `self.height` only updates
+/// when the compositor's configure lands — a reader-path resize that passes raw
+/// `self.height` can re-request the stale pre-reader height and chop the takeover
+/// (the squash-at-open walk finding, 2026-07-06).
+fn reader_takeover_h(screen: Option<(f64, f64)>, fallback_h: u32) -> u32 {
+    screen.map(|(_, h)| h as u32).unwrap_or(fallback_h)
+}
+
 trait IfEmpty {
     fn if_empty(self, fallback: &str) -> String;
 }
@@ -2095,7 +2104,9 @@ impl App {
         let size_changed = w_u != self.width;
         self.margin_left = left;
         if size_changed {
-            self.set_layer_size(w_u, self.height);
+            // NOT raw self.height: at reader open the full-height request is still in
+            // flight, and re-sending the stale height here chops the takeover.
+            self.set_layer_size(w_u, reader_takeover_h(self.screen, self.height));
             self.width = w_u;
             self.clamp_reader_scroll_on_resize();
             self.update_input_region();
@@ -3800,7 +3811,7 @@ impl App {
             h: self.height,
             tucked: self.tucked,
         });
-        let screen_h = self.screen.map(|(_, h)| h as u32).unwrap_or(self.height);
+        let screen_h = reader_takeover_h(self.screen, self.height);
         self.reader_pref_w = self.requested_surface_w();
         self.set_layer_size(self.reader_pref_w, screen_h);
         self.width = self.reader_pref_w;
@@ -4959,6 +4970,18 @@ mod tests {
         assert_eq!(scroll, 0);
         assert!(!copied);
         assert!(selection.is_none());
+    }
+
+    #[test]
+    fn reader_resize_keeps_takeover_height() {
+        // Pins the one height derivation BOTH reader resize sites use (open + the
+        // horizontal-drag squash path). With the screen known the takeover is always
+        // the full screen height — never the pre-reader surface height, which is what
+        // chopped the reader when squash fired at open (walk finding 2026-07-06).
+        assert_eq!(reader_takeover_h(Some((1365.0, 853.0)), 444), 853);
+        assert_eq!(reader_takeover_h(Some((2048.0, 1280.0)), 444), 1280);
+        // Honest fallback: screen unknown → current surface height, not a guess.
+        assert_eq!(reader_takeover_h(None, 444), 444);
     }
 
     #[test]

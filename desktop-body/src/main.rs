@@ -1027,6 +1027,8 @@ enum PressTarget {
     ReaderCopy,
     /// Drag-select text inside the reader body.
     ReaderText,
+    /// Drag the reader title strip to slide the panel left/right on-screen.
+    ReaderMove,
     /// Drag the speech bubble's outer edge (away from the body) to resize width.
     BubbleOuterResize,
     /// The legs/feet zone — dragging it vertically stretches the body.
@@ -2025,6 +2027,10 @@ impl App {
     /// margins may go negative to reach the left/top edges. On a screen smaller than the
     /// keep-visible sliver, the range collapses so the clamp still degrades sanely.
     fn clamp_margins(&mut self) {
+        if self.reader_saved.is_some() {
+            self.clamp_reader_margins();
+            return;
+        }
         let (sw, sh) = self.screen.unwrap_or((f64::MAX, f64::MAX));
         let fig = render::figure_bbox(self.body_len);
         let (left, top) = clamp_figure_margins(
@@ -2036,6 +2042,16 @@ impl App {
         );
         self.margin_left = left;
         self.margin_top = top;
+    }
+
+    /// Keep at least a sliver of the reader panel on-screen while sliding it horizontally.
+    fn clamp_reader_margins(&mut self) {
+        let (sw, _) = self.screen.unwrap_or((f64::MAX, f64::MAX));
+        let keep = render::DRAG_KEEP_VISIBLE as f64;
+        let w = self.width as f64;
+        let min_left = keep - w;
+        let max_left = (sw - keep).max(min_left);
+        self.margin_left = self.margin_left.clamp(min_left, max_left);
     }
 
     /// Input region = only the parts that should catch the pointer; everywhere else
@@ -2052,6 +2068,7 @@ impl App {
                 (0, 0, self.width as i32, self.height as i32),
                 render::reader_copy_rect(sw, self.height).as_i32(),
                 render::reader_collapse_rect(sw, self.height).as_i32(),
+                render::reader_move_drag_rect(sw, self.height).as_i32(),
             ]
         } else if let Some(edge) = self.tucked {
             let bump = edge_to_bump(edge);
@@ -2604,13 +2621,17 @@ impl App {
                 PressTarget::ReaderCollapse
             } else if render::reader_copy_rect(sw, self.height).contains(x, y) {
                 PressTarget::ReaderCopy
+            } else if render::reader_move_drag_rect(sw, self.height).contains(x, y) {
+                PressTarget::ReaderMove
             } else if render::reader_text_rect(sw, self.height).contains(x, y) {
                 PressTarget::ReaderText
             } else {
                 PressTarget::Outside
             };
             self.press = Some(PressState { target, secondary, started_at: Instant::now(), dist: 0.0, grabbed_sent: false, bloom_started: false });
-            if primary && target == PressTarget::ReaderText {
+            if primary && target == PressTarget::ReaderMove {
+                self.drag = true;
+            } else if primary && target == PressTarget::ReaderText {
                 self.anchor_reader_selection(x, y);
             }
             return;
@@ -2769,6 +2790,12 @@ impl App {
             self.adjust_speech_column_width(delta);
             return;
         }
+        if press.target == PressTarget::ReaderMove {
+            self.margin_left += dx;
+            self.clamp_reader_margins();
+            self.reposition();
+            return;
+        }
         if self.drag {
             self.margin_left += dx;
             self.margin_top += dy;
@@ -2892,6 +2919,9 @@ impl App {
                 self.persist_settings();
                 return;
             }
+            if press.target == PressTarget::ReaderMove {
+                return;
+            }
             // A head or body drag ended. If it came to rest near an edge, tuck it there;
             // otherwise report where it landed so the placement can be persisted.
             if matches!(press.target, PressTarget::Head | PressTarget::Body) {
@@ -2967,6 +2997,9 @@ impl App {
                     None => false,
                 };
                 self.reader_copied = copied;
+            }
+            PressTarget::ReaderMove => {
+                self.input_focused = false;
             }
             PressTarget::ReaderText => {
                 self.input_focused = false;

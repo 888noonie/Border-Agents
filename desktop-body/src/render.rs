@@ -139,6 +139,8 @@ fn copy_glyph_beside(expand: Rect) -> Rect {
 }
 
 const READER_PAD: f32 = 8.0;
+/// Top strip — drag left/right to reposition the reader on-screen (like the head on the body).
+pub const READER_MOVE_DRAG_H: f32 = 15.0;
 
 /// Full-surface reader card — the takeover spans the layer, not the speech-bubble column.
 pub fn reader_card_rect(surface_w: f32, surface_h: u32) -> Rect {
@@ -189,6 +191,17 @@ pub fn hit_char_index(font: &Font, line: &str, px: f32, x_offset: f32) -> usize 
 /// Collapse control on the reader card (single source for paint + hit).
 pub fn reader_collapse_rect(surface_w: f32, surface_h: u32) -> Rect {
     expand_glyph_rect(reader_card_rect(surface_w, surface_h))
+}
+
+/// Top strip — horizontal drag repositions the full-height reader (margin_left only).
+pub fn reader_move_drag_rect(surface_w: f32, surface_h: u32) -> Rect {
+    let card = reader_card_rect(surface_w, surface_h);
+    Rect {
+        x: card.x,
+        y: card.y,
+        w: card.w,
+        h: READER_MOVE_DRAG_H.min(card.h),
+    }
 }
 
 /// Wheel notch → line delta (discrete = 3 lines per step; else absolute-derived, min magnitude 1).
@@ -7247,6 +7260,28 @@ mod tests {
         let card = reader_card_rect(w as f32, h);
         assert!((card.w - (w as f32 - 16.0)).abs() < 0.01);
         assert!((card.h - (h as f32 - 16.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn reader_move_drag_strip_is_top_of_card() {
+        let w = SURFACE_W;
+        let h = 720_u32;
+        let card = reader_card_rect(w as f32, h);
+        let strip = reader_move_drag_rect(w as f32, h);
+        assert_eq!(strip.x, card.x);
+        assert_eq!(strip.y, card.y);
+        assert_eq!(strip.w, card.w);
+        assert!((strip.h - READER_MOVE_DRAG_H).abs() < 0.01);
+        let collapse = reader_collapse_rect(w as f32, h);
+        let copy = reader_copy_rect(w as f32, h);
+        assert!(strip.contains(
+            f64::from(collapse.x + collapse.w * 0.5),
+            f64::from(collapse.y + collapse.h * 0.5),
+        ));
+        assert!(strip.contains(
+            f64::from(copy.x + copy.w * 0.5),
+            f64::from(copy.y + copy.h * 0.5),
+        ));
     }
 
     #[test]

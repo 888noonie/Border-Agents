@@ -111,7 +111,7 @@ fn bubble_line_budget() -> usize {
 }
 
 /// Lines the full-height reader may show on a surface of `surface_h` pixels.
-fn reader_line_budget(surface_h: u32) -> usize {
+pub fn reader_line_budget(surface_h: u32) -> usize {
     let pad_top = 30.0 + PANEL_LABEL_PX + 8.0;
     let pad_bottom = 12.0;
     ((surface_h as f32 - pad_top - pad_bottom) / LINE_H).floor().max(1.0) as usize
@@ -141,6 +141,8 @@ fn copy_glyph_beside(expand: Rect) -> Rect {
 const READER_PAD: f32 = 8.0;
 /// Top strip — drag left/right to reposition the reader on-screen (like the head on the body).
 pub const READER_MOVE_DRAG_H: f32 = 15.0;
+/// Narrowest the reader may squash when pressed against a screen edge.
+pub const READER_W_MIN: f32 = BUBBLE_W_MIN;
 
 /// Full-surface reader card — the takeover spans the layer, not the speech-bubble column.
 pub fn reader_card_rect(surface_w: f32, surface_h: u32) -> Rect {
@@ -191,6 +193,33 @@ pub fn hit_char_index(font: &Font, line: &str, px: f32, x_offset: f32) -> usize 
 /// Collapse control on the reader card (single source for paint + hit).
 pub fn reader_collapse_rect(surface_w: f32, surface_h: u32) -> Rect {
     expand_glyph_rect(reader_card_rect(surface_w, surface_h))
+}
+
+/// After a horizontal drag (or refit), slide the reader and squash its width against screen edges.
+/// The natural width is restored whenever there is room; only the edge being pushed into compresses.
+pub fn reader_drag_layout(
+    margin_left: f64,
+    pref_w: f64,
+    dx: f64,
+    sw: f64,
+) -> (f64, f64) {
+    let min_w = f64::from(READER_W_MIN);
+    let pref_w = pref_w.max(min_w);
+
+    if !sw.is_finite() || sw > 1e9 {
+        return ((margin_left + dx).max(0.0), pref_w);
+    }
+
+    let max_left = (sw - min_w).max(0.0);
+    let mut left = (margin_left + dx).clamp(0.0, max_left);
+    let available = (sw - left).max(0.0);
+    let w = if available < min_w {
+        available
+    } else {
+        pref_w.min(available).max(min_w)
+    };
+
+    (left, w)
 }
 
 /// Top strip — horizontal drag repositions the full-height reader (margin_left only).
@@ -7260,6 +7289,40 @@ mod tests {
         let card = reader_card_rect(w as f32, h);
         assert!((card.w - (w as f32 - 16.0)).abs() < 0.01);
         assert!((card.h - (h as f32 - 16.0)).abs() < 0.01);
+    }
+
+    #[test]
+    fn reader_drag_squashes_against_right_edge() {
+        let pref = 720.0;
+        let sw = 1920.0;
+        let (left, w) = reader_drag_layout(500.0, pref, 100.0, sw);
+        assert!((left - 600.0).abs() < 0.5);
+        assert!((w - pref).abs() < 0.5);
+        let (left, w) = reader_drag_layout(1200.0, pref, 400.0, sw);
+        assert!((left - 1600.0).abs() < 0.5);
+        assert!((w - (sw - 1600.0)).abs() < 0.5);
+        assert!(left + w <= sw + 0.5);
+    }
+
+    #[test]
+    fn reader_drag_stops_at_left_edge_and_unsquashes_when_pulling_back() {
+        let pref = 720.0;
+        let sw = 1920.0;
+        let (left, w) = reader_drag_layout(0.0, pref, -40.0, sw);
+        assert_eq!(left, 0.0);
+        assert!((w - pref).abs() < 0.5);
+
+        let (left, w) = reader_drag_layout(1500.0, pref, 0.0, sw);
+        assert!((w - (sw - 1500.0)).abs() < 0.5);
+        let (left, w) = reader_drag_layout(left, pref, -200.0, sw);
+        assert!((left - 1300.0).abs() < 0.5);
+        assert!(w > sw - 1500.0);
+    }
+
+    #[test]
+    fn reader_drag_never_uses_negative_left_margin() {
+        let (left, _) = reader_drag_layout(-500.0, 720.0, 0.0, 1920.0);
+        assert_eq!(left, 0.0);
     }
 
     #[test]

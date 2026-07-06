@@ -233,18 +233,6 @@ fn clamp_figure_margins(
     (margin_left.clamp(min_left, max_left), margin_top.clamp(min_top, max_top))
 }
 
-/// Pure margin clamp for the full-height reader panel: keep the whole layer on-screen.
-/// Unlike the figure clamp, negative left margins are not used — compositors clip the
-/// right edge but often let the surface draw past the left when `margin_left` is negative.
-fn clamp_reader_margin_left(margin_left: f64, panel_w: f64, sw: f64) -> f64 {
-    if !sw.is_finite() || sw > 1e9 {
-        return margin_left.max(0.0);
-    }
-    let min_left = 0.0;
-    let max_left = (sw - panel_w).max(0.0);
-    margin_left.clamp(min_left, max_left)
-}
-
 /// Pure tuck-edge selector: returns the nearest screen edge whose gap to the figure bbox is
 /// below `threshold`, or `None`. Symmetric across all four edges because it measures to the
 /// figure bbox (which the drag clamp keeps on-screen), not the head — so the right/top/bottom
@@ -753,6 +741,7 @@ fn main() {
         reader_scroll: 0,
         reader_copied: false,
         reader_selection: None,
+        reader_pref_w: 0,
         speech_bubble_w: render::BUBBLE_W_DEFAULT,
     };
     app.init_hermes_surface();
@@ -1365,6 +1354,8 @@ struct App {
     reader_copied: bool,
     /// Drag-select range in the reader's full wrapped-line list.
     reader_selection: Option<(render::ReaderPos, render::ReaderPos)>,
+    /// Natural reader width at open — restored when drag moves away from a squashed edge.
+    reader_pref_w: u32,
     /// User-stretched speech bubble / reader column width.
     speech_bubble_w: f32,
 }
@@ -2056,10 +2047,39 @@ impl App {
         self.margin_top = top;
     }
 
-    /// Keep the full reader panel inside the screen while sliding it horizontally.
+    /// Refit reader position/width after a screen resize (no pointer delta).
     fn clamp_reader_margins(&mut self) {
+        self.apply_reader_horizontal_drag(0.0);
+    }
+
+    /// Slide the reader horizontally; squash width against whichever screen edge is hit.
+    fn apply_reader_horizontal_drag(&mut self, dx: f64) {
+        if self.reader_saved.is_none() || self.reader_pref_w == 0 {
+            return;
+        }
         let (sw, _) = self.screen.unwrap_or((f64::MAX, f64::MAX));
-        self.margin_left = clamp_reader_margin_left(self.margin_left, self.width as f64, sw);
+        let pref = self.reader_pref_w as f64;
+        let (left, w) = render::reader_drag_layout(self.margin_left, pref, dx, sw);
+        let w_u = w.round().max(1.0) as u32;
+        let size_changed = w_u != self.width;
+        self.margin_left = left;
+        if size_changed {
+            self.set_layer_size(w_u, self.height);
+            self.width = w_u;
+            self.clamp_reader_scroll_on_resize();
+            self.update_input_region();
+        }
+        self.reposition();
+    }
+
+    fn clamp_reader_scroll_on_resize(&mut self) {
+        let Some(font) = self.sprite.font() else { return };
+        let text = self.reader_source_text().map(str::to_string);
+        let Some(text) = text else { return };
+        let card_w = render::reader_card_rect(self.width as f32, self.height).w;
+        let total = render::reader_total_lines(font, &text, card_w);
+        let budget = render::reader_line_budget(self.height);
+        self.reader_scroll = render::clamp_reader_scroll(self.reader_scroll, total, budget);
     }
 
     /// Input region = only the parts that should catch the pointer; everywhere else
@@ -2799,9 +2819,7 @@ impl App {
             return;
         }
         if press.target == PressTarget::ReaderMove {
-            self.margin_left += dx;
-            self.clamp_reader_margins();
-            self.reposition();
+            self.apply_reader_horizontal_drag(dx);
             return;
         }
         if self.drag {
@@ -3694,9 +3712,11 @@ impl App {
             tucked: self.tucked,
         });
         let screen_h = self.screen.map(|(_, h)| h as u32).unwrap_or(self.height);
-        self.set_layer_size(self.requested_surface_w(), screen_h);
+        self.reader_pref_w = self.requested_surface_w();
+        self.set_layer_size(self.reader_pref_w, screen_h);
+        self.width = self.reader_pref_w;
         self.margin_top = 0.0;
-        self.reposition();
+        self.apply_reader_horizontal_drag(0.0);
         self.update_input_region();
     }
 
@@ -3761,6 +3781,7 @@ impl App {
 
     fn close_reader(&mut self) {
         let Some(saved) = self.reader_saved.take() else { return };
+        self.reader_pref_w = 0;
         self.reader_copied = false;
         self.reader_selection = None;
         self.margin_top = saved.margin_top;
@@ -4658,38 +4679,6 @@ mod tests {
         assert_eq!(top, sh - keep - fig.y as f64);
         let (_, top) = clamp_figure_margins(0.0, -5000.0, fig, (sw, sh), keep);
         assert_eq!(top, keep - (fig.y + fig.h) as f64);
-    }
-
-    #[test]
-    fn reader_clamp_keeps_the_full_panel_on_screen() {
-        let w = 720.0;
-        let sw = 1920.0;
-
-        assert_eq!(clamp_reader_margin_left(-200.0, w, sw), 0.0);
-        assert_eq!(clamp_reader_margin_left(0.0, w, sw), 0.0);
-        assert_eq!(clamp_reader_margin_left(500.0, w, sw), 500.0);
-        assert_eq!(clamp_reader_margin_left(10_000.0, w, sw), sw - w);
-
-        let left = clamp_reader_margin_left(10_000.0, w, sw);
-        assert!(left >= 0.0);
-        assert!(left + w <= sw + 0.5);
-    }
-
-    #[test]
-    fn reader_clamp_never_uses_negative_left_margin() {
-        let left = clamp_reader_margin_left(-5000.0, 560.0, 1920.0);
-        assert_eq!(left, 0.0);
-    }
-
-    #[test]
-    fn reader_clamp_degrades_when_screen_is_narrower_than_panel() {
-        assert_eq!(clamp_reader_margin_left(400.0, 720.0, 640.0), 0.0);
-    }
-
-    #[test]
-    fn reader_clamp_without_screen_bounds_only_blocks_negative_left() {
-        assert_eq!(clamp_reader_margin_left(-12.0, 720.0, f64::MAX), 0.0);
-        assert_eq!(clamp_reader_margin_left(48.0, 720.0, f64::MAX), 48.0);
     }
 
     #[test]

@@ -2546,3 +2546,64 @@ Test-honesty fixes: (2) `unwired_pill_dims_not_hides` compared 1-pill vs 2-pill 
 Adjudicated (accepted, noted): `pill_row_registered_in_input_region` is render-side (rects exist inside the panel) — acceptable because `update_input_region` calls `passport_pill_hit_rects` verbatim (single-source, unlike R4 where region ≠ paint); `pills_hit_correctly_in_both_dock` actually tests Facing L/R parity (dock modes cannot reach the untucked card — brief's pin was lead over-reach); builder added `BodyView.show_receipt_ledger` beyond the named law-4 fields (mechanical class, same as J's `reader_copied`); `tucked_connection_chip` falls back to `view.route_health` with provider None on non-passport torso output (chip = dot only; honest).
 
 Gates with forced recompile: cargo **206+0/29** (201 briefed + 4 fc3cb9d + 1 net from the test split), release **9 warnings**, tsc clean, vitest **278/31**. Owner walk script: brief's walk + fc3cb9d addendum — at max stretch: receipts first, scroll → connection card → interior → receipts; below max: card ↔ interior; then the K walk (route row + health dot, Working… bracket, wired/unwired pill taps, tucked chip, min-stretch card shows persona+route only, NO pill row).
+
+---
+
+## Owner walk — K-series batch + fc3cb9d + reader fix — PASS 2026-07-06
+
+Walk PASS (working status, tucked chip, awake eyes all confirmed on screenshots; scroll cycle live). One finding mid-walk: reader takeover chopped to half screen → diagnosed live (NOT K code — latent J post-walk drag-series race: squash-at-open re-sent `set_layer_size` with the stale pre-reader `self.height`; owner's screen 2048x1280@150% = 1365x853 logical, verified via cosmic-randr + probe body) → fixed `ea1daff` (pure `reader_takeover_h` single-sources height at both reader resize sites, named test). Owner ruling: PUSH. Pushed `0b622db..ea1daff` (10 commits). Gates: cargo 207+0/29, 9 warnings, tsc clean, vitest 278/31.
+
+## L-series batch — the input field earns its keep — brief for Composergrok (3 slices: L1, L2, L3)
+
+Build L1 → L2 → L3 in order on top of head `ea1daff` (everything pushed, tree clean). **Interleave commits per slice**: feat L1, docs report L1, feat L2, docs report L2, feat L3, docs report L3. Do NOT push. STOP after L3 or immediately on any conflict rule.
+
+**Direction (lead, following the J/K arc):** J gave the output field full access; K gave the torso the connection truth; L gives the INPUT field the same respect. Today the input is append-only: the caret is glued to the end (Backspace = pop last char), a typo ten words back means retyping, arrows/Home/End/Delete are dead keys, and a submitted prompt is gone forever. Three slices: real caret editing, prompt history, click-to-place + tucked parity.
+
+### Ground truth (lead-scouted anchors — verify before building)
+
+- ONE keystroke funnel: `press_key` (main.rs:~4207) → `on_key` (main.rs:~2620) when `input_focused` — shared by untucked and tucked inputs, so caret/history land everywhere at once. `Keysym::Up/Down/Left/Right/Home/End/Delete` are all unhandled today (verified by grep) — no behavior collision.
+- `append_input_text` (:~2634) pushes chars; `paste_clipboard_into_input` (:~2642) appends with a space-join; `submit_input` (:~2666) trims, sends `said`, sets `awaiting_reply=true` (THE F5 BRACKET — byte-preserve its semantics), clears the text.
+- `draw_input` (render.rs:~4661): wraps the whole text, keeps the TAIL (`start = len - INPUT_MAX_LINES`), caret drawn at end-of-last-line via `measure`, blink `(t*1.4)`, caret colour [201,109,60] pre-exists. `Layout::input_rect(lines)` (render.rs:~539), `input_region_rect` = max-lines rect (region never races growth). `draw_tucked_input` (render.rs:~4784) is the peek twin.
+- Prefix-measure hit machinery from J3 already exists: `hit_char_index(font, line, px, x_offset)` (used by `reader_hit_pos`) — reuse it for click-to-place; do NOT write a second one.
+- `BodyView.input_text: &str` flows already; the caret needs `BodyView.input_caret: usize` (law 4 literal `input_caret: 0,`).
+
+### Law (all three slices)
+
+1. Figure draw fns byte-frozen (md5 sweep vs `ea1daff`). presence.rs byte-frozen (`said_json` unchanged — history is body-side memory, never a wire change). Zero TS changes (tsc clean, vitest 278/31).
+2. `submit_input`'s soul-facing behavior byte-preserved: same `said` emission, same `awaiting_reply` set, same torso/speech strings. F5/G1 bracket clears untouched. Reader fns untouched (incl. `reader_takeover_h` — fresh fix).
+3. Palette: zero new RGBs (caret colour exists; selection-style hues NOT needed — no input selection this batch, stay honest).
+4. Mechanical existing-test edits ONLY: `input_caret: 0,` literal on existing `BodyView` constructors. Any other forced test edit = STOP the batch and report the colliding pin.
+5. Release warnings stay 9. No timers (the existing t-based caret blink is animation, not a decay timer — leave it). Caret arithmetic is CHAR-indexed, never byte-indexed (input takes UTF-8; a byte-index caret panics on the first emoji).
+
+### Slice L1 — a real caret: edit anywhere in the draft
+
+1. `App.input_caret: usize` (char index into `input_text`, clamped to `[0, chars]`; = end after any legacy append). `on_key` grows arms: `Left`/`Right` move by one char (saturating), `Home`/`End` jump, `BackSpace` deletes the char BEFORE the caret, `Delete` deletes AT the caret, printable text INSERTS at the caret (replacing the append), Ctrl+V pastes at the caret (keep the space-join rule against the char before the caret). All edits move the caret with the text. `submit_input` + Escape reset the caret with the clear.
+2. Pure fns in main.rs (F5 pattern, unit-tested without an App): `caret_insert(text, caret, s) -> (String, usize)`, `caret_backspace(text, caret) -> (String, usize)`, `caret_delete(text, caret) -> String`, `caret_move(text, caret, CaretMove{Left,Right,Home,End}) -> usize`. `on_key` applies them verbatim — char-boundary safe by construction (`chars()` walking, no byte slicing).
+3. `BodyView.input_caret` (law 4); `draw_input` draws the caret at its true position: locate the caret's wrapped line + column against the SAME tail-kept `shown` window (caret index relative to the window start; when the caret scrolls above the tail window, clamp to the window's first char — visible is honest), x via prefix `measure` of the line up to the column. Blink unchanged.
+4. Placeholder/empty behavior unchanged; caret at 0 draws at the text origin.
+
+**Tests (5):** `caret_insert_moves_with_text` (middle-insert truth table incl. multibyte char), `caret_backspace_and_delete_are_neighbours` (delete-before vs delete-at, boundary arms at 0/end), `caret_move_clamps_at_ends`, `caret_draws_at_its_column` (pixel: same text, caret 0 vs mid vs end paint differently at blink-on t), `caret_survives_tail_scroll` (long draft: caret clamped into the shown window, no panic). **Gate: cargo 212+0/29.**
+**Commit:** `feat(body): laminal ring pivot — Slice L1 — input caret (edit anywhere: arrows, home/end, insert/delete at caret)`
+
+### Slice L2 — prompt history: what you asked is never lost
+
+1. `App.input_history: Vec<String>` (session-only, newest last, cap 50) + `history_cursor: Option<usize>` + `history_draft: String`. `submit_input` pushes the sent text (skip if identical to the last entry) — AFTER the existing send path, wire behavior untouched.
+2. `Up` while focused: first press saves the current draft, then steps backward through history; `Down` steps forward; stepping past the newest RESTORES the draft (not empty). Recall replaces `input_text`, caret to End. Any edit/submit/Escape exits history mode (`history_cursor = None`).
+3. Pure fn `history_step(history: &[String], cursor: Option<usize>, draft: &str, up: bool) -> (Option<usize>, String)` — total truth table, `on_key` applies it verbatim (the F5 seam).
+4. Up/Down are history ONLY while focused; unfocused keys still ignored (press_key gate unchanged).
+
+**Tests (5):** `history_push_caps_and_dedupes`, `history_up_recalls_newest_first`, `history_down_restores_the_draft`, `history_edit_exits_recall` (cursor cleared on insert/backspace), `history_never_mutates_entries` (recalled entry edited + submitted → original entry intact, new entry appended). **Gate: cargo 217+0/29.**
+**Commit:** `feat(body): laminal ring pivot — Slice L2 — prompt history (up/down recall with draft restore; session-only, capped)`
+
+### Slice L3 — click-to-place + the tucked input keeps up
+
+1. Click inside the focused input places the caret: map press (x, y) → wrapped line row (via LINE_H against the same `shown` window) → column via the EXISTING `hit_char_index` (J3 fn — reuse, do not fork) → absolute char index (window start + offset). Click on empty area behind the text = caret End. Press handling joins the existing `PressTarget::Input` arm (which already focuses) — placing happens on the same press.
+2. Tucked peek parity: `draw_tucked_input` draws the caret at its true position (same window-clamp rule at its single-line width); Up/Down history and all L1 editing already reach it through the shared funnel — VERIFY, and pin with a test that the tucked input paints the caret column (not always-at-end).
+3. Degenerate guards: caret clamp on every `input_text` mutation path (paste of huge text, history recall longer than the box); empty-history Up is a no-op (no draft loss); click-to-place with empty text keeps caret 0.
+
+**Tests (4):** `input_click_places_the_caret` (prefix-measure round-trip on the wrapped tail), `click_past_text_snaps_to_end`, `tucked_input_caret_draws_at_column` (pixel: caret mid vs end differ on the peek input), `caret_clamps_on_recall_and_paste`. **Gate: cargo 221+0/29.**
+**Commit:** `feat(body): laminal ring pivot — Slice L3 — input everywhere (click-to-place caret; tucked peek parity; clamp guards)`
+
+### Batch rules
+
+Gates per slice with forced recompile (`touch desktop-body/src/*.rs`): cargo 212/217/221 +0/29, release 9 known warnings, tsc clean, vitest 278/31. Existing tests pass unmodified except law 4's `input_caret: 0,` literal. STOP after L3. Owner walk: type a long prompt → arrow back mid-sentence, fix a word, Home/End jump → click mid-text to place the caret → send → Up recalls it, edit, send again (original preserved in history) → Down past newest restores an in-progress draft → paste at caret mid-text → tuck → repeat a spot-check in the peek input (caret column visible, Up recall works) → confirm Message sent / thinking bracket unchanged.

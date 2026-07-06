@@ -3739,8 +3739,13 @@ pub fn passport_pill_row_origin(content: Rect) -> (f32, f32) {
 }
 
 /// Positioned pill rects for hit-test and input-region registration (single-source with paint).
+/// Empty when the row cannot fit above the card's bottom pad — a short torso (min stretch)
+/// gets no pill row at all, and therefore no invisible click targets below the panel.
 pub fn passport_pill_hit_rects(font: &Font, content: Rect, labels: &[&str]) -> Vec<Rect> {
     let (origin_x, origin_y) = passport_pill_row_origin(content);
+    if origin_y + SURFACE_PILL_H > content.y + content.h - 8.0 {
+        return Vec::new();
+    }
     let avail_w = (content.w - 16.0).max(0.0);
     let (rel, _) = surface_pill_rects(font, avail_w, labels);
     rel.into_iter()
@@ -3870,30 +3875,29 @@ fn draw_passport_card(pixmap: &mut Pixmap, font: &Font, rect: Rect, card: &Passp
         draw_route_health_dot(pixmap, trail_x + 3.0, row1_baseline - 3.0, health);
     }
 
-    // Row 2 — surface pills (launchers excluded upstream; no row when empty).
+    // Row 2 — surface pills (launchers excluded upstream; no row when empty or when the
+    // row can't fit the card height — paint consumes the same guarded rects the hit-test
+    // and input region use, so a skipped row skips everywhere).
     let mut div_y = row1_baseline + 6.0;
     if !card.pills.is_empty() {
         let pill_labels: Vec<&str> = card.pills.iter().map(|p| p.label).collect();
-        let (origin_x, origin_y) = passport_pill_row_origin(rect);
-        let (rel_rects, hidden) = surface_pill_rects(font, text_w, &pill_labels);
-        for (rect_rel, pill) in rel_rects.iter().zip(card.pills.iter()) {
-            let pill_rect = Rect {
-                x: origin_x + rect_rel.x,
-                y: origin_y + rect_rel.y,
-                w: rect_rel.w,
-                h: rect_rel.h,
-            };
-            draw_surface_pill(pixmap, font, pill_rect, pill.label, pill.active, pill.wired);
-        }
-        if hidden > 0 {
-            let tag = format!("+{hidden}");
-            let tw = measure(font, &tag, 9.0);
-            let ox = origin_x + rel_rects.last().map(|r| r.x + r.w + SURFACE_PILL_GAP).unwrap_or(0.0);
-            if ox + tw <= origin_x + text_w {
-                draw_line(pixmap, font, &tag, ox, origin_y + 13.0, 9.0, [130, 122, 114]);
+        let placed = passport_pill_hit_rects(font, rect, &pill_labels);
+        if !placed.is_empty() {
+            let (origin_x, origin_y) = passport_pill_row_origin(rect);
+            let hidden = card.pills.len().saturating_sub(placed.len());
+            for (pill_rect, pill) in placed.iter().zip(card.pills.iter()) {
+                draw_surface_pill(pixmap, font, *pill_rect, pill.label, pill.active, pill.wired);
             }
+            if hidden > 0 {
+                let tag = format!("+{hidden}");
+                let tw = measure(font, &tag, 9.0);
+                let ox = placed.last().map(|r| r.x + r.w + SURFACE_PILL_GAP).unwrap_or(origin_x);
+                if ox + tw <= origin_x + text_w {
+                    draw_line(pixmap, font, &tag, ox, origin_y + 13.0, 9.0, [130, 122, 114]);
+                }
+            }
+            div_y = origin_y + SURFACE_PILL_H + 4.0;
         }
-        div_y = origin_y + SURFACE_PILL_H + 4.0;
     }
 
     // Divider.
@@ -7318,13 +7322,12 @@ mod tests {
     fn route_health_dot_center(content: Rect, font: &Font, card: &PassportCard) -> (i32, i32) {
         let x = content.x + 8.0;
         let row1 = passport_route_baseline(content);
-        let mut trail_x = x;
-        if let Some(provider) = card.provider {
+        let mut trail_x = if let Some(provider) = card.provider {
             let prov = fit_line(font, provider, 10.0, content.w - 32.0);
-            trail_x = x + measure(font, &prov, 10.0);
+            x + measure(font, &prov, 10.0)
         } else {
-            trail_x = x + measure(font, "No route yet", 10.0);
-        }
+            x + measure(font, "No route yet", 10.0)
+        };
         if card.locality.is_some() {
             trail_x += 13.0;
         }
@@ -7460,19 +7463,28 @@ mod tests {
         };
         let mut pixmap = Pixmap::new(SURFACE_W, layout.surface_h()).unwrap();
         draw_passport_card(&mut pixmap, &font, content, &card);
-        let right = (content.x + content.w).ceil() as i32;
-        let bottom = (content.y + content.h).ceil() as i32;
+        // Only the card paints on this pixmap, so ANY ink outside the content rect is
+        // overflow — scan the whole surface (a loop bounded at `bottom` can never see
+        // the vertical overflow it claims to reject).
+        let left = content.x.floor() as i32 - 1;
+        let right = (content.x + content.w).ceil() as i32 + 1;
+        let top = content.y.floor() as i32 - 1;
+        let bottom = (content.y + content.h).ceil() as i32 + 1;
         let data = pixmap.data();
         let w = pixmap.width() as i32;
-        for y in content.y as i32..bottom {
+        let h = pixmap.height() as i32;
+        let mut saw_ink = false;
+        for y in 0..h {
             for x in 0..w {
                 let idx = ((y * w + x) * 4) as usize;
                 if data[idx + 3] > 0 {
-                    assert!(x <= right + 1, "ink at x={x} exceeds panel");
-                    assert!(y <= bottom + 1, "ink at y={y} exceeds panel");
+                    saw_ink = true;
+                    assert!(x >= left && x <= right, "ink at x={x} outside panel [{left},{right}]");
+                    assert!(y >= top && y <= bottom, "ink at y={y} outside panel [{top},{bottom}]");
                 }
             }
         }
+        assert!(saw_ink, "card must actually paint at min stretch");
     }
 
     #[test]
@@ -7525,16 +7537,34 @@ mod tests {
         let font = load_font().expect("font");
         let layout = Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT);
         let content = inset_rect(layout.output_panel_rect(), 5.0, 5.0);
-        let wired = [SurfacePill { label: "chat", active: false, wired: true }];
-        let both = [
+        // Same two labels, only the wired flag flips — the pixel diff can only come
+        // from the dim styling, not from a different pill count.
+        let all_wired = [
+            SurfacePill { label: "chat", active: false, wired: true },
+            SurfacePill { label: "soon", active: false, wired: true },
+        ];
+        let one_unwired = [
             SurfacePill { label: "chat", active: false, wired: true },
             SurfacePill { label: "soon", active: false, wired: false },
         ];
-        let (wired_px, _, _) = sample_passport_card(&passport_fixture(&wired));
-        let (both_px, _, _) = sample_passport_card(&passport_fixture(&both));
+        let (wired_px, _, _) = sample_passport_card(&passport_fixture(&all_wired));
+        let (dimmed_px, _, _) = sample_passport_card(&passport_fixture(&one_unwired));
+        assert_ne!(wired_px.data(), dimmed_px.data(), "dim styling must change pixels");
+        // Not hidden: the unwired pill still lays out AND its rect carries ink.
         let rects = passport_pill_hit_rects(&font, content, &["chat", "soon"]);
         assert_eq!(rects.len(), 2, "both pills painted");
-        assert_ne!(wired_px.data(), both_px.data(), "wired vs unwired must differ");
+        let unwired_rect = &rects[1];
+        let mut ink = false;
+        for dy in 0..unwired_rect.h as i32 {
+            for dx in 0..unwired_rect.w as i32 {
+                let x = (unwired_rect.x as i32 + dx) as u32;
+                let y = (unwired_rect.y as i32 + dy) as u32;
+                if dimmed_px.pixel(x, y).is_some_and(|p| p.alpha() > 0) {
+                    ink = true;
+                }
+            }
+        }
+        assert!(ink, "unwired pill must still paint (dim, not hidden)");
     }
 
     #[test]
@@ -7635,15 +7665,22 @@ mod tests {
             sprite.paint(&mut canvas, w, h, &view);
             canvas
         };
-        let (cx, cy) = bump_center(edge, w, h);
-        let px = (BAR_THICKNESS / 2.0) as u32;
-        let py = cy as u32;
-        let idx = ((py * w + px) * 4) as usize;
-        assert_eq!(
-            &paint(Some("ready"))[idx..idx + 4],
-            &paint(Some("degraded"))[idx..idx + 4],
-            "bar pixels must not change with route health",
-        );
+        // Sweep the FULL bar rect (body AND tip regions) — route health must not move
+        // a single bar pixel; only the peek-bubble chip may react to it.
+        let along = tuck_bar_along_length(w, h);
+        let bar = bar_rect(edge, w, h, along);
+        let ready = paint(Some("ready"));
+        let degraded = paint(Some("degraded"));
+        for y in bar.y as u32..(bar.y + bar.h) as u32 {
+            for x in bar.x as u32..(bar.x + bar.w) as u32 {
+                let idx = ((y * w + x) * 4) as usize;
+                assert_eq!(
+                    &ready[idx..idx + 4],
+                    &degraded[idx..idx + 4],
+                    "bar pixel ({x},{y}) must not change with route health",
+                );
+            }
+        }
     }
 
     #[test]
@@ -7667,41 +7704,52 @@ mod tests {
         }
     }
 
+    const EIGHT_LABELS: [&str; 8] = ["one", "two", "three", "four", "five", "six", "seven", "eight"];
+
     #[test]
-    fn min_stretch_collapses_pills_honestly() {
+    fn min_stretch_hides_pill_row_entirely() {
+        // A min-stretch torso has no vertical room for the pill row: the guarded
+        // geometry returns no rects (no invisible click targets), and paint —
+        // consuming the same rects — draws no pill ink either.
         let font = load_font().expect("font");
         let layout = Layout::new(Facing::Right, BODY_LEN_MIN, BUBBLE_W_DEFAULT);
         let content = inset_rect(layout.output_panel_rect(), 5.0, 5.0);
-        let labels: Vec<&str> = (0..8).map(|i| {
-            // leak the temporary — use static labels instead
-            match i {
-                0 => "one",
-                1 => "two",
-                2 => "three",
-                3 => "four",
-                4 => "five",
-                5 => "six",
-                6 => "seven",
-                _ => "eight",
-            }
-        }).collect();
-        let (rel, hidden) = surface_pill_rects(&font, content.w - 16.0, &labels);
-        assert!(hidden > 0, "min stretch must collapse to +N");
-        assert!(rel.len() < labels.len());
-        let pills: Vec<SurfacePill> = labels
+        assert!(
+            passport_pill_hit_rects(&font, content, &EIGHT_LABELS).is_empty(),
+            "no hit rects may exist where no row can paint",
+        );
+        let pills: Vec<SurfacePill> = EIGHT_LABELS
             .iter()
             .map(|l| SurfacePill { label: l, active: false, wired: true })
             .collect();
-        let card = PassportCard {
-            persona_label: "F",
-            posture: "work",
-            provider: Some("p"),
-            locality: None,
-            route_health: None,
-            activity: false,
-            pills: &pills,
-            output_preview: None,
-        };
+        let with_pills = passport_fixture(&pills);
+        let without = passport_fixture(&[]);
+        let mut px_a = Pixmap::new(SURFACE_W, layout.surface_h()).unwrap();
+        let mut px_b = Pixmap::new(SURFACE_W, layout.surface_h()).unwrap();
+        draw_passport_card(&mut px_a, &font, content, &with_pills);
+        draw_passport_card(&mut px_b, &font, content, &without);
+        assert_eq!(px_a.data(), px_b.data(), "skipped pill row must paint nothing");
+    }
+
+    #[test]
+    fn pill_overflow_collapses_to_marker() {
+        // Where the row fits vertically (default stretch) but the labels exceed the
+        // card width, the extras collapse to a painted +N marker.
+        let font = load_font().expect("font");
+        let layout = Layout::new(Facing::Right, BODY_LEN_DEFAULT, BUBBLE_W_DEFAULT);
+        let content = inset_rect(layout.output_panel_rect(), 5.0, 5.0);
+        let (rel, hidden) = surface_pill_rects(&font, content.w - 16.0, &EIGHT_LABELS);
+        assert!(hidden > 0, "eight labels must overflow the card width");
+        assert!(rel.len() < EIGHT_LABELS.len());
+        assert!(
+            !passport_pill_hit_rects(&font, content, &EIGHT_LABELS).is_empty(),
+            "row fits vertically at default stretch",
+        );
+        let pills: Vec<SurfacePill> = EIGHT_LABELS
+            .iter()
+            .map(|l| SurfacePill { label: l, active: false, wired: true })
+            .collect();
+        let card = passport_fixture(&pills);
         let mut pixmap = Pixmap::new(SURFACE_W, layout.surface_h()).unwrap();
         draw_passport_card(&mut pixmap, &font, content, &card);
         let (origin_x, origin_y) = passport_pill_row_origin(content);
@@ -7713,7 +7761,7 @@ mod tests {
                 saw_plus = true;
             }
         }
-        assert!(saw_plus, "+N overflow marker must paint at min stretch");
+        assert!(saw_plus, "+N overflow marker must paint");
     }
 
     #[test]
